@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 
 import network_utils
 from ui.base_settings_page import SettingsPageBase
+from ui.more_options import MoreOptions
 
 
 def _row(label_text: str, tooltip: str, widget) -> QVBoxLayout:
@@ -97,6 +98,18 @@ class SettingsNetworkPage(SettingsPageBase):
         self.game_port_spin.valueChanged.connect(self._check_port_conflict)
         self.query_port_spin.valueChanged.connect(self._check_port_conflict)
 
+        self.max_players_spin = QSpinBox()
+        self.max_players_spin.setRange(1, 250)
+        self.form_layout.addLayout(_row("Max Players", "Hard cap on concurrent connections.", self.max_players_spin))
+        self.register_field("max_players", self.max_players_spin, lambda w: w.value(), lambda w, v: w.setValue(v), self.max_players_spin.valueChanged)
+
+        # Less-used: the bind address and Repair Networking.
+        self.more = MoreOptions("More options", 1, card=False)
+        more = self.more.body_layout
+        more.setSpacing(16)
+        more.setContentsMargins(0, 8, 0, 4)
+        self.form_layout.addWidget(self.more)
+
         ip_row = QHBoxLayout()
         self.ip_edit = QLineEdit()
         detect_btn = QPushButton("Auto-detect")
@@ -105,7 +118,7 @@ class SettingsNetworkPage(SettingsPageBase):
         ip_row.addWidget(detect_btn)
         ip_wrap = QFrame()
         ip_wrap.setLayout(ip_row)
-        self.form_layout.addLayout(_row(
+        more.addLayout(_row(
             "Bind Address (Multihome)",
             "The local network interface the server binds to. Must be a real IP on this machine, not the public/router IP.",
             ip_wrap,
@@ -115,13 +128,8 @@ class SettingsNetworkPage(SettingsPageBase):
         self.bind_error_label.setObjectName("ErrorText")
         self.bind_error_label.setWordWrap(True)
         self.bind_error_label.hide()
-        self.form_layout.addWidget(self.bind_error_label)
+        more.addWidget(self.bind_error_label)
         self.ip_edit.textChanged.connect(self._check_bind_ip)
-
-        self.max_players_spin = QSpinBox()
-        self.max_players_spin.setRange(1, 250)
-        self.form_layout.addLayout(_row("Max Players", "Hard cap on concurrent connections.", self.max_players_spin))
-        self.register_field("max_players", self.max_players_spin, lambda w: w.value(), lambda w, v: w.setValue(v), self.max_players_spin.valueChanged)
 
         repair_col = QVBoxLayout()
         repair_col.setSpacing(6)
@@ -139,7 +147,7 @@ class SettingsNetworkPage(SettingsPageBase):
         repair_note.setWordWrap(True)
         repair_col.addWidget(self.repair_btn)
         repair_col.addWidget(repair_note)
-        self.form_layout.addLayout(repair_col)
+        more.addLayout(repair_col)
 
         self.form_layout.addStretch(1)
 
@@ -147,8 +155,8 @@ class SettingsNetworkPage(SettingsPageBase):
         if self.dirty_count() > 0:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.information(
-                self, "Apply first",
-                "Apply (or Discard) your pending changes on this page first -- Repair uses the saved settings.",
+                self, "Save first",
+                "Save (or Discard) your changes first -- Repair uses the saved settings.",
             )
             return
         if callable(self.on_repair_network):
@@ -187,6 +195,8 @@ class SettingsNetworkPage(SettingsPageBase):
                     msg = (f"{ip} isn't an address on this PC. Use this PC's local address (click "
                            f"Auto-detect) -- not your public/router IP.")
         self._bind_error = bool(msg)
+        if msg:
+            self.more.set_open(True)
         self.bind_error_label.setText(msg)
         self.bind_error_label.setVisible(bool(msg))
         self._update_pending_ui()

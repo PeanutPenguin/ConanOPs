@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 
 from ui.base_settings_page import SettingsPageBase
 from ui.backups_page import BackupsPage
+from ui.more_options import MoreOptions
 
 
 def _row(label_text: str, widget) -> QVBoxLayout:
@@ -49,6 +50,13 @@ class SettingsBackupsPage(SettingsPageBase):
         self.form_layout.addLayout(_row("Backup every (hours)", self.interval_spin))
         self.register_field("backup_interval_hours", self.interval_spin, lambda w: w.value(), lambda w, v: w.setValue(v), self.interval_spin.valueChanged)
 
+        # Less-used: where backups go, and the pre-update backup switch.
+        self.more = MoreOptions("More options", 2, card=False)
+        more = self.more.body_layout
+        more.setSpacing(12)
+        more.setContentsMargins(0, 8, 0, 4)
+        self.form_layout.addWidget(self.more)
+
         dest_row = QHBoxLayout()
         self.dest_edit = QLineEdit()
         browse_btn = QPushButton("Browse…")
@@ -57,18 +65,18 @@ class SettingsBackupsPage(SettingsPageBase):
         dest_row.addWidget(browse_btn)
         dest_wrap = QFrame()
         dest_wrap.setLayout(dest_row)
-        self.form_layout.addLayout(_row("Destination folder", dest_wrap))
+        more.addLayout(_row("Destination folder", dest_wrap))
         dest_note = QLabel(
             "Pre-filled automatically inside this server's own ConanOps folder the first time "
             "a server is set up -- change it any time."
         )
         dest_note.setObjectName("Dim")
         dest_note.setWordWrap(True)
-        self.form_layout.addWidget(dest_note)
+        more.addWidget(dest_note)
         self.register_field("backup_destination", self.dest_edit, lambda w: w.text(), lambda w, v: w.setText(v), self.dest_edit.textChanged)
 
         self.pre_update_check = QCheckBox("Always back up before applying an update")
-        self.form_layout.addWidget(self.pre_update_check)
+        more.addWidget(self.pre_update_check)
         self.register_field("backup_before_update", self.pre_update_check, lambda w: w.isChecked(), lambda w, v: w.setChecked(v), self.pre_update_check.toggled)
 
         divider = QFrame()

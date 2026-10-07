@@ -300,6 +300,13 @@ def build_stylesheet(palette: ThemePalette = DEFAULT_PALETTE) -> str:
     QPushButton:focus {{ border: 1px solid {ACCENT_TEXT}; }}
     QPushButton:disabled {{ color: {DIM}; background-color: {_shade(CONTROL, 0.92)}; border-color: {BORDER}; }}
 
+    QToolButton#MenuButton {{
+        background-color: {CONTROL}; border: 1px solid {BUTTON_BORDER}; border-radius: 8px;
+        padding: 0px 30px 0px 14px; min-height: 38px; color: {TEXT}; font-size: 13px; font-weight: 500;
+    }}
+    QToolButton#MenuButton:hover {{ background-color: {CONTROL_HOVER}; }}
+    QToolButton#MenuButton::menu-indicator {{ subcontrol-position: right center; right: 10px; }}
+
     /* Square icon-only buttons (header lock, mod row arrows/delete). */
     QPushButton#IconButton {{ padding: 0px; min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px; }}
 
@@ -378,6 +385,23 @@ def build_stylesheet(palette: ThemePalette = DEFAULT_PALETTE) -> str:
     QToolButton#GuideToggle {{ background: transparent; border: none; color: {ACCENT_TEXT}; font-weight: 600;
         padding: 2px 0; }}
     QToolButton#GuideToggle:hover {{ text-decoration: underline; }}
+    QToolButton#FoldToggle {{ background: transparent; border: none; color: {TEXT}; font-weight: 600;
+        font-size: 14px; padding: 4px 0; }}
+    QToolButton#FoldToggle:hover {{ color: {ACCENT_TEXT}; }}
+    QFrame#SettingRow QLabel#SettingHelp, QFrame#SettingRowLast QLabel#SettingHelp {{ color: {DIM}; font-size: 12px; }}
+    QFrame#SettingRow QLabel#InfoCue, QFrame#SettingRowLast QLabel#InfoCue {{ color: {DIM}; font-size: 13px; }}
+    QLineEdit#SettingsSearch {{ font-size: 15px; padding: 9px 12px; }}
+    QPushButton#SearchResult {{ background: transparent; border: none; border-bottom: 1px solid {_shade(BORDER, 0.92)};
+        border-radius: 0; text-align: left; padding: 10px 16px; color: {TEXT}; }}
+    QLabel#SearchResultName {{ color: {TEXT}; font-weight: 600; background: transparent; }}
+    QPushButton#SearchResult:hover {{ background: {_mix(PANEL, ACCENT, 0.08)}; }}
+    QFrame#SaveBar {{ background: {_mix(PANEL, ACCENT, 0.12)}; border: 1px solid {_mix(BORDER, ACCENT, 0.4)};
+        border-radius: 10px; }}
+    QFrame#TabStrip {{ background: transparent; border-bottom: 1px solid {_shade(BORDER, 0.92)}; }}
+    QPushButton#TabButton {{ background: transparent; border: none; border-bottom: 2px solid transparent;
+        border-radius: 0; padding: 10px 16px; color: {MUTED}; font-weight: 600; }}
+    QPushButton#TabButton:checked {{ color: {ACCENT_TEXT}; border-bottom: 2px solid {ACCENT_TEXT}; }}
+    QPushButton#TabButton:hover {{ color: {TEXT}; }}
     QToolButton#StepToggle {{ background: transparent; border: none; color: {TEXT}; font-weight: 600;
         text-align: left; padding: 2px 0; }}
     QLabel#StepBadge {{ background: {_mix(PANEL, ACCENT, 0.2)}; color: {ACCENT_TEXT}; border-radius: 12px;

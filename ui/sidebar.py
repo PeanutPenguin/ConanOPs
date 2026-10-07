@@ -18,8 +18,6 @@ NAV_SECTIONS = [
         ("dashboard", "Dashboard", "dashboard"),
         ("players", "Players", "players"),
         ("mods", "Mods", "mods"),
-        ("updates", "Updates", "updates"),
-        ("access", "Access", "access"),
         ("console", "Console", "console"),
         ("settings", "Server Settings", "settings"),
     ]),

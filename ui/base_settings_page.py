@@ -19,7 +19,8 @@ class SettingsPageBase(QWidget):
     applied = Signal()
     dirty_changed = Signal()  # this page's own dirty count changed
 
-    def __init__(self, page_title: str, parent=None, requires_restart: bool = True, card_form: bool = False):
+    def __init__(self, page_title: str, parent=None, requires_restart: bool = True, card_form: bool = False,
+                 embedded: bool = False):
         super().__init__(parent)
         self._fields: Dict[str, Any] = {}          # name -> widget
         self._getters: Dict[str, Callable] = {}     # name -> widget -> value
@@ -34,7 +35,9 @@ class SettingsPageBase(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        header = QHBoxLayout()
+        # Server Settings shows one shared save bar, so it hides this header.
+        self.header_widget = QWidget()
+        header = QHBoxLayout(self.header_widget)
         header.setContentsMargins(24, 20, 24, 12)
         self.title_label = QLabel(page_title)
         self.title_label.setObjectName("PageTitle")
@@ -58,14 +61,14 @@ class SettingsPageBase(QWidget):
         header.addWidget(self.discard_btn)
         header.addSpacing(8)
         header.addWidget(self.apply_btn)
-        root.addLayout(header)
+        root.addWidget(self.header_widget)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        # embedded: shown inside another scrolling page (Gameplay), so no
+        # header and no scroll area of its own.
+        self.embedded = embedded
         self.form_container = QWidget()
         self.form_layout = QVBoxLayout(self.form_container)
-        self.form_layout.setContentsMargins(24, 8, 24, 24)
+        self.form_layout.setContentsMargins(*((0, 0, 0, 0) if embedded else (24, 8, 24, 24)))
         self.form_layout.setSpacing(18)
         if card_form:
             # Wrap the whole form in one card; the outer stretch keeps the
@@ -78,8 +81,15 @@ class SettingsPageBase(QWidget):
             self.form_layout = QVBoxLayout(self.form_card)
             self.form_layout.setContentsMargins(20, 18, 20, 20)
             self.form_layout.setSpacing(16)
-        scroll.setWidget(self.form_container)
-        root.addWidget(scroll, 1)
+        if embedded:
+            self.header_widget.hide()
+            root.addWidget(self.form_container)
+        else:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setWidget(self.form_container)
+            root.addWidget(scroll, 1)
 
         self._update_pending_ui()
 

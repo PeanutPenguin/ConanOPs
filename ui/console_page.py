@@ -73,7 +73,7 @@ class ConsolePage(QWidget):
             self.output.clear()
         self.server = server
         if not server.rcon_enabled:
-            self.status_label.setText("RCON is disabled for this server (enable it on the RCON & Alerts settings page).")
+            self.status_label.setText("RCON is disabled for this server (enable it on the RCON settings page (Server Settings → RCON)).")
             self.command_edit.setEnabled(False)
         else:
             # Only the configured target; RCON connects when a command is sent.

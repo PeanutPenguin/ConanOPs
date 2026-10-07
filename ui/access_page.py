@@ -123,7 +123,7 @@ class AccessPage(QWidget):
         root.addLayout(columns, 1)
 
         note = QLabel(
-            "Bans and unbans apply immediately if RCON is enabled (RCON & Alerts settings); "
+            "Bans and unbans apply immediately if RCON is enabled (Server Settings → RCON); "
             "otherwise they take effect on the next restart."
         )
         note.setObjectName("Dim")

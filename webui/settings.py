@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import settings_layout
 from webui import fields
 from webui.bridge import WebActionError
 
@@ -87,8 +88,16 @@ class WebSettings:
             d = fields.describe_page(key, title, page)
             d["error"] = fields.page_error(page)
             d["actions"] = [{"id": a, "label": label} for a, (k, label, _m) in PAGE_ACTIONS.items() if k == key]
+            d["category"] = settings_layout.category_title(key) if key in settings_layout.GAMEPLAY_PAGES else ""
+            for f in d["fields"]:
+                f["common"] = settings_layout.is_common(key, f["key"])
+                f["hint"] = settings_layout.short_help(f.get("help", ""))
             pages.append(d)
-        return {"pages": pages}
+        # Same sections, headings and order as Server Settings in the app.
+        sections = [{"key": k, "label": label, "group": group, "blurb": blurb, "pages": keys,
+                     "common_order": settings_layout.GAMEPLAY_COMMON if k == "gameplay" else []}
+                    for k, label, group, blurb, keys in settings_layout.SECTIONS]
+        return {"pages": pages, "sections": sections}
 
     def _fill(self, server, key: str, values: Dict[str, Any]):
         if not isinstance(values, dict):

@@ -871,6 +871,19 @@ class AppSettingsPage(QWidget):
     _CARD_ORDER = ["appearance", "startup", "keep", "workshop", "alerts", "ddns", "lock", "web", "updates", "delete"]
 
     def _build_sections(self, cards: list) -> None:
+        # A search box over every App Settings section, like Server Settings.
+        self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("SettingsSearch")
+        self.search_edit.setPlaceholderText("Search App Settings, e.g. \"discord\", \"startup\", \"pin\" or \"web\"")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setAccessibleName("Search App Settings")
+        self.search_edit.textChanged.connect(self._on_search)
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(24, 4, 24, 4)
+        search_row.addWidget(self.search_edit)
+        self._root_layout.addLayout(search_row)
+        self._search_index = None
+
         body = QHBoxLayout()
         body.setContentsMargins(24, 4, 24, 20)
         body.setSpacing(24)
@@ -910,20 +923,116 @@ class AppSettingsPage(QWidget):
             self._section_stack.addWidget(scroll)
             self._section_pages[key] = scroll
         nav.addStretch(1)
+        self._section_group = group
+        self._section_cards = by_key
+        self._results_page = QWidget()
+        rl = QVBoxLayout(self._results_page)
+        rl.setContentsMargins(0, 0, 8, 0)
+        rl.setSpacing(8)
+        self._results_title = QLabel("")
+        self._results_title.setObjectName("SectionTitle")
+        rl.addWidget(self._results_title)
+        self._results_card = QFrame()
+        self._results_card.setObjectName("Card")
+        self._results_layout = QVBoxLayout(self._results_card)
+        self._results_layout.setContentsMargins(0, 4, 0, 4)
+        self._results_layout.setSpacing(0)
+        rl.addWidget(self._results_card)
+        rl.addStretch(1)
+        self._section_stack.addWidget(self._results_page)
         body.addWidget(nav_box)
         body.addWidget(self._section_stack, 1)
         self._root_layout.addLayout(body, 1)
         self.show_section("startup")
 
+    def _build_search_index(self) -> list:
+        from PySide6.QtWidgets import QAbstractButton
+        labels = {k: label for k, label, _h in self.SECTIONS}
+        index, seen = [], set()
+        for key, card in self._section_cards.items():
+            for w in card.findChildren(QWidget):
+                if isinstance(w, QAbstractButton):
+                    text = w.text()
+                elif isinstance(w, QLabel) and w.objectName() not in ("Dim", "ErrorText"):
+                    text = w.text()
+                else:
+                    continue
+                text = " ".join(text.replace("&&", "&").split())
+                if not text or len(text) > 90 or "<" in text or (key, text) in seen:
+                    continue
+                seen.add((key, text))
+                index.append((key, text, labels.get(key, ""), w))
+        return index
+
+    def _on_search(self, text: str) -> None:
+        q = " ".join(text.lower().split())
+        if not q:
+            self.show_section(self.current_section() or "startup")
+            return
+        if self._search_index is None:
+            self._search_index = self._build_search_index()
+        while self._results_layout.count():
+            item = self._results_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        words = q.split()
+        hits = [e for e in self._search_index if all(wd in f"{e[1]} {e[2]}".lower() for wd in words)]
+        self._results_title.setText(
+            f"{len(hits)} match{'' if len(hits) == 1 else 'es'} for \"{text.strip()}\"" if hits
+            else f"Nothing matches \"{text.strip()}\". Try a shorter word.")
+        self._results_card.setVisible(bool(hits))
+        for key, label, where, w in hits[:60]:
+            btn = QPushButton()
+            btn.setObjectName("SearchResult")
+            btn.setAccessibleName(f"{label}, in {where}")
+            btn.setCursor(Qt.PointingHandCursor)
+            lines = QVBoxLayout(btn)
+            lines.setContentsMargins(16, 8, 16, 8)
+            lines.setSpacing(2)
+            name_label = QLabel(label)
+            name_label.setObjectName("SearchResultName")
+            where_label = QLabel(where)
+            where_label.setObjectName("Dim")
+            for lbl in (name_label, where_label):
+                lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+                lines.addWidget(lbl)
+            btn.setMinimumHeight(name_label.sizeHint().height() + where_label.sizeHint().height() + 20)
+            btn.clicked.connect(lambda _=False, k=key, w=w: self._go_to(k, w))
+            self._results_layout.addWidget(btn)
+        self._section_group.setExclusive(False)
+        for b in self._section_buttons.values():
+            b.setChecked(False)
+        self._section_group.setExclusive(True)
+        self._section_stack.setCurrentWidget(self._results_page)
+
+    def _go_to(self, key: str, widget: QWidget) -> None:
+        self.search_edit.blockSignals(True)
+        self.search_edit.clear()
+        self.search_edit.blockSignals(False)
+        self.show_section(key)
+        from PySide6.QtCore import QTimer
+
+        def reveal():
+            self._section_pages[key].ensureWidgetVisible(widget, 0, 120)
+            if widget.focusPolicy() != Qt.NoFocus:
+                widget.setFocus(Qt.OtherFocusReason)
+        QTimer.singleShot(0, reveal)
+
     def show_section(self, key: str) -> None:
         if key not in self._section_pages:
             return
+        self._last_section = key
+        if getattr(self, "search_edit", None) is not None and self.search_edit.text():
+            self.search_edit.blockSignals(True)
+            self.search_edit.clear()
+            self.search_edit.blockSignals(False)
         self._section_buttons[key].setChecked(True)
         self._section_stack.setCurrentWidget(self._section_pages[key])
 
     def current_section(self) -> str:
         page = self._section_stack.currentWidget()
-        return next((k for k, p in self._section_pages.items() if p is page), "")
+        found = next((k for k, p in self._section_pages.items() if p is page), "")
+        return found or getattr(self, "_last_section", "")
 
     # ------------------------------------------------------------- theme --
     def _reset_theme_fields(self) -> None:

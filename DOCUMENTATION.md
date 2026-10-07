@@ -132,8 +132,18 @@ Clicking Finish writes everything back into that server's config.
 
 The sidebar (left) always shows: the ConanOps title, up to 5 servers
 (status dot + player count), an "Add server" button, and the main
-navigation. Everything to the right of the sidebar reflects whichever
-server is currently selected.
+navigation: Dashboard, Players, Mods, Console and Server Settings, then
+App Settings under System. Everything to the right of the sidebar reflects
+whichever server is currently selected.
+
+Since 1.0.6 there are fewer pages, but no options were removed:
+Updates is Server Settings → Server Updates, Access is a tab on Players,
+and Backups is Server Settings → Backups. Server Settings and App Settings
+each have a search box over every setting. Settings pages show the common
+settings first and the rest under "More options"; Gameplay shows the
+most-changed settings first, then each category as a fold-out.
+`settings_layout.py` defines the sections, what's shown up front, and is
+shared with the web version. All pages save through one save bar.
 
 ### Dashboard
 Live stat cards (CPU, memory, FPS, players), a status pill (online/

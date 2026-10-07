@@ -249,6 +249,11 @@ class DashboardPage(QWidget):
         self.rcon_notice = NoticeBar("Turn On RCON")
         self.rcon_notice.button.clicked.connect(lambda: self.on_enable_rcon and self.on_enable_rcon())
         content_layout.addWidget(self.rcon_notice)
+        # Server builds moved into Server Settings; a new one is flagged here.
+        self.update_notice = NoticeBar("Go to Server Updates")
+        self.update_notice.button.clicked.connect(
+            lambda: self.on_open_automation and self.on_open_automation("updates"))
+        content_layout.addWidget(self.update_notice)
 
         grid.setSpacing(12)
         self.cpu_card, self.cpu_value, self.cpu_sub = _stat_card("CPU")

@@ -13,8 +13,8 @@ class SettingsIdentityPage(GenericSettingsPage):
     written to an .ini ('__' keys are filtered out). "Open Server Folder" is
     outside the Apply/Discard form."""
 
-    def __init__(self, parent=None):
-        super().__init__("Server Identity", IDENTITY_FIELDS, parent)
+    def __init__(self, parent=None, common_keys=None):
+        super().__init__("Server Identity", IDENTITY_FIELDS, parent, common_keys=common_keys)
         self._install_dir = ""
 
         row = QHBoxLayout()

@@ -176,29 +176,28 @@ function showNoPassword() {
 // ------------------------------------------------------------------- shell
 // Same pages, order, groups and headings as the app on the PC.
 const NAV_SECTIONS = [
-  ["Manage", [["dashboard", "Dashboard"], ["players", "Players"], ["mods", "Mods"], ["updates", "Updates"],
-              ["access", "Access"], ["console", "Console"], ["settings", "Server Settings"]]],
+  ["Manage", [["dashboard", "Dashboard"], ["players", "Players"], ["mods", "Mods"], ["console", "Console"],
+              ["settings", "Server Settings"]]],
   ["System", [["app", "App Settings"]]],
 ];
 const PAGE_HEADERS = {
   dashboard: ["Dashboard", "{server} at a glance: status, automation and who's online"],
-  players: ["Players", "Everyone who has joined {server}"],
+  players: ["Players", "Everyone who has joined {server}, plus the whitelist and bans"],
   mods: ["Mods", "Workshop mods, load order and update status"],
-  updates: ["Updates", "Conan Exiles dedicated server builds from Steam"],
-  access: ["Access", "Whitelist and bans"],
   console: ["Console", "Send RCON commands to the running server"],
   settings: ["Server Settings", "Everything ConanOps writes to {server}'s settings files"],
   app: ["App Settings", "ConanOps itself: startup, remote access, integrations and appearance"],
   more: ["More", ""],
 };
 const TAB_NAV = [["dashboard", "Dashboard"], ["players", "Players"], ["mods", "Mods"], ["console", "Console"]];
-const MORE_NAV = [["updates", "Updates"], ["access", "Access"], ["settings", "Server Settings"], ["app", "App Settings"]];
+const MORE_NAV = [["settings", "Server Settings"], ["app", "App Settings"]];
 const PC_WIDE = ["app", "more"];  // pages that aren't about one server
 
 function server() { return state.overview && state.overview.servers.find((s) => s.id === state.sid); }
 
-// Routes: #/view or #/view/section (Server Settings and App Settings).
-const LEGACY = { backups: "settings/backups", diagnostics: "settings/diagnostics" };
+// Routes: #/view or #/view/section (Server Settings, App Settings, Players tabs).
+const LEGACY = { backups: "settings/backups", diagnostics: "settings/diagnostics", updates: "settings/updates",
+                 access: "players/access" };
 function route() {
   let r = location.hash.replace(/^#\/?/, "") || "dashboard";
   const [v] = r.split("/");
@@ -295,6 +294,7 @@ function stopTimer() { if (state.timer) { clearInterval(state.timer); state.time
 async function render() {
   stopTimer();
   const r = route();
+  if (state.view !== r.view) { state.settingsQuery = ""; state.appQuery = ""; }
   state.view = r.view;
   state.sub = r.sub;
   if (!state.overview) return;
@@ -352,7 +352,7 @@ const notice = (text, kind, ...extra) => h("div", { class: "notice" + (kind ? " 
   h("div", { class: "text" }, text), ...extra);
 
 // --------------------------------------------------------------- dashboard
-const TILE_TARGETS = { restart: ["settings", "restart"], updates: ["updates"], backups: ["settings", "backups"],
+const TILE_TARGETS = { restart: ["settings", "restart"], updates: ["settings", "updates"], backups: ["settings", "backups"],
                        alerts: ["app", "alerts"], ddns: ["app", "ddns"] };
 
 function openTarget(key) {
@@ -436,6 +436,16 @@ function statCard(label, value, sub) {
 }
 
 // ----------------------------------------------------------------- players
+// Players and Access (whitelist & bans) are tabs of one page, like the app.
+async function viewPlayersTabs(root) {
+  const tab = state.sub === "access" ? "access" : "players";
+  const body = h("div", { class: "stack" });
+  put(root, h("div", { class: "tabs", role: "tablist" }, [["players", "Players"], ["access", "Access (whitelist & bans)"]].map(([k, label]) =>
+    h("button", { class: "tab-btn" + (k === tab ? " active" : ""), role: "tab", "aria-selected": String(k === tab),
+      onclick: () => go("players", k === "players" ? "" : k) }, label))), body);
+  return tab === "access" ? viewAccess(body) : viewPlayers(body);
+}
+
 async function viewPlayers(root) {
   const search = h("input", { type: "search", placeholder: "Search players", value: state.playerFilter || "",
     oninput: () => { state.playerFilter = search.value; draw(); } });
@@ -502,17 +512,21 @@ async function viewMods(root) {
         h("button", { class: "btn primary", disabled: busy || !d.mods.length || !d.steamcmd,
           onclick: (e) => act(e.currentTarget, () => api(sp("/mods/download"), {}), { after: paint }) },
           d.busy === "Downloading mods" ? "Downloading…" : "Download Mods"),
+        h("div", { class: "spacer" }),
+        h("details", { class: "menu" }, h("summary", { class: "btn" }, "Fix mod problems"),
+          h("div", { class: "menu-list" },
+        h("button", { class: "btn", disabled: !d.mods.length, onclick: async (e) => {
+          const b = e.currentTarget;
+          await act(b, async () => { await api(sp("/mods?refresh=1")); return { ok: true, message: "Checked." }; }, { after: paint });
+        } }, "Check for outdated mods"),
         h("button", { class: "btn", disabled: busy || !d.mods.some((m) => m.enabled), onclick: async (e) => {
           const b = e.currentTarget;
           if (await confirmBox("Find the broken mod?", "ConanOps stops the server and tests the mods, restarting it " +
             "many times. Your world is copied first and put back exactly as it was. Can take a while; you'll get an " +
             "alert with the result.", "Start Check"))
             act(b, () => api(sp("/mods/find-broken"), {}), { after: paint });
-        } }, "Find Broken Mod"),
-        h("button", { class: "btn", disabled: !d.mods.length, onclick: async (e) => {
-          const b = e.currentTarget;
-          await act(b, async () => { await api(sp("/mods?refresh=1")); return { ok: true, message: "Checked." }; }, { after: paint });
-        } }, "Check for Outdated Mods")),
+        } }, "Find the broken mod (quick mod check)"),
+        h("div", { class: "dim", style: "padding:6px 4px 2px" }, "Find all bad mods and hand bisecting are in the app on the PC.")))),
         h("div", { class: "dim", style: "margin-top:8px" }, "Changes load the next time the server starts. Order matters: top loads first.")));
     put(listCard, d.mods.length ? h("div", { class: "list" }, d.mods.map((m, i) => h("div", { class: "item" },
       h("input", { type: "checkbox", class: "switch", checked: m.enabled, disabled: busy, "aria-label": `Use ${m.name}`,
@@ -801,122 +815,224 @@ function foldOutGuide(g) {
         h("p", { class: "muted" }, st.body))))));
 }
 
-// Server Settings: the same sections, in the same groups, as the app.
-const SERVER_GROUP = ["diagnostics", "identity", "network"];
-const AUTOMATION_GROUP = ["backups", "restart", "alerts"];
+// Server Settings: the same sections, groups, search and "More options" as the app.
+// Things that aren't settings fields but should still turn up in a search.
+const SETTINGS_EXTRAS = [
+  ["updates", "Install new server builds automatically"], ["updates", "Check for server updates every (hours)"],
+  ["updates", "Check for a server update now"], ["network", "Repair Networking (firewall and router forwarding)"],
+  ["backups", "Back Up Now"], ["backups", "Import a backup / restore a backup"], ["diagnostics", "Run Diagnostics"],
+];
+
+function settingsIndex(d) {
+  const out = [];
+  for (const sec of d.sections) {
+    for (const pk of sec.pages) {
+      const page = d.pages.find((p) => p.key === pk);
+      if (!page) continue;
+      for (const f of page.fields) {
+        const where = sec.key === "gameplay" ? (f.common ? "Most changed" : page.category) : (f.common ? "" : "More options");
+        out.push({ section: sec.key, key: f.key, label: f.label, help: f.help || "",
+                   where: [sec.label, where].filter(Boolean).join(" › ") });
+      }
+    }
+  }
+  for (const [section, label] of SETTINGS_EXTRAS) {
+    const sec = d.sections.find((x) => x.key === section);
+    out.push({ section, key: "", label, help: "", where: sec ? sec.label : "" });
+  }
+  return out;
+}
 
 async function viewSettings(root) {
   const d = await api(sp("/settings"));
-  const entries = [["diagnostics", "Diagnostics"], ...d.pages.map((p) => [p.key, p.title])];
-  const keys = entries.map(([k]) => k);
-  let active = state.sub || state.settingsPage || "diagnostics";
-  if (!keys.includes(active)) active = "diagnostics";
+  const keys = d.sections.map((x) => x.key);
+  let active = state.sub || state.settingsPage || "identity";
+  if (!keys.includes(active)) active = (d.sections.find((x) => x.pages.includes(active)) || { key: "identity" }).key;
   state.settingsPage = active;
-  const groups = [
-    ["Server", entries.filter(([k]) => SERVER_GROUP.includes(k))],
-    ["Gameplay", entries.filter(([k]) => !SERVER_GROUP.includes(k) && !AUTOMATION_GROUP.includes(k))],
-    ["Automation", entries.filter(([k]) => AUTOMATION_GROUP.includes(k))],
-  ];
-  const { el, panel } = sectioned(groups, active, (k) => go("settings", k));
-  put(root, el);
-  if (active === "diagnostics") return viewDiagnostics(panel);
-  drawSettings(panel, d, d.pages.find((p) => p.key === active), {});
-  if (active === "network") {
-    // Like the app's Network & Ports page.
-    panel.append(h("div", { class: "card" }, h("h3", {}, "Repair Networking"),
-      h("p", { class: "muted", style: "margin:6px 0 10px" }, "Re-creates this server's Windows Firewall rules and " +
-        "router port forwards (UPnP) for the saved ports."),
-      h("button", { class: "btn", onclick: (e) => act(e.currentTarget, () => api(sp("/repair-network"), {})) }, "Repair Networking")));
+  const groups = [];
+  for (const x of d.sections) {
+    let g = groups.find(([hd]) => hd === x.group);
+    if (!g) { g = [x.group, []]; groups.push(g); }
+    g[1].push([x.key, x.label]);
   }
-  if (active === "backups") {
-    // Like the app: the backup list sits under the backup settings.
-    const list = h("div", { class: "stack" });
-    panel.append(h("h2", { class: "panel-title", style: "margin-top:10px" }, "Saved backups"), list);
-    await viewBackups(list);
-  }
+  const { el, panel } = sectioned(groups, active, (k) => { state.settingsQuery = ""; go("settings", k); });
+  const search = h("input", { type: "search", class: "settings-search", value: state.settingsQuery || "",
+    placeholder: "Search every setting, e.g. xp, port, decay or backup", "aria-label": "Search settings" });
+  put(root, search, el);
+  const sec = d.sections.find((x) => x.key === active);
+  let index = null;
+  const drawResults = () => {
+    index = index || settingsIndex(d);
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = index.filter((e) => words.every((w) => (e.label + " " + e.where).toLowerCase().includes(w) ||
+      e.help.toLowerCase().split(/[\s-]+/).some((x) => x.startsWith(w))));
+    el.querySelectorAll(".subnav .nav-btn.active").forEach((b) => b.classList.remove("active"));
+    put(panel, h("h2", { class: "panel-title" }, hits.length ? `${hits.length} setting${hits.length === 1 ? "" : "s"} match “${search.value.trim()}”`
+        : `Nothing matches “${search.value.trim()}”. Try a shorter word.`),
+      hits.length ? h("div", { class: "card results" }, hits.slice(0, 60).map((e) => h("button", { class: "result", type: "button",
+        title: e.help, onclick: () => { state.settingsQuery = ""; state.focusField = e.key; go("settings", e.section); } },
+        h("span", { class: "name" }, e.label), h("span", { class: "dim" }, e.where)))) : null);
+  };
+  const showSection = async () => {
+    if (active === "diagnostics") return viewDiagnostics(panel);
+    if (active === "updates") {
+      const body = h("div", { class: "stack" });
+      put(panel, h("h2", { class: "panel-title" }, sec.label), h("div", { class: "dim" }, sec.blurb), body);
+      return viewUpdates(body);
+    }
+    drawSection(panel, d, sec, {});
+    const more = panel.querySelector("details.more");
+    if (active === "network") {
+      // Like the app's Network & Ports page: under More options.
+      (more || panel).append(h("div", { class: "card", style: "margin-top:10px" }, h("h3", {}, "Repair Networking"),
+        h("p", { class: "muted", style: "margin:6px 0 10px" }, "Re-creates this server's Windows Firewall rules and " +
+          "router port forwards (UPnP) for the saved ports."),
+        h("button", { class: "btn", onclick: (e) => act(e.currentTarget, () => api(sp("/repair-network"), {})) }, "Repair Networking")));
+    }
+    if (active === "backups") {
+      // Like the app: the backup list sits under the backup settings.
+      const list = h("div", { class: "stack" });
+      panel.append(h("h2", { class: "panel-title", style: "margin-top:10px" }, "Saved backups"), list);
+      await viewBackups(list);
+    }
+  };
+  search.addEventListener("input", () => {
+    state.settingsQuery = search.value;
+    if (search.value.trim()) drawResults();
+    else { stopTimer(); render(); }
+  });
+  if (search.value.trim()) { drawResults(); search.focus(); }
+  else await showSection();
 }
 
-function drawSettings(root, d, page, preset) {
-  const saved = Object.fromEntries(page.fields.map((f) => [f.key, f.value]));
-  const changes = {};
-  const inputs = {};
+// One section: its pages' common settings up front, the rest folded away.
+// presets: { pageKey: { field: value } } -- unsaved values to show again.
+function drawSection(root, d, sec, presets) {
+  const pages = sec.pages.map((k) => d.pages.find((p) => p.key === k)).filter(Boolean);
+  const saved = {}, changes = {}, inputs = {}, fieldsByKey = {};
+  for (const p of pages) {
+    saved[p.key] = Object.fromEntries(p.fields.map((f) => [f.key, f.value]));
+    changes[p.key] = {};
+    for (const f of p.fields) fieldsByKey[f.key] = [p, f];
+  }
   const saveBar = h("div", { class: "row end save-bar" });
-  const current = (k) => (k in changes ? changes[k] : saved[k]);
+  const current = (pk, k) => (k in changes[pk] ? changes[pk][k] : saved[pk][k]);
+  const total = () => pages.reduce((n, p) => n + Object.keys(changes[p.key]).length, 0);
   const refreshEnabled = () => {
-    for (const f of page.fields) {
+    for (const p of pages) for (const f of p.fields) {
       if (!inputs[f.key]) continue;
-      const on = f.enabled || (f.enabled_when && Object.entries(f.enabled_when).every(([k, v]) => current(k) === v));
+      const on = f.enabled || (f.enabled_when && Object.entries(f.enabled_when).every(([k, v]) => current(p.key, k) === v));
       inputs[f.key].disabled = !on;
     }
   };
+  const saveAll = async () => {
+    for (const p of pages) {
+      if (!Object.keys(changes[p.key]).length) continue;
+      await api(sp("/settings/" + encodeURIComponent(p.key)), { values: changes[p.key] });
+    }
+    return { ok: true, message: "Saved." };
+  };
   const updateBar = () => {
-    const n = Object.keys(changes).length;
+    const n = total();
     put(saveBar, ...(n ? [
       h("span", { class: "dim" }, `${n} unsaved change${n === 1 ? "" : "s"}`),
       h("button", { class: "btn", onclick: () => render() }, "Discard"),
-      h("button", { class: "btn primary", onclick: (e) => act(e.currentTarget,
-        () => api(sp("/settings/" + encodeURIComponent(page.key)), { values: changes }), { after: (r) => { if (r && r.ok !== false) render(); } }) },
-        /restart/i.test(page.apply_label) ? "Save" : (page.apply_label || "Save"))] : []));
+      h("button", { class: "btn primary", onclick: (e) => act(e.currentTarget, saveAll,
+        { after: (r) => { if (r && r.ok !== false) render(); } }) }, "Save")] : []));
   };
-  const setChange = (key, value, row) => {
-    const f = page.fields.find((x) => x.key === key);
-    if (value === undefined || (f.type !== "secret" && JSON.stringify(value) === JSON.stringify(saved[key]))) delete changes[key];
-    else changes[key] = value;
-    if (row) row.classList.toggle("dirty", key in changes);
+  const setChange = (pk, key, value, row) => {
+    const f = fieldsByKey[key][1];
+    if (value === undefined || (f.type !== "secret" && JSON.stringify(value) === JSON.stringify(saved[pk][key]))) delete changes[pk][key];
+    else changes[pk][key] = value;
+    if (row) row.classList.toggle("dirty", key in changes[pk]);
     refreshEnabled();
     updateBar();
   };
-  const rows = page.fields.map((f0) => {
+  const makeRow = (page, f0) => {
+    const preset = presets[page.key] || {};
     const f = (f0.key in preset && f0.type !== "secret") ? { ...f0, value: preset[f0.key] } : f0;
-    const row = h("div", { class: "field" });
-    const { el, input } = fieldInput(f, (key, value) => setChange(key, value, row));
+    const row = h("div", { class: "field", id: "row_" + f.key });
+    const { el, input } = fieldInput(f, (key, value) => setChange(page.key, key, value, row));
     inputs[f.key] = input;
     if (f0.type === "secret" && f0.key in preset) {
       input.value = preset[f0.key];
-      changes[f0.key] = preset[f0.key];
+      changes[page.key][f0.key] = preset[f0.key];
       row.classList.add("dirty");
     }
-    row.append(...clean([f.type === "bool" ? h("div", { class: "top" }, h("label", { for: "f_" + f.key }, f.label), el)
-      : h("label", { for: "f_" + f.key }, f.label), f.type === "bool" ? null : el,
-      f.help ? h("div", { class: "help" }, f.help) : null]));
+    const info = f.help && f.hint !== f.help ? h("span", { class: "info", title: f.help, "aria-label": f.help }, "ⓘ") : null;
+    const label = h("label", { for: "f_" + f.key }, f.label, info);
+    row.append(...clean([f.type === "bool" ? h("div", { class: "top" }, label, el) : label, f.type === "bool" ? null : el,
+      f.hint ? h("div", { class: "help" }, f.hint) : null]));
     const testKind = page.tests && page.tests[f.key];
     if (testKind) {
       const result = h("span", { class: "dim" });
       row.append(h("div", { class: "row", style: "margin-top:8px" },
         h("button", { class: "btn small", type: "button", onclick: async (e) => {
           result.textContent = "";
-          const r = await act(e.currentTarget, () => api(sp("/alerts/test"), { kind: testKind, url: changes[f.key] || "" }));
+          const r = await act(e.currentTarget, () => api(sp("/alerts/test"), { kind: testKind, url: changes[page.key][f.key] || "" }));
           if (r) { result.textContent = r.message; result.className = r.ok ? "ok-text" : "bad-text"; }
         } }, "Send Test"), result));
     }
     const guide = page.guides && page.guides[f.key];
     if (guide) row.append(foldOutGuide(guide));
-    if (f0.key in preset && f0.type !== "secret" && JSON.stringify(preset[f0.key]) !== JSON.stringify(saved[f0.key])) {
-      changes[f0.key] = preset[f0.key];
+    if (f0.key in preset && f0.type !== "secret" && JSON.stringify(preset[f0.key]) !== JSON.stringify(saved[page.key][f0.key])) {
+      changes[page.key][f0.key] = preset[f0.key];
       row.classList.add("dirty");
     }
     return row;
-  });
-  const actions = (page.actions || []).map((a) => h("button", { class: "btn small", onclick: async (e) => {
+  };
+  const fold = (title, rows) => rows.length ? h("details", { class: "more card" },
+    h("summary", {}, h("span", {}, title), h("span", { class: "dim" }, `${rows.length} setting${rows.length === 1 ? "" : "s"}`)),
+    h("div", {}, rows)) : null;
+  const blocks = [];
+  if (sec.key === "gameplay") {
+    const order = sec.common_order || [];
+    const common = pages.flatMap((p) => p.fields.filter((f) => f.common).map((f) => [p, f]))
+      .sort((a, b) => order.indexOf(a[1].key) - order.indexOf(b[1].key));
+    blocks.push(h("div", { class: "card" }, common.map(([p, f]) => makeRow(p, f))),
+      h("div", { class: "side-label" }, "Everything else, by category"),
+      ...pages.map((p) => fold(p.category || p.title, p.fields.filter((f) => !f.common).map((f) => makeRow(p, f)))));
+  } else {
+    for (const p of pages) {
+      const common = p.fields.filter((f) => f.common).map((f) => makeRow(p, f));
+      const rest = p.fields.filter((f) => !f.common).map((f) => makeRow(p, f));
+      if (common.length) blocks.push(h("div", { class: "card" }, common));
+      blocks.push(fold("More options", rest));
+    }
+  }
+  const actions = pages.flatMap((page) => (page.actions || []).map((a) => h("button", { class: "btn small", onclick: async (e) => {
     const r = await act(e.currentTarget, () => api(sp("/settings/" + encodeURIComponent(page.key) + "/action"),
-      { action: a.id, values: changes }));
+      { action: a.id, values: changes[page.key] }));
     if (!r || !r.page) return;
     const next = {};
+    for (const p of pages) next[p.key] = { ...changes[p.key] };
+    next[page.key] = {};
     for (const f of r.page.fields) {
-      if (f.type !== "secret") next[f.key] = f.value;
-      else if (f.key in changes) next[f.key] = changes[f.key];  // keep what was typed
+      if (f.type !== "secret") next[page.key][f.key] = f.value;
+      else if (f.key in changes[page.key]) next[page.key][f.key] = changes[page.key][f.key];  // keep what was typed
     }
-    drawSettings(root, d, { ...page, error: r.page.error }, next);
-  } }, a.label));
+    const d2 = { ...d, pages: d.pages.map((p) => (p.key === page.key ? { ...p, error: r.page.error } : p)) };
+    drawSection(root, d2, sec, next);
+  } }, a.label)));
+  const note = (pages.find((p) => p.note) || {}).note;
   put(root,
-    h("h2", { class: "panel-title" }, page.title),
-    page.note ? h("div", { class: "dim" }, page.note) : null,
-    page.error ? notice(page.error, "bad") : null,
+    h("h2", { class: "panel-title" }, sec.label),
+    h("div", { class: "dim" }, [sec.blurb, note].filter(Boolean).join(" ")),
+    ...pages.filter((p) => p.error).map((p) => notice(p.error, "bad")),
     actions.length ? h("div", { class: "row" }, actions) : null,
-    h("div", { class: "card" }, rows),
+    ...blocks,
     saveBar);
   refreshEnabled();
   updateBar();
+  if (state.focusField) {
+    const row = root.querySelector("#row_" + CSS.escape(state.focusField));
+    state.focusField = "";
+    if (row) {
+      for (let p = row.parentElement; p; p = p.parentElement) if (p.tagName === "DETAILS") p.open = true;
+      row.classList.add("flash");
+      setTimeout(() => { row.scrollIntoView({ block: "center" }); const i = row.querySelector("input,select"); if (i) i.focus({ preventScroll: true }); }, 30);
+    }
+  }
 }
 
 // ------------------------------------------------------------- diagnostics
@@ -973,8 +1089,40 @@ const APP_SECTIONS = [
 async function viewApp(root) {
   const keys = APP_SECTIONS.flatMap(([, items]) => items.map(([k]) => k));
   const active = keys.includes(state.sub) ? state.sub : "startup";
-  const { el, panel, label } = sectioned(APP_SECTIONS, active, (k) => go("app", k));
-  put(root, el);
+  const { el, panel, label } = sectioned(APP_SECTIONS, active, (k) => { state.appQuery = ""; go("app", k); });
+  const search = h("input", { type: "search", class: "settings-search", value: state.appQuery || "",
+    placeholder: "Search App Settings, e.g. discord, startup, web or updates", "aria-label": "Search App Settings" });
+  put(root, search, el);
+  let built = null;  // section key -> its nodes, for searching
+  const labels = Object.fromEntries(APP_SECTIONS.flatMap(([, items]) => items));
+  const drawResults = () => {
+    if (!built) return;
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = [];
+    for (const [k, nodes] of Object.entries(built)) {
+      const seen = new Set();
+      for (const n of nodes) {
+        if (!(n instanceof Element)) continue;
+        for (const t of n.querySelectorAll("label, summary, h3, button")) {
+          const text = t.textContent.replace(/\s+/g, " ").trim().replace(/^\d+(?=\D)/, "");
+          if (!text || seen.has(text) || text.length > 90) continue;
+          if (!words.every((w) => (text + " " + labels[k]).toLowerCase().includes(w))) continue;
+          seen.add(text);
+          hits.push([k, text.length > 120 ? text.slice(0, 117) + "…" : text]);
+        }
+      }
+    }
+    el.querySelectorAll(".subnav .nav-btn.active").forEach((b) => b.classList.remove("active"));
+    put(panel, h("h2", { class: "panel-title" }, hits.length ? `${hits.length} match${hits.length === 1 ? "" : "es"} for “${search.value.trim()}”`
+        : `Nothing matches “${search.value.trim()}”. Try a shorter word.`),
+      hits.length ? h("div", { class: "card results" }, hits.slice(0, 60).map(([k, text]) => h("button", { class: "result", type: "button",
+        onclick: () => { state.appQuery = ""; go("app", k); } }, h("span", { class: "name" }, text), h("span", { class: "dim" }, labels[k])))) : null);
+  };
+  search.addEventListener("input", () => {
+    state.appQuery = search.value;
+    if (search.value.trim()) drawResults();
+    else { stopTimer(); render(); }
+  });
   const paint = async () => {
     const d = await api("/api/app");
     const refresh = () => setTimeout(() => paint().catch(() => {}), 1200);
@@ -1106,11 +1254,13 @@ async function viewApp(root) {
         toggle("auto_install_app_updates", "Install updates automatically"))],
       delete: () => [onPc("Deleting ConanOps or your servers can only be done on the PC, so nobody can do it from the web.")],
     };
+    built = Object.fromEntries(Object.entries(sections).map(([k, fn]) => [k, fn()]));
+    if (search.value.trim()) { drawResults(); return; }
     put(panel,
       h("h2", { class: "panel-title" }, label),
       d.needs_pc && d.needs_pc.length ? notice("Waiting for someone at the PC (Windows needs permission there): " +
         d.needs_pc.join("; ")) : null,
-      ...sections[active]());
+      ...built[active]);
   };
   await paint();
   poll(panel, paint, 10000);
@@ -1122,8 +1272,8 @@ async function viewMore(root) {
     h("button", { class: "btn", style: "margin-top:12px;width:100%", onclick: logout }, icon("logout"), "Sign out"));
 }
 
-const VIEWS = { dashboard: viewDashboard, players: viewPlayers, mods: viewMods, updates: viewUpdates,
-  access: viewAccess, console: viewConsole, settings: viewSettings, app: viewApp, more: viewMore };
+const VIEWS = { dashboard: viewDashboard, players: viewPlayersTabs, mods: viewMods, console: viewConsole,
+  settings: viewSettings, app: viewApp, more: viewMore };
 
 // -------------------------------------------------------------------- boot
 async function start() {

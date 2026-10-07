@@ -58,12 +58,12 @@ def test_per_server_nav_disabled_with_no_servers_enabled_once_added(monkeypatch)
         assert nav_by_key["dashboard"].isEnabled() is True
         assert nav_by_key["app"].isEnabled() is True
         # Everything else does.
-        for key in ("players", "updates", "mods", "access", "console", "settings"):
+        for key in ("players", "mods", "console", "settings"):
             assert nav_by_key[key].isEnabled() is False
 
         win._on_add_server()
 
-        for key in ("players", "updates", "mods", "access", "console", "settings"):
+        for key in ("players", "mods", "console", "settings"):
             assert nav_by_key[key].isEnabled() is True
     finally:
         win.close()

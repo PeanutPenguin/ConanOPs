@@ -102,7 +102,7 @@ class PlayersPage(QWidget):
         if not self.server.rcon_enabled:
             QMessageBox.information(
                 self, "RCON Not Enabled",
-                "Kicking a player live needs RCON. Enable it on the RCON & Alerts settings tab first "
+                "Kicking a player live needs RCON. Enable it in Server Settings → RCON first "
                 "(and give the server a moment to restart with it on).",
             )
             return

@@ -100,8 +100,8 @@ class DiagnosticsPage(QWidget):
         root.setSpacing(0)
 
         header = QHBoxLayout()
-        header.setContentsMargins(24, 20, 24, 12)
-        title = QLabel("Diagnostics")
+        header.setContentsMargins(0, 0, 0, 12)
+        self.title_label = title = QLabel("Diagnostics")
         title.setObjectName("PageTitle")
         header.addWidget(title)
         header.addSpacing(16)
@@ -123,7 +123,7 @@ class DiagnosticsPage(QWidget):
         )
         note.setObjectName("Dim")
         note.setWordWrap(True)
-        note.setContentsMargins(24, 0, 24, 12)
+        note.setContentsMargins(0, 0, 0, 12)
         root.addWidget(note)
 
         scroll = QScrollArea()
@@ -131,7 +131,7 @@ class DiagnosticsPage(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         self.results_container = QWidget()
         self.results_layout = QVBoxLayout(self.results_container)
-        self.results_layout.setContentsMargins(24, 0, 24, 24)
+        self.results_layout.setContentsMargins(0, 0, 8, 24)
         self.results_layout.setSpacing(10)
         self.results_layout.addStretch(1)
         scroll.setWidget(self.results_container)

@@ -81,7 +81,7 @@ def unban_player(server: ServerConfig, steam_id: str, host: str = "127.0.0.1") -
 
 def kick_player(server: ServerConfig, player_name: str, host: str = "127.0.0.1") -> str:
     if not server.rcon_enabled:
-        return "RCON is disabled -- can't kick a player live. Enable RCON in RCON & Alerts settings."
+        return "RCON is disabled -- can't kick a player live. Enable RCON in Server Settings → RCON."
     try:
         response = rcon.send_command(host, server.rcon_port, server.rcon_password, f"kickplayer {player_name}")
         return f"Kicked. Server response: {response or '(no output)'}"

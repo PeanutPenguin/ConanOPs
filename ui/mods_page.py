@@ -5,7 +5,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
-    QListWidgetItem, QLineEdit, QDialog, QMessageBox, QAbstractItemView, QCheckBox,
+    QListWidgetItem, QLineEdit, QDialog, QMessageBox, QAbstractItemView, QCheckBox, QMenu, QToolButton,
 )
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QCursor, QColor
@@ -75,46 +75,69 @@ class ModsPage(QWidget):
         browse_btn = QPushButton("Browse Workshop…")
         browse_btn.clicked.connect(self._open_workshop_browser)
         top.addWidget(browse_btn)
-        self.check_status_btn = QPushButton("Check for Outdated Mods")
-        self.check_status_btn.setToolTip(
-            "Looks up every mod on this server on the Steam Workshop and flags any that haven't "
-            "been updated for the current game patch (cutoff date in App Settings), are Legacy, or "
-            "need another Workshop item that isn't in this list. Works without an API key; with one, "
-            "missing required mods are checked too."
-        )
+        top.addStretch(1)
+        # Kept as a button (hidden) so its busy state drives the menu entry below.
+        self.check_status_btn = QPushButton("Check for Outdated Mods", self)
+        self.check_status_btn.hide()
         self.check_status_btn.clicked.connect(self._check_mod_status)
-        top.addWidget(self.check_status_btn)
         self.status_spinner = assets.LoadingSpinner(22)
         self.status_spinner.hide()
         top.addWidget(self.status_spinner)
+
+        # The mod tools, grouped in one menu.
+        self.fix_btn = QToolButton()
+        self.fix_btn.setText("Fix Mod Problems")
+        self.fix_btn.setPopupMode(QToolButton.InstantPopup)
+        self.fix_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.fix_btn.setObjectName("MenuButton")
+        menu = QMenu(self.fix_btn)
+        menu.setToolTipsVisible(True)
+        self.fix_menu = menu
+
+        def entry(text: str, tip: str, slot):
+            action = menu.addAction(text)
+            action.setToolTip(tip)
+            action.triggered.connect(slot)
+            return action
+        self.check_status_action = entry(
+            "Check for outdated mods",
+            "Looks up every mod on this server on the Steam Workshop and flags any that haven't "
+            "been updated for the current game patch (cutoff date in App Settings), are Legacy, or "
+            "need another Workshop item that isn't in this list. Works without an API key; with one, "
+            "missing required mods are checked too.",
+            self.check_status_btn.click)
+        menu.addSeparator()
+        entry("Quick mod check…",
+              "ConanOps restarts the server once per mod, testing each one alone, to find every mod "
+              "that's independently causing a problem. Won't catch a mod that needs another mod "
+              "present, or two mods that only break things together -- use Find all bad mods for "
+              "that. Can take a while -- one restart per mod.",
+              self._open_auto_bisect)
+        entry("Find all bad mods…",
+              "Like Quick mod check, but also catches a pair that only breaks things when both are "
+              "enabled together. Takes meaningfully longer.",
+              self._open_find_all_bisect)
+        entry("Bisect by hand…",
+              "Find a broken mod yourself: ConanOps halves the list each round and you report whether "
+              "the problem is still there.",
+              self._open_bisect)
+
+        def sync_menu():
+            self.check_status_action.setEnabled(self.check_status_btn.isEnabled())
+            self.check_status_action.setText(
+                "Checking for outdated mods…" if not self.check_status_btn.isEnabled() else "Check for outdated mods")
+        menu.aboutToShow.connect(sync_menu)
+        self.fix_btn.setMenu(menu)
+        top.addWidget(self.fix_btn)
+
         self.download_btn = QPushButton("Download Mods")
+        self.download_btn.setObjectName("PrimaryButton")
         self.download_btn.setToolTip(
             "Fetches the .pak file for every mod (enabled or not), so what's listed here actually "
             "exists on disk for the server to load -- adding a mod alone only records its Workshop ID."
         )
         self.download_btn.clicked.connect(self._download_mods)
         top.addWidget(self.download_btn)
-        top.addStretch(1)
-        bisect_btn = QPushButton("Bisect (Manual)")
-        bisect_btn.setToolTip("Find a broken mod yourself: ConanOps halves the list each round and you report whether the problem is still there.")
-        bisect_btn.clicked.connect(self._open_bisect)
-        auto_bisect_btn = QPushButton("Quick Mod Check…")
-        auto_bisect_btn.setToolTip(
-            "ConanOps restarts the server once per mod, testing each one alone, to find every mod "
-            "that's independently causing a problem. Won't catch a mod that needs another mod "
-            "present, or two mods that only break things together -- use Find All Bad Mods for "
-            "that. Can take a while -- one restart per mod."
-        )
-        auto_bisect_btn.clicked.connect(self._open_auto_bisect)
-        top.addWidget(auto_bisect_btn)
-        find_all_btn = QPushButton("Find All Bad Mods…")
-        find_all_btn.setToolTip(
-            "Like Quick Mod Check, but also catches a pair that only breaks things when both are "
-            "enabled together. Takes meaningfully longer."
-        )
-        find_all_btn.clicked.connect(self._open_find_all_bisect)
-        top.addWidget(find_all_btn)
-        top.addWidget(bisect_btn)
         root.addLayout(top)
 
         self.mod_status_label = QLabel("")

@@ -64,11 +64,14 @@ from ui.settings_backups_page import SettingsBackupsPage
 from ui.settings_restart_page import SettingsRestartPage
 from ui.settings_alerts_page import SettingsAlertsPage
 from ui.settings_container import SettingsContainer
+from ui.settings_gameplay_section import GameplaySection
+from ui.tabbed_page import TabbedPage
 from ui.diagnostics_page import DiagnosticsPage
 from ui.workers import keep_until_finished
 from ui.generic_settings_page import GenericSettingsPage
 from ui.setup_wizard import SetupWizard
 import ini_field_specs
+import settings_layout
 
 _log = applog.get_logger(__name__)
 
@@ -84,10 +87,8 @@ def _make_tray_icon(accent: str = "") -> QIcon:
 # Header title + one-line description for each top-level page.
 PAGE_HEADERS = {
     "dashboard": ("Dashboard", "{server} at a glance: status, automation and who's online"),
-    "players": ("Players", "Everyone who has joined {server}"),
+    "players": ("Players", "Everyone who has joined {server}, plus the whitelist and bans"),
     "mods": ("Mods", "Workshop mods, load order and update status"),
-    "updates": ("Updates", "Conan Exiles dedicated server builds from Steam"),
-    "access": ("Access", "Whitelist and bans"),
     "console": ("Console", "Send RCON commands to the running server"),
     "settings": ("Server Settings", "Everything ConanOps writes to {server}'s settings files"),
     "app": ("App Settings", "ConanOps itself: startup, remote access, integrations and appearance"),
@@ -205,9 +206,9 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
 
         self.console_page = ConsolePage()
 
-        self.settings_identity_page = SettingsIdentityPage()
+        self.settings_identity_page = SettingsIdentityPage(common_keys=settings_layout.COMMON["identity"])
         self.settings_network_page = SettingsNetworkPage(get_reserved_ports=self._reserved_ports_for_active)
-        self.settings_rates_page = SettingsRatesPage()  # Progression category
+        self.settings_rates_page = SettingsRatesPage(embedded=True)  # Progression category
         self.settings_backups_page = SettingsBackupsPage()
         self.settings_restart_page = SettingsRestartPage(get_hourly_activity=self._hourly_activity_for_active)
         self.settings_alerts_page = SettingsAlertsPage()
@@ -220,7 +221,7 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         for key, label, specs in ini_field_specs.CATEGORIES:
             if key == "progression":
                 continue  # already have settings_rates_page for this one
-            self.gameplay_pages[key] = GenericSettingsPage(label, specs)
+            self.gameplay_pages[key] = GenericSettingsPage(label, specs, embedded=True)
 
         gameplay_apply = self._apply_gameplay
         for page in [self.settings_identity_page, self.settings_rates_page, *self.gameplay_pages.values()]:
@@ -233,6 +234,7 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self.settings_restart_page.on_apply = self._apply_restart
         self.settings_alerts_page.on_apply = self._apply_alerts
 
+        # Every settings page, by key (the web version reads these too).
         settings_entries = [
             ("diagnostics", "Diagnostics", self.diagnostics_page),
             ("identity", "Server Identity", self.settings_identity_page),
@@ -248,9 +250,32 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
             ("restart", "Restart Schedule", self.settings_restart_page),
             ("alerts", "RCON", self.settings_alerts_page),
         ]
+        self.settings_container_entries = settings_entries
 
-        self.settings_container = SettingsContainer(settings_entries)
-        self.settings_container_entries = settings_entries  # the web version reads these pages too
+        # Shown as fewer sections (settings_layout.py): Gameplay holds every
+        # gameplay category, and server updates live under Automation.
+        pages_by_key = {k: p for k, _l, p in settings_entries}
+        self.settings_gameplay = GameplaySection(
+            [(k, settings_layout.category_title(k), pages_by_key[k]) for k in settings_layout.GAMEPLAY_PAGES])
+        section_widgets = {"gameplay": self.settings_gameplay, "updates": self.updates_page}
+        sections = [(key, label, heading, blurb, section_widgets.get(key) or pages_by_key[key])
+                    for key, label, heading, blurb, _pages in settings_layout.SECTIONS]
+        backups_list = self.settings_backups_page.backups_widget
+        search_extras = [
+            ("updates", "Install new server builds automatically", "", self.updates_page.auto_update_check),
+            ("updates", "Check for server updates every (hours)", "", self.updates_page.interval_spin),
+            ("updates", "Check for a server update now", "", self.updates_page.check_btn),
+            ("network", "Repair Networking (firewall and router forwarding)", "", self.settings_network_page.repair_btn),
+            ("identity", "Open Server Folder", "", self.settings_identity_page.open_folder_btn),
+            ("backups", "Back Up Now", "", backups_list.backup_now_btn),
+            ("backups", "Import an external backup / restore", "", backups_list.import_btn),
+            ("diagnostics", "Run Diagnostics", "", self.diagnostics_page.run_btn),
+        ]
+        self.settings_container = SettingsContainer(
+            sections, pages=[(k, p) for k, _l, p in settings_entries if k != "diagnostics"], extras=search_extras)
+
+        self.players_tabs = TabbedPage([("players", "Players", self.players_page),
+                                        ("access", "Access (whitelist & bans)", self.access_page)])
 
         self.web_control = web_control.WebControlServer(
             get_active_server=self._active, save_config=self.config.save,
@@ -275,10 +300,8 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
 
         self.pages = {
             "dashboard": self.dashboard_page,
-            "players": self.players_page,
-            "updates": self.updates_page,
+            "players": self.players_tabs,
             "mods": self.mods_page,
-            "access": self.access_page,
             "console": self.console_page,
             "settings": self.settings_container,
             "app": self.app_settings_page,
@@ -287,7 +310,7 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         for p in self.pages.values():
             self.stack.addWidget(p)
         # The shared header shows titles; hide the pages' own (kept for state text).
-        for p in self.pages.values():
+        for p in [*self.pages.values(), self.players_page, self.access_page, self.updates_page]:
             for attr in ("title_label", "page_title_label"):
                 lbl = getattr(p, attr, None)
                 if lbl is not None:
@@ -439,7 +462,17 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self.sidebar.set_active_nav("dashboard")
 
     # ------------------------------------------------------------- nav --
+    # Pages that used to have their own sidebar entry: nav key -> (page, place in it).
+    _MOVED_PAGES = {"updates": ("settings", "updates"), "access": ("players", "access"),
+                    "backups": ("settings", "backups"), "diagnostics": ("settings", "diagnostics")}
+
     def _on_nav_selected(self, key: str) -> None:
+        if key in self._MOVED_PAGES:
+            key, where = self._MOVED_PAGES[key]
+            if key == "settings":
+                self.settings_container._select(where)
+            else:
+                self.players_tabs.show_tab(where)
         self.sidebar.set_active_nav(key)
         self.stack.setCurrentWidget(self.pages[key])
         self._current_nav = key
@@ -522,6 +555,10 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
             self.dashboard_page.hold_notice.set_notice(
                 f"Held stopped. {active.update_hold}" if active.update_hold else ""
             )
+            pending = self.updates_page.state_for(active).get("pending", "")
+            self.dashboard_page.update_notice.set_notice(
+                f"{pending} -- it installs on its own if automatic updates are on, or install it now."
+                if pending and not active.update_hold else "")
             self.dashboard_page.rcon_notice.set_notice(
                 "RCON is off for this server, so ConanOps can't ask it to save before stopping it. "
                 "Every stop, restart and update is a hard shutdown that loses anything since the last "
@@ -550,7 +587,8 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
 
     def _open_automation_settings(self, key: str) -> None:
         if key == "updates":
-            self._on_nav_selected("updates")
+            self._on_nav_selected("settings")
+            self.settings_container._select("updates")
         elif key == "ddns":
             self._on_nav_selected("app")
             self.app_settings_page.show_section("ddns")

@@ -264,3 +264,36 @@ details.guide > p { margin: 6px 0 10px; }
   .topbar .title { flex: 1 1 100%; }
   .topbar .server-select { flex: 1; max-width: none; }
 }
+
+/* search, fold-outs and tabs (same layout as the app) */
+.settings-search { width: 100%; font-size: 15px; padding: 11px 14px; margin-bottom: 14px; }
+details.more { padding: 0 16px; margin-top: 10px; }
+details.more > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px;
+  min-height: 44px; font-weight: 600; }
+details.more > summary::before { content: "▸"; display: inline-block; width: 1em; color: var(--accent-text);
+  transition: transform .15s; }
+details.more[open] > summary::before { transform: rotate(90deg); }
+details.more > summary > .dim { margin-left: auto; font-weight: 400; font-size: 12.5px; }
+details.more > div { border-top: 1px solid var(--border); }
+.field label .info { color: var(--dim); margin-left: 6px; cursor: help; font-weight: 400; }
+.field.flash { animation: flash 1.6s ease-out; border-radius: 8px; }
+@keyframes flash { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+.results { padding: 0; }
+.results .result { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  background: none; border: 0; border-bottom: 1px solid var(--border); padding: 11px 16px; text-align: left;
+  color: inherit; font: inherit; cursor: pointer; min-height: 44px; }
+.results .result:last-child { border-bottom: 0; }
+.results .result:hover { background: var(--panel-alt); }
+.results .result .name { font-weight: 600; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); }
+.tab-btn { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; min-height: 44px;
+  color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
+.tab-btn.active { color: var(--accent-text); border-bottom-color: var(--accent-text); }
+details.menu { position: relative; }
+details.menu > summary { list-style: none; cursor: pointer; }
+details.menu > summary::after { content: " ▾"; }
+details.menu .menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 280px;
+  display: grid; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35); }
+details.menu .menu-list .btn { justify-content: flex-start; width: 100%; }
+@media (max-width: 600px) { details.menu .menu-list { right: auto; left: 0; } }
