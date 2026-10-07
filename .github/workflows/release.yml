@@ -17,9 +17,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -48,7 +48,12 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q -p no:cacheprovider --timeout 120 tests
+        run: |
+          python -m pytest -q -p no:cacheprovider --timeout 120 --junitxml=test-results.xml tests
+          $code = $LASTEXITCODE
+          # Failed tests as one build annotation, so they can be read without the full log.
+          python .github/report_tests.py test-results.xml
+          exit $code
 
       - name: Build ConanOps.exe
         shell: pwsh
