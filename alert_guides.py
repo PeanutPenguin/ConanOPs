@@ -1,8 +1,5 @@
-"""
-Step-by-step help for setting up alerts, shown as fold-out guides on
-the RCON & Alerts settings page (the app and the web version use this
-same text).
-"""
+"""Step-by-step alert setup guides shown in App Settings → Alerts
+(shared by the desktop app and the web UI)."""
 from __future__ import annotations
 
 from typing import List, Tuple

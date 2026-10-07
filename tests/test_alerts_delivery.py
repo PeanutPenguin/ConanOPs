@@ -166,7 +166,8 @@ def test_alerts_go_to_the_app_wide_links(monkeypatch):
 
         def wait(self, *a):
             return True
-    monkeypatch.setattr(main_window, "_NotifyWorker", FakeWorker)
+    import ui.window.alerts as alerts_part  # _notify lives there
+    monkeypatch.setattr(alerts_part, "_NotifyWorker", FakeWorker)
     s = models.ServerConfig(id="s1", name="Exiled")
     cfg = models.AppConfig(servers=[s], active_server_id="s1", alert_discord_url="https://discord.com/api/webhooks/1/a",
                            alert_ntfy_url="https://ntfy.sh/t")

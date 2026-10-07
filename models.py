@@ -1,9 +1,6 @@
 """
-ConanOps data models.
-
-ServerConfig holds every setting the UI can show/edit for one Conan Exiles
-dedicated server. AppConfig holds the list of servers (up to MAX_SERVERS)
-plus app-wide preferences, and knows how to load/save itself as JSON.
+ConanOps data models: ServerConfig (one server's settings) and AppConfig
+(the server list plus app-wide preferences, saved as JSON).
 """
 from __future__ import annotations
 
@@ -23,14 +20,7 @@ import secrets_store
 
 MAX_SERVERS = 5
 
-# PBKDF2 iteration count for the app-lock PIN (see AppConfig.set_app_lock_pin).
-# A single unsalted-iteration SHA-256 hash -- what this used to be -- is
-# fast enough that a stolen config.json's 4-character numeric PIN (a
-# search space of only 10,000 values) could be brute-forced essentially
-# instantly offline. PBKDF2 with a real iteration count doesn't make a
-# 4-digit PIN strong on its own, but it raises the cost of that offline
-# search from "instant" to "noticeable," at negligible cost to the one
-# legitimate hash computed per unlock attempt.
+# PBKDF2 slows offline brute-forcing of a short PIN from a stolen config.json.
 _PIN_HASH_ITERATIONS = 310_000
 
 
@@ -49,12 +39,8 @@ class ServerConfig:
     steamcmd_dir: str = ""         # folder containing steamcmd.exe
 
     # --- Server Identity / all gameplay settings ---
-    # Flat dict keyed by the real Conan Exiles ini key name (or a
-    # __-prefixed ConanOps-only key, currently just "__description").
-    # See ini_field_specs.py for the full list of keys, defaults, and
-    # what page each one appears on. Populated with defaults by
-    # AppConfig via ini_field_specs.default_gameplay_dict() so old and
-    # new servers alike always have every key present.
+    # Keyed by Conan ini key name (or "__"-prefixed ConanOps-only keys).
+    # See ini_field_specs.py; defaults are backfilled on load.
     gameplay: dict = field(default_factory=dict)
 
     # --- Network & Ports ---
@@ -84,12 +70,8 @@ class ServerConfig:
     last_mod_check_at: str = ""      # ISO timestamp of the last independent mod-update check (scheduler.py)
 
     # --- Live Discord status presence ---
-    # Off by default -- not everyone wants a message that keeps
-    # re-editing itself sitting in their channel. discord_status_message_id
-    # is the Discord message this server's status gets EDITED into place
-    # on, once one exists -- persisted so a restarted ConanOps keeps
-    # updating the same message instead of posting a fresh one every
-    # session (see webhooks.update_discord_status()).
+    # discord_status_message_id is persisted so the same message keeps
+    # being edited across ConanOps restarts.
     discord_status_enabled: bool = False
     discord_status_message_id: str = ""
 
@@ -110,72 +92,40 @@ class ServerConfig:
     # --- Mods (ordered; each entry {"id": "<workshop id>", "enabled": bool, "name": str}) ---
     mods: list = field(default_factory=list)
 
-    # --- Scheduler runtime state (not really "settings", but persisted
-    # alongside everything else so the scheduler survives app restarts) ---
+    # --- Scheduler runtime state (persisted so it survives app restarts) ---
     last_backup_at: str = ""       # ISO timestamp of the last scheduled/auto backup
     last_restart_date: str = ""    # "YYYY-MM-DD" -- the last date a scheduled restart fired
 
     # --- Auto-resume / watchdog ---
-    # Set True whenever the person presses Start (Dashboard or tray),
-    # False when they press Stop -- deliberately NOT the same thing as
-    # "is it running right now" (process_manager.is_running() answers
-    # that). This is what survives an app or PC restart: on startup,
-    # MainWindow starts every server where this is True and isn't
-    # already running (see _auto_resume_servers()). A crash or a
-    # watchdog-triggered restart never changes this -- only an
-    # intentional Stop does, which is exactly what lets the watchdog
-    # keep retrying after a crash (desired_running stays True) while
-    # a server the person deliberately stopped stays down through a
-    # reboot instead of coming back uninvited.
+    # The person's intent (Start sets True, Stop sets False), not whether
+    # it's running. Auto-resume and the crash watchdog use it, so a crash
+    # keeps it True while a deliberate Stop stays down through a reboot.
     desired_running: bool = False
-    # Set when an automatic or manual game update failed after the server
-    # was stopped for it (see main_window._hold_after_failed_update):
-    # the reason, shown to the person. While set, auto-resume and the
-    # crash watchdog leave the server stopped -- the old build can't be
-    # joined by players whose game Steam already updated, and a half-
-    # applied update may not even start. Cleared by a successful update
-    # or by the person clicking Start themselves.
+    # Reason a game update failed after stopping the server. While set,
+    # auto-resume and the watchdog leave it stopped (players on the new build
+    # can't join). Cleared by a successful update or a manual Start.
     update_hold: str = ""
     # Automatic mod-break recovery (ui/mod_recovery.py) waiting for a fix:
     # {"culprits": [workshop ids], "since": iso time, "updated": {id: Workshop
     # time_updated when found}}. Empty when nothing is being waited on.
     mod_recovery: dict = field(default_factory=dict)
 
-    # Fields that hold something sensitive and get encrypted (DPAPI) at
-    # rest in config.json rather than stored as plain text -- see
-    # secrets_store.py.
+    # Encrypted at rest with DPAPI (secrets_store.py).
     _SECRET_FIELDS = ("password", "rcon_password", "webhook_discord_url", "webhook_ntfy_url")
-    # AdminPassword is a nested key inside `gameplay` (it's one of
-    # ini_field_specs' data-driven fields, not a top-level dataclass
-    # field), so it doesn't go through _SECRET_FIELDS above -- handled
-    # separately below. It's exactly as sensitive as rcon_password (it
-    # grants in-game admin/console access), and a previous version left
-    # it out of encryption entirely, storing it as plain text in
-    # config.json alongside every other gameplay setting.
+    # Nested in `gameplay`, so handled separately; grants in-game admin access.
     _SECRET_GAMEPLAY_KEY = "AdminPassword"
 
     def __post_init__(self) -> None:
-        # Runtime-only, deliberately NOT a dataclass field (so it's
-        # invisible to asdict()/to_dict() and never round-trips through
-        # JSON): {field name: raw stored string} for any secret field
-        # that failed to decrypt on load. See to_dict()'s use of this.
+        # Not a dataclass field, so it never reaches JSON: {field: raw stored
+        # string} for secrets that failed to decrypt on load.
         self._undecryptable: dict = {}
 
     def to_dict(self) -> dict:
         d = asdict(self)
         for f in self._SECRET_FIELDS:
             if f in self._undecryptable and not getattr(self, f):
-                # This field failed to decrypt when the config was
-                # loaded (see from_dict()) and is still blank -- nothing
-                # in the UI has set a new value for it since, so write
-                # the original stored string back out untouched rather
-                # than protect()-ing the "" that decrypt failure left in
-                # memory, which would otherwise permanently overwrite
-                # the real (still-encrypted, just unreadable in THIS
-                # run) secret with an empty one. The moment something
-                # DOES set a new value, this field becomes non-empty and
-                # falls through to the normal protect() path below,
-                # which also clears the marker -- the new value wins.
+                # Failed to decrypt on load and still unset: write the raw
+                # stored value back, so the real secret isn't overwritten.
                 d[f] = self._undecryptable[f]
             else:
                 self._undecryptable.pop(f, None)
@@ -217,9 +167,7 @@ class ServerConfig:
         return cfg
 
     def ensure_gameplay_defaults(self) -> None:
-        """Backfills any missing keys in `gameplay` with their defaults
-        from ini_field_specs -- covers both a brand-new server and an
-        older saved config from before some field existed."""
+        """Backfill missing `gameplay` keys from ini_field_specs."""
         defaults = ini_field_specs.default_gameplay_dict()
         for k, v in defaults.items():
             self.gameplay.setdefault(k, v)
@@ -236,66 +184,44 @@ class AppConfig:
     accent_color: str = "#c9752f"
 
     # --- Optional startup PIN lock ---
-    # ConanOps has full RCON access, can ban/whitelist players, and
-    # force restarts/updates -- anyone who can open the app has all of
-    # that, plus read access to the (now-encrypted-at-rest, see
-    # secrets_store.py) server/RCON passwords and webhook URLs. This
-    # is a lightweight single-PIN gate, not real multi-user auth: it's
-    # meant to stop someone glancing at an unlocked screen or picking
-    # up a shared machine, not to resist a determined local attacker
-    # who can just edit/delete these two fields out of config.json.
+    # A lightweight single-PIN gate against casual access, not real auth;
+    # anyone who can edit config.json can remove it.
     app_lock_pin_hash: str = ""
     app_lock_salt: str = ""
 
-    # Off by default; persisted so an explicit choice to turn it on
-    # survives an app restart, same as the PIN lock does.
     web_control_enabled: bool = False
-    # The web version's password (webui/auth.py PBKDF2 hash -- never the
-    # password itself) and whether the Cloudflare remote link is on.
+    # PBKDF2 hash of the web version's password (webui/auth.py).
     web_password_hash: str = ""
     web_remote_enabled: bool = False
 
     # --- Start with Windows ---
-    # start_with_windows itself doesn't launch anything on its own --
-    # it only reflects whether startup_registration.register() has
-    # actually added the registry Run-key entry, kept here so the App
-    # Settings checkbox shows the real current state without needing
-    # a registry read every time that page opens. start_minimized_to_tray
-    # is independent of it (and takes effect on EVERY launch, not just
-    # a Windows-startup one -- there's no reliable way for ConanOps to
-    # tell how it was launched, so "start minimized" just always means
-    # exactly that, however it was started).
+    # start_with_windows mirrors whether startup_registration added the Run
+    # key. start_minimized_to_tray applies on every launch, since ConanOps
+    # can't tell how it was started.
     start_with_windows: bool = False
     start_minimized_to_tray: bool = False
 
     # --- Unattended operation ---
     # background_mode_enabled mirrors whether background_mode.register()
-    # succeeded (the scheduled task that keeps servers managed when
-    # nobody is signed in). keep_pc_awake blocks idle sleep while any
-    # server runs (power.py). handle_update_restarts lets ConanOps do
-    # Windows Update restarts itself inside the update_restart_* window
-    # (windows_update.py); last_update_restart ("YYYY-MM-DD") stops it
-    # restarting more than once a day if Windows keeps the
-    # "restart pending" flag set.
+    # succeeded. keep_pc_awake blocks idle sleep while a server runs.
+    # handle_update_restarts does Windows Update restarts in the update window;
+    # last_update_restart limits that to once a day.
     background_mode_enabled: bool = False
     keep_pc_awake: bool = True
     # Reopen ConanOps if it stops while someone is signed in (keep_alive.py).
     keep_alive_enabled: bool = False
     admin_mode_enabled: bool = False
-    # What happens when a mod stops a server from starting (ui/mod_recovery.py):
-    # "wait" for the mod's author to fix it (keeps the world intact),
-    # "start_without" the broken mod, or just "alert".
+    # On a mod break (ui/mod_recovery.py): "wait" for a fix, "start_without"
+    # the mod, or just "alert".
     mod_recovery_mode: str = "wait"
-    # The dashboard tour (ui/tour.py) has been shown -- it runs once after
-    # the first server is set up.
+    # The one-time dashboard tour (ui/tour.py) has been shown.
     tour_done: bool = False
     handle_update_restarts: bool = False
     update_restart_start: str = "04:00"
     update_restart_end: str = "06:00"
     last_update_restart: str = ""
-    # Windows Update active-hours values from BEFORE ConanOps first changed
-    # them (windows_update.read_active_hours()), so turning the feature
-    # off or deleting ConanOps can put them back. Empty = never changed.
+    # Windows Update active hours before ConanOps changed them, so they can be
+    # restored. Empty = never changed.
     original_active_hours: dict = field(default_factory=dict)
 
     # --- ConanOps' own updates (app_updates.py) ---
@@ -303,41 +229,19 @@ class AppConfig:
     auto_install_app_updates: bool = False
     last_app_update_check: float = 0.0  # time.time() of the last automatic check
 
-    # Personal Steam Web API key (from https://steamcommunity.com/dev/apikey)
-    # for Workshop search/browse (ui/workshop_browser_dialog.py) -- see
-    # steam_workshop_api.py's module docstring for why this has to be a
-    # per-person key ConanOps can't ship baked in. App-level, not
-    # per-server, since it's tied to a Steam ACCOUNT, not a server.
-    # Encrypted at rest (secrets_store.py) same as ServerConfig's
-    # secret fields, though more simply -- if it ever fails to decrypt
-    # (e.g. the config moved to a different Windows user account,
-    # invalidating DPAPI) this just comes back empty rather than
-    # ServerConfig's fields' more careful "keep the raw stored value
-    # so a resave doesn't destroy it" handling; the worst case here is
-    # re-entering a free key, not losing an RCON password.
+    # Personal Steam Web API key for Workshop search (see steam_workshop_api.py).
+    # Encrypted at rest; on a decrypt failure it simply comes back empty.
     steam_api_key: str = ""
-    # "YYYY-MM-DD" (UTC). A Workshop mod tagged Enhanced whose last
-    # update is older than this is flagged as not updated for the
-    # current patch -- see steam_workshop_api.py. Editable in App
-    # Settings so the next game patch only needs a new date, not code.
+    # "YYYY-MM-DD" (UTC). Enhanced-tagged mods updated before this are flagged
+    # as not updated for the current patch.
     workshop_update_cutoff: str = "2026-09-01"
 
     # --- Dynamic DNS (DuckDNS) ---
-    # For home-hosting behind a residential ISP without a static IP:
-    # the public IP can change, silently breaking everyone's saved
-    # server entry until someone happens to notice and re-share a new
-    # address. duckdns_domain is the subdomain only (no ".duckdns.org"
-    # suffix -- see dynamic_dns.py). duckdns_token is encrypted at
-    # rest, same simplified approach as steam_api_key above (not
-    # ServerConfig's more careful secret-field handling) -- worst case
-    # on a decrypt failure is re-pasting a token, not losing an RCON
-    # password.
+    # For home hosting without a static IP. duckdns_domain is the subdomain
+    # only. duckdns_token is encrypted; a decrypt failure just blanks it.
     duckdns_domain: str = ""
     duckdns_token: str = ""
-    # Alerts (Discord / ntfy), for every server -- App Settings → Alerts.
-    # Each alert names its server. The links are secrets (encrypted at
-    # rest, like duckdns_token). Before 1.0.4 these were per server
-    # (ServerConfig.webhook_*); load() carries those over once.
+    # App-wide alert links (secrets). load() migrates the old per-server ones.
     alert_discord_url: str = ""
     alert_ntfy_url: str = ""
     discord_status_enabled: bool = False
@@ -345,84 +249,52 @@ class AppConfig:
     # ---------------------------------------------------------------- io --
     @staticmethod
     def data_dir() -> str:
-        """Where config.json, theme.json, and session history live --
-        the same no-space root new servers' SteamCMD/install folders
-        default to (see conanops_paths.no_space_root()'s docstring).
-        Distinct from the app's own INSTALL directory (wherever the
-        .exe/source lives, which could be anywhere) -- see
-        ui/main_window.py's APP_INSTALL_DIR."""
+        """Folder for config.json, theme.json and session history
+        (conanops_paths.no_space_root()); not the app's install dir."""
         base = conanops_paths.no_space_root()
         os.makedirs(base, exist_ok=True)
         return base
 
     @staticmethod
     def _legacy_data_dir() -> str:
-        """Earlier versions stored ConanOps' own data directly under
-        the user's profile folder instead of data_dir()'s current
-        default location. Used only as the last-resort candidate in
-        _migration_candidates() below."""
+        """Old default location under the user's profile."""
         return os.path.join(os.path.expanduser("~"), "ConanOps")
 
     @staticmethod
     def _migration_candidates() -> list:
-        """Every location data_dir() has EVER defaulted to, other than
-        wherever it defaults to right now -- in order, most recent
-        first, since that's the one most likely to actually hold a
-        real, current setup. See _migrate_legacy_data_dir()."""
+        """Previous default data locations, most recent first."""
         return [conanops_paths.public_fallback_root(), AppConfig._legacy_data_dir()]
 
     @staticmethod
     def _migrate_legacy_data_dir() -> None:
-        """One-time, best-effort migration: copies config.json,
-        theme.json, and session history from wherever they used to
-        live by default (see _migration_candidates()) into
-        data_dir()'s CURRENT default, so upgrading doesn't silently
-        orphan someone's existing setup (their servers, settings,
-        everything) just because that default changed -- most
-        recently, no_space_root() preferring app_install_dir() over
-        public_fallback_root() when the app's own folder has no space
-        in it (see conanops_paths.py). Without this, someone on that
-        prior default would upgrade, launch, and find an empty server
-        list -- not because anything was deleted, but because the app
-        would just be looking in the wrong place and quietly creating
-        a fresh config right there instead.
-
-        Stops at the first candidate that actually has a config.json
-        -- copying fields from two DIFFERENT old setups into one
-        merged result would be far more confusing than just picking
-        the most recent one. Never deletes any old copy -- purely
-        additive, so a partial failure here never loses anything that
-        wasn't already there; worst case, the app just falls back to
-        creating a fresh config at the new location as it would on a
-        genuinely first launch."""
+        """Best-effort copy of config, theme and sessions from the most recent
+        old default location that has a config.json, so an upgrade doesn't
+        show an empty server list. Never overwrites or deletes anything."""
         new = conanops_paths.no_space_root()
         new_norm = os.path.normcase(os.path.abspath(new))
         for legacy in AppConfig._migration_candidates():
             if os.path.normcase(os.path.abspath(legacy)) == new_norm:
-                continue  # same folder on this platform -- nothing to migrate
+                continue  # same folder on this platform
             if not os.path.isfile(os.path.join(legacy, "config.json")):
                 continue
             os.makedirs(new, exist_ok=True)
-            # ONLY ConanOps' own small files. The old folder can also hold
-            # whole server installs and SteamCMD (tens of GB each, under
-            # per-server id folders) -- copying those would stall startup
-            # for a long time and could fill the drive. They don't need to
-            # move: config.json keeps pointing at them where they are.
+            # Only ConanOps' own small files. Server installs stay where they
+            # are (config.json still points at them); copying would take ages.
             for name in _MIGRATED_NAMES:
                 if not os.path.exists(os.path.join(legacy, name)):
                     continue
                 src = os.path.join(legacy, name)
                 dst = os.path.join(new, name)
                 if os.path.exists(dst):
-                    continue  # never overwrite something already at the new location
+                    continue  # never overwrite
                 try:
                     if os.path.isdir(src):
                         shutil.copytree(src, dst)
                     else:
                         shutil.copy2(src, dst)
                 except OSError:
-                    pass  # best-effort -- the old copy is untouched either way
-            return  # found and migrated from the most recent candidate that had data
+                    pass  # best-effort
+            return
 
     @staticmethod
     def default_path() -> str:
@@ -432,11 +304,6 @@ class AppConfig:
     def load(cls, path: Optional[str] = None) -> "AppConfig":
         path = path or cls.default_path()
         if not os.path.exists(path):
-            # Cheap enough to just always attempt -- _migrate_legacy_data_dir()
-            # itself checks each candidate for a config.json before
-            # doing anything, so this is a no-op on a genuinely fresh
-            # install (no prior candidate ever existed) just as
-            # cheaply as the old single-candidate pre-check was.
             cls._migrate_legacy_data_dir()
         if not os.path.exists(path):
             cfg = cls()
@@ -489,7 +356,7 @@ class AppConfig:
                     setattr(cfg, attr, "")
             cfg.discord_status_enabled = bool(raw.get("discord_status_enabled", False))
         else:
-            # From before alerts were app-wide: use the first server's links.
+            # Older configs had per-server alert links; use the first server's.
             cfg.alert_discord_url = next((x.webhook_discord_url for x in servers if x.webhook_discord_url), "")
             cfg.alert_ntfy_url = next((x.webhook_ntfy_url for x in servers if x.webhook_ntfy_url), "")
             cfg.discord_status_enabled = any(x.discord_status_enabled and x.webhook_discord_url for x in servers)
@@ -538,7 +405,7 @@ class AppConfig:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp, path)  # atomic-ish on same filesystem
+        os.replace(tmp, path)
 
     # ------------------------------------------------------------ helpers --
     def get_active(self) -> Optional[ServerConfig]:
@@ -558,11 +425,8 @@ class AppConfig:
             candidate = f"{name} {n}"
         s = ServerConfig(name=candidate)
         s.ensure_gameplay_defaults()
-        # RCON on by default for new servers: without it, ConanOps can't
-        # ask the server to save before stopping it, so every stop,
-        # restart and update is a hard kill. A random password (never
-        # shown unless the person opens RCON & Alerts) and the first
-        # RCON port no other server uses.
+        # RCON on by default: without it ConanOps can't ask the server to save
+        # before stopping, so every stop would be a hard kill.
         s.rcon_enabled = True
         s.rcon_password = _secrets.token_urlsafe(12)
         taken = self.used_ports()
@@ -580,13 +444,8 @@ class AppConfig:
             self.active_server_id = self.servers[0].id if self.servers else None
 
     def used_ports(self, exclude_id: Optional[str] = None) -> set:
-        """Every port a configured server (other than exclude_id) has
-        claimed. Includes game_port + 1 alongside game_port itself --
-        Conan Exiles' dedicated server binds a second UDP port right
-        above the game port for its own networking, not just the ones
-        ConanOps' Network & Ports page shows, so a port-conflict check
-        that only looked at game_port/query_port could still let two
-        servers collide on that extra port."""
+        """Ports claimed by other servers, including game_port + 1, which
+        Conan also binds."""
         ports = set()
         for s in self.servers:
             if s.id == exclude_id:
@@ -599,33 +458,13 @@ class AppConfig:
         return ports
 
     def used_server_names(self, exclude_id: Optional[str] = None) -> set:
-        """Every server.name currently claimed by another configured
-        server. Names are what players see in the server browser and
-        what the sidebar shows, so the setup wizard keeps them unique
-        (it compares case-insensitively). Firewall rules and router
-        forwards are keyed by server id, not by name.
-        """
+        """Names claimed by other servers (shown to players, so kept unique)."""
         return {s.name for s in self.servers if s.id != exclude_id}
 
     def used_install_dirs(self, exclude_id: Optional[str] = None) -> set:
-        """Every install_dir currently claimed by another configured
-        server, normalized for comparison. Two servers accidentally
-        sharing an install folder would make backups (they zip that
-        folder's Saved/ subfolder) and process-matching
-        (process_manager.find_running_pid matches on exe path under
-        install_dir) collide with each other, and worse, both servers'
-        live world save data lives in install_dir/ConanSandbox/Saved --
-        sharing it would let two running servers corrupt each other's
-        save. Used by the setup wizard to warn before that can happen.
-
-        Deliberately does NOT include steamcmd_dir: that folder just
-        holds the SteamCMD tool itself and its Workshop download cache
-        (keyed by workshop item id, not by server -- see
-        mod_manager.workshop_pak_path), neither of which is per-server
-        state the way install_dir is. Sharing it across servers is
-        safe and actually useful (mods already downloaded for one
-        server don't need re-downloading for another) -- see
-        default_steamcmd_dir()."""
+        """Normalized install dirs claimed by other servers. Sharing one would
+        let two servers corrupt each other's world save. steamcmd_dir is
+        excluded on purpose: sharing it is safe and saves re-downloads."""
         dirs = set()
         for s in self.servers:
             if s.id == exclude_id:
@@ -635,14 +474,7 @@ class AppConfig:
         return dirs
 
     def default_steamcmd_dir(self, exclude_id: Optional[str] = None) -> str:
-        """The steamcmd_dir of an already-configured server, if any --
-        used by the setup wizard to pre-fill a new server's SteamCMD
-        folder field with an existing one instead of suggesting a
-        fresh per-server folder. Sharing it is safe (see
-        used_install_dirs()'s docstring) and means a second, third,
-        etc. server doesn't need its own separate SteamCMD download or
-        a re-download of any Workshop mods already fetched for another
-        server. Returns "" if no configured server has one set yet."""
+        """An existing server's steamcmd_dir to reuse for a new one, or ""."""
         for s in self.servers:
             if s.id != exclude_id and s.steamcmd_dir:
                 return s.steamcmd_dir
@@ -663,17 +495,9 @@ class AppConfig:
         self.app_lock_salt = ""
 
     def verify_app_lock_pin(self, pin: str) -> bool:
-        """True if no PIN is set at all (nothing to unlock) or the
-        given PIN matches."""
+        """True if no PIN is set or the PIN matches."""
         if not self.app_lock_pin_hash:
             return True
         candidate = _hash_pin(pin, self.app_lock_salt)
-        # A plain == on the hash strings would short-circuit on the
-        # first differing character, so how long verification takes
-        # leaks how many leading hex digits of the hash a guess got
-        # right -- a timing side-channel. hmac.compare_digest runs in
-        # time that depends only on the strings' length, not their
-        # content, which closes that off. This isn't hardened against
-        # a determined local attacker either way (see the field's own
-        # docstring above), but it's a one-line fix with no downside.
+        # Constant-time compare avoids a timing side-channel.
         return hmac.compare_digest(candidate, self.app_lock_pin_hash)

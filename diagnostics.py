@@ -1,28 +1,8 @@
-"""
-Diagnostics: answers "why isn't this server working?" in one pass,
-surfaced on the Settings > Diagnostics tab.
+"""Read-only "why isn't this server working?" checks for the Settings > Diagnostics tab.
 
-Deliberately read-only -- this only reports what it finds, it never
-changes anything on disk or restarts anything (the one exception:
-network_setup.add_firewall_rules(), called from the setup wizard/
-Network & Ports settings, not from here, can trigger a real Windows
-UAC elevation prompt -- but that's a person clicking a button that
-does the thing, not a diagnostics pass silently altering anything).
-preflight.py already handles the auto-repair job (stale bind IP,
-etc.) right before the server actually launches/restarts/updates;
-this is for a person looking at it and asking "what's wrong," so it
-explains what preflight would fix automatically alongside issues
-preflight doesn't touch at all (port conflicts, missing SteamCMD, an
-unwritable backup folder, the server running but not responding).
-
-Covers the full chain someone would otherwise have to piece together
-themselves to answer "why can't my friend connect": Administrator
-rights -> Windows Firewall rules (checked LIVE, not just "did the
-setup wizard report success once") -> router UPnP/manual forwarding
--> the server process itself -> whether it answers a query -> RCON,
-if enabled -> disk space and folder permissions, since those cause
-silent failures elsewhere (backups, updates) that are easy to miss
-until they've already happened.
+Covers install files, runtime prerequisites, ports, firewall (checked live),
+router forwarding, the running process/RCON, and backup folders. Never changes
+anything; preflight.py does the automatic repairs.
 """
 from __future__ import annotations
 
@@ -45,12 +25,10 @@ STATUS_OK = "ok"
 STATUS_WARNING = "warning"
 STATUS_ERROR = "error"
 
-# Below this, a "disk space" check becomes an ERROR instead of a
-# WARNING -- low enough that a scheduled backup or an update download
-# could plausibly fail outright, not just "worth keeping an eye on."
 VC_RUNTIME_TITLE = "Visual C++ runtime"
 AUTO_SIGN_IN_TITLE = "Sign back in after updates"
 
+# Below the error threshold, backups and update downloads are likely to fail.
 LOW_DISK_SPACE_ERROR_GB = 1.0
 LOW_DISK_SPACE_WARNING_GB = 5.0
 
@@ -60,15 +38,12 @@ class DiagnosticResult:
     title: str
     status: str  # STATUS_OK / STATUS_WARNING / STATUS_ERROR
     message: str
-    detail: str = ""  # optional deeper technical detail, shown on hover -- see ui/diagnostics_page.py
+    detail: str = ""  # technical detail, shown on hover
 
 
 def _check_writable(path: str, label: str, results: List[DiagnosticResult]) -> None:
-    """Shared by the install/backup/SteamCMD folder writability checks
-    below -- same logic, three different targets, each with its own
-    label so a person sees exactly which one is the problem."""
     if not os.path.isdir(path):
-        return  # existence is checked separately wherever this is called from
+        return  # existence is checked by the caller
     if os.access(path, os.W_OK):
         results.append(DiagnosticResult(
             label, STATUS_OK, f"{label} is writable.",
@@ -119,11 +94,7 @@ def _check_disk_space(path: str, results: List[DiagnosticResult]) -> None:
 
 
 def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) -> List[DiagnosticResult]:
-    """Runs every check and returns the results in a fixed, sensible
-    order -- setup/install first, then network, then runtime state,
-    then backups -- so the most fundamental problem (e.g. "no install
-    folder configured at all") is always what shows up first, rather
-    than a port conflict that wouldn't matter until that's fixed."""
+    """Runs every check, most fundamental first (install, network, runtime, backups)."""
     results: List[DiagnosticResult] = []
     reserved_ports = reserved_ports or set()
 
@@ -319,10 +290,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             detail="server.bind_ip is empty in ConanOps' saved configuration for this server.",
         ))
 
-    # Administrator rights: the one thing every Windows Firewall rule
-    # below depends on. Checked here, right before those rules, so
-    # someone reading top to bottom sees WHY a rule is missing before
-    # they see that it's missing.
+    # Listed just before the firewall rules, which depend on it.
     if proc_utils.is_admin():
         results.append(DiagnosticResult(
             "Administrator rights", STATUS_OK,
@@ -339,12 +307,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             detail="proc_utils.is_admin() -> ctypes IsUserAnAdmin() returned False.",
         ))
 
-    # Firewall rules: checked LIVE against Windows Firewall itself,
-    # not "did add_firewall_rules() report success once, possibly a
-    # while ago" -- a rule can be removed by antivirus software, a
-    # firewall reset, or someone else's changes without ConanOps ever
-    # knowing, so this is what actually answers "is the rule there
-    # RIGHT NOW."
+    # Checked live: antivirus or a firewall reset can remove rules behind our back.
     fw_status = network_setup.firewall_status(server.id, server.game_port, server.query_port)
     fw_ports = network_setup._port_labels(server.game_port, server.query_port)
     for r, (label, port) in zip(fw_status, fw_ports):
@@ -391,9 +354,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
                 detail="Windows Security Center (root/SecurityCenter2 FirewallProduct) lists: " + names,
             ))
 
-    # Router-side forwarding. Read-only: checks whether a UPnP router is
-    # present, whether THIS server's three ports are forwarded to this
-    # PC, and whether the router itself is behind another NAT.
+    # Router: UPnP present, our three ports forwarded here, and double NAT.
     try:
         device = network_setup.discover_igd(timeout=2.0, local_ip=server.bind_ip or None)
     except Exception:  # noqa: BLE001
@@ -491,11 +452,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             ))
 
     # -------------------------------------------------------------- backups --
-    # This is the actual SOURCE a backup reads from -- distinct from the
-    # backup DESTINATION checked below. "Couldn't find the server's Saved
-    # folder" (the error shown when a backup silently fails) means THIS
-    # folder was missing, and until now diagnostics never actually looked
-    # for it, so there was no way to see that from this page.
+    # The backup source; a missing Saved folder is why backups fail silently.
     saved = backup_manager.saved_dir(server.install_dir)
     if not os.path.isdir(saved):
         results.append(DiagnosticResult(
@@ -549,10 +506,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
 
 
 def _check_rcon(server: ServerConfig) -> DiagnosticResult:
-    """Only called when the server is running AND rcon_enabled -- both
-    checked by the caller, since "RCON isn't reachable" means
-    something different (and needs a different fix) depending on
-    whether the server is even up yet."""
+    """Caller ensures the server is running and RCON is enabled."""
     import rcon
     try:
         with rcon.RconClient("127.0.0.1", server.rcon_port, server.rcon_password, timeout=3.0):

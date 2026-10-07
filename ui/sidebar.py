@@ -13,8 +13,6 @@ import version
 from ui import assets
 
 # (key, label, icon) in display order, grouped into sidebar sections.
-# App Settings deliberately lives in its own "System" group, away from
-# the per-server pages.
 NAV_SECTIONS = [
     ("Manage", [
         ("dashboard", "Dashboard", "dashboard"),
@@ -48,12 +46,7 @@ class Sidebar(QWidget):
     def __init__(self, parent=None, muted_color: str = "#a3a3a3", accent_text_color: str = "#e2914f"):
         super().__init__(parent)
         self.setObjectName("Sidebar")
-        # Qt doesn't automatically paint a custom QWidget SUBCLASS's own
-        # stylesheet background-color when it's nested under
-        # QMainWindow's central-widget machinery (unlike QFrame, which
-        # supports this natively) -- without this, #Sidebar's
-        # background-color rule silently falls back to the generic
-        # QWidget rule (the page background color) instead.
+        # A QWidget subclass doesn't paint its stylesheet background without this.
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setFixedWidth(256)
         self._muted = muted_color
@@ -146,8 +139,7 @@ class Sidebar(QWidget):
         self._server_players: dict[str, QLabel] = {}
 
     def set_power_state(self, running: Optional[bool]) -> None:
-        """Bottom button: Stop Server when the active server is running,
-        Start Server when it isn't, disabled when there's no server."""
+        """Bottom button: Stop when running, Start when not, disabled with no server."""
         if running == self._power_state:
             return  # timer-driven: skip when nothing changed
         self._power_state = running
@@ -161,8 +153,7 @@ class Sidebar(QWidget):
 
     def set_server_status(self, server_id: str, running: bool, players: Optional[int] = None) -> None:
         """Status dot + player count next to a server's name."""
-        # Called on a timer -- only touch widgets when something actually
-        # changed, since every restyle/relayout costs a repaint.
+        # Timer-driven: only restyle when something changed.
         state = (running, players if running else None)
         if self._server_state.get(server_id) == state:
             return
@@ -203,8 +194,7 @@ class Sidebar(QWidget):
             btn.setChecked(s.id == active_id)
             btn.clicked.connect(lambda _=False, sid=s.id: self.server_selected.emit(sid))
             self._server_group.addButton(btn)
-            # Status dot and player count sit ON the button (a child
-            # layout), so the whole row stays one click target.
+            # Child layout on the button keeps the whole row one click target.
             inner = QHBoxLayout(btn)
             inner.setContentsMargins(12, 0, 10, 0)
             dot = QLabel()
@@ -244,17 +234,11 @@ class Sidebar(QWidget):
         for btn in self._nav_group.buttons():
             btn.setChecked(btn.property("nav_key") == key)
 
-    # Nav entries whose pages assume there's an active server to show --
-    # everything except Dashboard itself (which has its own empty state,
-    # see DashboardPage.set_empty()) and App Settings (which is global,
-    # not per-server).
+    # Nav entries that need an active server.
     _PER_SERVER_NAV_KEYS = {"players", "updates", "mods", "access", "console", "settings"}
 
     def set_per_server_nav_enabled(self, enabled: bool) -> None:
-        """Disables (or re-enables) the nav entries whose pages need an
-        active server -- called with False when there are zero servers
-        configured (see MainWindow.__init__), so someone can't land on
-        a blank Backups/Settings/etc. page with nothing to operate on."""
+        """Enables/disables the nav entries that need an active server."""
         for btn in self._nav_group.buttons():
             if btn.property("nav_key") in self._PER_SERVER_NAV_KEYS:
                 btn.setEnabled(enabled)

@@ -1,15 +1,7 @@
-"""
-Keeping the PC awake while servers are running.
+"""Keeps the PC from idle-sleeping while servers run, via SetThreadExecutionState.
 
-Uses SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) -- the
-standard "a program is busy, don't idle-sleep" request (the same one
-media players and downloads use). It doesn't change anyone's power
-settings, needs no admin rights, and ends automatically if ConanOps
-exits. It stops IDLE sleep and hibernate; it can't stop someone pressing
-the sleep button or closing a laptop lid.
-
-The request belongs to the calling thread, so it must always be made
-from the same (GUI) thread -- MainWindow does that from a QTimer.
+No admin or power-setting changes; ends when ConanOps exits. The request is per
+thread, so always call from the GUI thread (MainWindow uses a QTimer).
 """
 from __future__ import annotations
 
@@ -26,8 +18,7 @@ _current: bool = False
 
 
 def set_keep_awake(on: bool) -> bool:
-    """Turns the request on/off. Returns whether the call succeeded
-    (always False off Windows)."""
+    """Returns whether the call succeeded (always False off Windows)."""
     global _current
     if sys.platform != "win32":
         return False

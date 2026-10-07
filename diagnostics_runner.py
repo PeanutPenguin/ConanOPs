@@ -1,18 +1,8 @@
 """
 Background QThread worker for diagnostics.run_diagnostics().
 
-Diagnostics now checks things that can genuinely take a few seconds --
-a live Windows Firewall rule lookup per port (netsh), UPnP router
-discovery (a socket-timeout-bound SSDP round trip), and a public-IP
-HTTP lookup when UPnP isn't available -- on top of the pre-existing
-2-second A2S query timeout when the server's running. Running all of
-that directly on the UI thread (as run_diagnostics() used to be
-called) would freeze the whole Diagnostics tab for however long the
-slowest of those takes, which is exactly the kind of confusing,
-"is it broken?" experience a diagnostics tool should never itself
-cause. Mirrors the same QThread-worker pattern update_runner.py,
-backup_runner.py, and network_setup_runner.py already use for their
-own potentially-slow calls.
+Firewall lookups (netsh), UPnP discovery, public-IP lookups and A2S queries
+can each take seconds, so they must stay off the UI thread.
 """
 from __future__ import annotations
 

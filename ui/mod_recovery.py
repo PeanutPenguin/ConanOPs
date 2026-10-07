@@ -1,26 +1,15 @@
 """
-Mod-break recovery: what ConanOps does by itself when a server keeps
-failing to start because of a mod -- usually right after a game update,
-before every mod author has caught up.
-
-1. Find the culprit automatically with the same world-protected search
-   as Mods > Find All Bad Mods (auto_bisect_runner): the world save is
-   snapshotted first and put back after every test, so testing never
-   changes the world.
-2. Then, depending on App Settings > "If a mod breaks the server":
-   - "wait" (default): keep the server stopped -- running without the
-     mod would permanently delete everything it added (buildings,
-     items) the moment the world saves. Check the broken mods' Workshop
-     pages every 30 minutes; as soon as one is updated, download it and
-     start the server again (and diagnose again if it still fails).
-   - "start_without": take a backup, turn the broken mods off and start
-     the server -- up as soon as possible, at the cost of those mods'
-     items. The backup can bring them back.
-   - "alert": only say which mod it was (the old behavior).
-
-Written as a mixin so it can be read on its own; MainWindow provides
-_notify, _known_running, _online_by_server, _automation_locked,
-_handle_mods_changed, _begin_post_update_watch, config.
+Automatic recovery when a mod keeps a server from starting (often right after
+a game update). Finds the culprit with the world-protected search
+(auto_bisect_runner), then per App Settings:
+  - "wait": keep the server stopped (running without the mod deletes its
+    buildings/items on the next save), check the Workshop every 30 minutes,
+    and restart once the mod is updated.
+  - "start_without": back up, disable the mods, start the server.
+  - "alert": only report the mod.
+Mixin for MainWindow, which provides _notify, _known_running,
+_online_by_server, _automation_locked, _handle_mods_changed,
+_begin_post_update_watch and config.
 """
 from __future__ import annotations
 
@@ -75,14 +64,9 @@ class ModRecoveryMixin:
 
     # ------------------------------------------------------------ start --
     def _start_mod_recovery(self, server, what: str, manual: bool = False) -> bool:
-        """Starts the automatic culprit search. True if it started (the
-        caller then says nothing more); False if recovery doesn't apply
-        here, so the caller should fall back to its own alert.
-
-        manual: someone asked for the check (the web version's "Find
-        Broken Mod") rather than the server failing -- it runs whatever
-        the recovery setting is, and a server that was running and turns
-        out fine is started again."""
+        """Start the automatic culprit search. False means recovery doesn't
+        apply and the caller should alert instead. manual: a requested check;
+        a server that was running and turns out fine is restarted."""
         mode = getattr(self.config, "mod_recovery_mode", MODE_WAIT)
         enabled = [m for m in server.mods if m.get("enabled", True)]
         if ((mode == MODE_ALERT and not manual) or not enabled or not server.steamcmd_dir
@@ -125,8 +109,7 @@ class ModRecoveryMixin:
         if server not in self.config.servers:
             return  # removed while testing
         names = {m["id"]: (m.get("name") or m["id"]) for m in server.mods}
-        # The search leaves modlist.txt at its findings; put the person's
-        # own list back -- what to load is decided below, not by the test.
+        # Restore the person's own mod list; what to load is decided below.
         self._handle_mods_changed(server)
         if manual:
             self._finish_manual_mod_check(server, outcome, names, was_running)

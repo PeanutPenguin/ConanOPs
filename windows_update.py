@@ -1,19 +1,9 @@
 """
-Windows Update restarts, on ConanOps' terms.
-
-Windows restarts the PC on its own after installing updates, at a time
-of its choosing outside "active hours" -- often in the middle of a play
-session, and with the game world not saved. Two things here:
-
-  * set_active_hours(): moves Windows' active hours to cover everything
-    except ConanOps' chosen restart window, so Windows' own automatic
-    restart is steered toward that window. (Windows caps active hours
-    at 18 hours, so a short window still leaves some extra hours where
-    Windows could pick -- ConanOps tries to restart first.)
-  * reboot_pending() + restart_pc(): MainWindow checks every minute;
-    inside the window, with an update restart pending and nobody online,
-    it saves and stops every server and restarts the PC itself. Servers
-    come back via auto-resume after the restart.
+Steers Windows Update restarts into ConanOps' restart window, since Windows
+otherwise restarts mid-session without saving the world. set_active_hours()
+covers everything outside the window (Windows caps active hours at 18h);
+MainWindow uses reboot_pending() + restart_pc() to restart in the window
+when nobody is online, after stopping servers.
 """
 from __future__ import annotations
 
@@ -38,8 +28,7 @@ MAX_ACTIVE_HOURS = 18
 
 
 def reboot_pending() -> bool:
-    """Whether Windows is waiting to restart to finish installing updates.
-    Reading these keys needs no admin rights."""
+    """Whether Windows is waiting to restart for updates (no admin needed)."""
     if sys.platform != "win32":
         return False
     import winreg
@@ -60,10 +49,8 @@ def _hour_of(hhmm: str, round_up: bool = False) -> int:
 
 
 def compute_active_hours(window_start: str, window_end: str) -> Optional[Tuple[int, int]]:
-    """Active hours (start_hour, end_hour) that avoid the restart window
-    [window_start, window_end): they begin at the window's end (rounded
-    up to the hour) and run until the window's start (rounded down),
-    capped at Windows' 18-hour maximum. None if there's no room."""
+    """(start_hour, end_hour) from the window's end (rounded up) to its start
+    (rounded down), capped at 18 hours. None if there's no room."""
     try:
         active_start = _hour_of(window_end, round_up=True)
         active_end = _hour_of(window_start)
@@ -78,9 +65,8 @@ def compute_active_hours(window_start: str, window_end: str) -> Optional[Tuple[i
 
 
 def set_active_hours(start_hour: int, end_hour: int) -> str:
-    """Writes Windows Update's active hours (needs Administrator rights:
-    one permission prompt). Also turns off "automatically adjust active
-    hours", which would otherwise move them again."""
+    """Writes active hours (one UAC prompt) and turns off "automatically
+    adjust active hours", which would move them again."""
     if sys.platform != "win32":
         return powershell.RUN_FAILED
     script = (
@@ -97,17 +83,13 @@ def set_active_hours(start_hour: int, end_hour: int) -> str:
 
 
 def restart_pc(delay_seconds: int = 60, reason: str = "ConanOps: restarting to finish Windows updates.") -> bool:
-    """Schedules a restart (shutdown /g). Standard user accounts
-    are allowed to restart their own PC; no admin rights needed."""
+    """Schedules a restart (shutdown /g); no admin rights needed."""
     if sys.platform != "win32":
         return False
     try:
         proc = subprocess.run(
-            # /g instead of /r: a full restart that, when Windows' "Use my
-            # sign-in info to automatically finish setting up after an
-            # update" (Automatic Restart Sign-On) is on, signs the person
-            # back in and locks the screen -- so ConanOps (started at
-            # sign-in) brings the servers back without anyone at the PC.
+            # /g, not /r: with Automatic Restart Sign-On it signs back in, so
+            # ConanOps (started at sign-in) brings the servers back.
             ["shutdown", "/g", "/t", str(int(delay_seconds)), "/c", reason[:500]],
             capture_output=True, text=True, timeout=15, **hidden_window_kwargs(),
         )
@@ -124,9 +106,8 @@ _ACTIVE_HOURS_VALUES = ("ActiveHoursStart", "ActiveHoursEnd", "SmartActiveHoursS
 
 
 def read_active_hours() -> dict:
-    """The current active-hours registry values ({name: int or None},
-    None = not set), read BEFORE ConanOps first changes them so
-    restore_script() can put them back exactly. Needs no admin rights."""
+    """Current active-hours values ({name: int or None}), saved before we
+    change them so restore_script() can put them back exactly."""
     out = {name: None for name in _ACTIVE_HOURS_VALUES}
     if sys.platform != "win32":
         return out
@@ -145,8 +126,7 @@ def read_active_hours() -> dict:
 
 
 def restore_script(original: dict) -> str:
-    """PowerShell (elevated) that puts the active-hours values back to
-    `original` -- removing any value that didn't exist before."""
+    """Elevated PowerShell restoring `original`, removing values that didn't exist."""
     lines = ["try {\n$k = 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings'\n",
              "if (Test-Path $k) {\n"]
     for name in _ACTIVE_HOURS_VALUES:
@@ -166,17 +146,13 @@ def restore_active_hours(original: dict) -> str:
     return powershell.run_privileged(restore_script(original) + "exit 0\n")
 
 
-# --------------------------------------------------------------------- #
-# "Use my sign-in info to automatically finish setting up after an
-# update" (Automatic Restart Sign-On). Without it, a PC that restarts
-# for updates sits at the sign-in screen and ConanOps -- which starts
-# when someone signs in -- doesn't come back until someone does.
-# --------------------------------------------------------------------- #
+# Automatic Restart Sign-On ("Use my sign-in info..."). Without it, a PC
+# restarted for updates waits at sign-in and ConanOps never starts.
 
 AUTO_SIGN_IN_ON = "on"
 AUTO_SIGN_IN_OFF = "off"
-AUTO_SIGN_IN_BLOCKED = "blocked"   # turned off by a policy (work/school PC); can't be changed here
-AUTO_SIGN_IN_UNKNOWN = "unknown"   # couldn't tell (setting never touched, or older Windows)
+AUTO_SIGN_IN_BLOCKED = "blocked"   # disabled by policy; can't be changed here
+AUTO_SIGN_IN_UNKNOWN = "unknown"   # unset or older Windows
 
 SIGN_IN_SETTINGS_URI = "ms-settings:signinoptions"
 
@@ -192,9 +168,8 @@ def _current_user_sid() -> str:
 
 
 def auto_sign_in_status() -> str:
-    """Reads the setting without needing admin rights. Only reports OFF
-    when Windows positively says so -- an unset value means Windows'
-    default, which differs between editions, so that's UNKNOWN."""
+    """Reads the setting (no admin). Unset is UNKNOWN, since the default
+    differs between Windows editions."""
     if sys.platform != "win32":
         return AUTO_SIGN_IN_UNKNOWN
     import winreg

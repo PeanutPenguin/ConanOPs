@@ -1,20 +1,7 @@
-"""
-Runs web requests' actions on the app's GUI thread.
+"""Runs web-request actions on the GUI thread, which owns all app state.
 
-The web server answers on background threads, but ConanOps' state (the
-server list, the settings pages, the workers) belongs to the GUI thread.
-Every action is posted there and the request waits for the result, so a
-web click runs exactly the code a click in the app would.
-
-While a web action runs, any dialog the app would normally pop up (a
-warning, a "are you sure?") is captured instead of shown -- nobody is
-sitting at the PC to click it -- and returned to the browser as text.
-Questions are answered "No", the safe choice.
-
-Windows permission (UAC) prompts are never shown during a web action
-either -- nobody is at the PC to answer them (see powershell.no_prompts).
-Changes that need one wait for someone at the PC instead, unless
-ConanOps runs with administrator rights and needs no prompt at all.
+During a web action nobody is at the PC, so message boxes are captured and
+returned as text (questions answer "No"), and UAC prompts are suppressed.
 """
 from __future__ import annotations
 
@@ -96,8 +83,8 @@ class GuiBridge(QObject):
             job["done"].set()
 
     def call(self, fn: Callable[[], Any], timeout: float = 60.0) -> Tuple[Any, List[str]]:
-        """Runs fn() on the GUI thread; returns (result, captured dialog
-        messages). Raises whatever fn raised, or TimeoutError."""
+        """Runs fn() on the GUI thread; returns (result, captured messages).
+        Re-raises fn's exception, or raises TimeoutError."""
         app = QApplication.instance()
         if app is None or QThread.currentThread() is app.thread():
             with captured_dialogs() as msgs:

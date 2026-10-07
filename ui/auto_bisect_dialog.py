@@ -1,11 +1,6 @@
 """
-Automatic mod bisect dialog -- runs auto_bisect_runner.AutoBisectWorker
-and shows its progress, then offers Delete/Keep Disabled/Re-enable for
-whatever it found (applied to ALL found mods at once, in find_all
-mode, since the dialog doesn't ask for one-at-a-time decisions on
-what's fundamentally one search result). See that module's docstring
-for how the actual restart-wait-check loop and, for find_all, the
-delta-debugging pass work; this file is purely the UI around it.
+Automatic mod bisect dialog: runs auto_bisect_runner.AutoBisectWorker, shows
+progress, then offers Delete/Keep Disabled/Re-enable for all found mods at once.
 """
 from __future__ import annotations
 
@@ -21,13 +16,8 @@ from ui import assets
 from auto_bisect_runner import AutoBisectWorker
 from models import ServerConfig
 
-# How long to wait, when the dialog is closed (X button or Escape)
-# while a worker is still running, for its cancel-and-restore sequence
-# to actually finish before letting the dialog go away. Generous:
-# worst case that sequence is graceful_stop's own wait (up to ~20s),
-# plus this module's own post-stop confirmation (10s), plus writing
-# modlist.txt and possibly relaunching -- comfortably under a minute,
-# but not comfortably under the 30s this used to allow.
+# Max wait on close for a running worker's cancel-and-restore (graceful stop
+# ~20s + confirmation 10s + modlist write/relaunch).
 _CLOSE_WAIT_MS = 60_000
 
 
@@ -40,12 +30,7 @@ class AutoBisectDialog(QDialog):
         self.find_all = find_all
         self.was_running = was_running
         self.on_changed = on_changed
-        # callable(server) -> None -- set by ModsPage, wired to
-        # MainWindow's normal restart handler. Used only by "Re-enable
-        # Anyway": that's the one choice here that changes what SHOULD
-        # be running versus what actually is (Delete/Keep Disabled
-        # both match what the worker already left running -- see
-        # AutoBisectWorker._settle).
+        # callable(server); only "Re-enable Anyway" needs a restart.
         self.restart_server = restart_server
         self._worker: Optional[AutoBisectWorker] = None
         self._outcome = None
@@ -126,16 +111,8 @@ class AutoBisectDialog(QDialog):
         self._worker.start()
 
     def _cancel_and_wait_if_running(self) -> None:
-        """Shared by closeEvent (X button) and reject() (Escape, or
-        any other path that dismisses the dialog without going through
-        accept()) -- both must cancel a still-running worker and wait
-        for its cancel-and-restore sequence to actually finish before
-        letting the dialog go away. Escape used to skip this entirely
-        (QDialog's default reject() just hides the dialog), leaving
-        the worker to keep restarting the server in the background
-        with no one watching it, the automation lock never released,
-        and this dialog liable to be destroyed while its QThread was
-        still running."""
+        """Used by closeEvent and reject(): cancels a running worker and waits
+        for its restore to finish, so the QThread isn't destroyed mid-run."""
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(_CLOSE_WAIT_MS)
@@ -205,14 +182,8 @@ class AutoBisectDialog(QDialog):
         self.spinner.hide()
         self.cancel_btn.setVisible(False)
         self.close_btn.setVisible(True)
-        # The worker has already written outcome.mods to modlist.txt
-        # (AutoBisectWorker._settle) -- commit the SAME list to the
-        # server's config right now, whatever the outcome, rather than
-        # only if the person later clicks Delete/Keep Disabled/Re-enable.
-        # Before this, just closing the dialog after a result left the
-        # Mods tab showing culprits as enabled while modlist.txt had
-        # them off, and the next unrelated mod edit silently re-enabled
-        # them.
+        # Commit the list the worker wrote to modlist.txt now, so config and
+        # file agree even if the dialog is just closed.
         self._apply_final_mods()
 
         skipped_note = ""
@@ -294,13 +265,8 @@ class AutoBisectDialog(QDialog):
 
         names = self._names(outcome.found_culprits)
         if outcome.unresolved_suspects:
-            # A PARTIAL result: something failed on its own, but the run
-            # couldn't confirm that removing it fixes things (the final
-            # sanity check still failed, or the round cap stopped it).
-            # The worker restored the ORIGINAL mod list in this case --
-            # nothing is disabled -- so offering "Keep Disabled" here
-            # would be a lie, and "Delete" would act on an unconfirmed
-            # guess. Report it and leave the decision to the person.
+            # Partial result: the original mod list was restored, so offer no
+            # Keep Disabled/Delete; leave the decision to the person.
             self.status_label.setText(
                 f"Partial result -- the original mod list has been restored and nothing was disabled.\n\n"
                 f"Failed when tested: {names}. But the server still wasn't confirmed healthy with "
@@ -321,8 +287,7 @@ class AutoBisectDialog(QDialog):
             b.setVisible(True)
 
     def _names(self, mod_ids) -> str:
-        """Display names instead of raw Workshop ids where known --
-        "Pippi (880454836)" reads a lot better than a bare number."""
+        """Display names with Workshop ids, e.g. "Pippi (880454836)"."""
         by_id = {m["id"]: m for m in self.server.mods}
         out = []
         for mid in mod_ids:
@@ -331,11 +296,7 @@ class AutoBisectDialog(QDialog):
         return ", ".join(out)
 
     def _apply_final_mods(self) -> None:
-        """Commits the worker's final mod list (whatever state it left
-        things in -- see AutoBisectWorker's docstring) to the actual
-        server, the same "reassign server.mods, then tell the caller"
-        pattern every other mod_manager-backed action in this app
-        already uses."""
+        """Commits the worker's final mod list to the server config."""
         self.server.mods = [dict(m) for m in self._outcome.mods]
         if self.on_changed:
             self.on_changed(self.server)
@@ -384,9 +345,7 @@ class AutoBisectDialog(QDialog):
             )
             self.restart_server(self.server)
         elif not self.was_running:
-            # The server was stopped before this run and the worker
-            # left it stopped -- re-enabling a mod is no reason to
-            # start a server the person had deliberately turned off.
+            # It was stopped on purpose before the run; don't start it.
             self._finish_result_choice(
                 f"Mod(s) {names} re-enabled -- they'll load the next time you start the server. If "
                 f"they really were the cause, the problem will likely come back."

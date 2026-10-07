@@ -1,13 +1,6 @@
 """
-Background QThread worker for restoring a backup.
-
-restore_backup() extracts a zip (and, before that, takes a full
-safety backup of the current world) -- for a large save this can take
-a real amount of time, and running it on the main thread would freeze
-the whole UI for the duration. This wraps the full restore sequence
-(stop the server, restore, relaunch if it was running) so it happens
-off the main thread, mirroring the same QThread-worker pattern
-`update_runner.py` uses for SteamCMD updates.
+Background QThread worker for restoring a backup (stop, restore, relaunch),
+since a large restore would freeze the UI on the main thread.
 """
 from __future__ import annotations
 
@@ -18,10 +11,8 @@ import process_manager
 
 
 class RestoreWorker(QThread):
-    """Stops the server, restores `entry` into it, and relaunches it
-    (only if it was running before). Any failure at any step is
-    caught and reported via the signal rather than raised -- a broken
-    restore shouldn't crash the whole app."""
+    """Stops the server, restores `entry`, relaunches if it was running.
+    Failures are reported via the signal, never raised."""
     finished_restore = Signal(bool, str)  # success, error message (empty on success)
 
     def __init__(self, server, entry, was_running: bool, parent=None):

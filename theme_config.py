@@ -1,14 +1,7 @@
 """
-User-editable color theme for ConanOps, stored as its own JSON file
-separately from server config (~/ConanOps/theme.json) so a theme --
-including one someone else made -- can be dropped in and used just by
-placing the file, no code changes needed.
-
-A missing file, or a file missing/invalid on some keys, falls back to
-DEFAULT_PALETTE field-by-field -- a partial file (just `{"accent":
-"#3f7fd6"}`) is enough to override only what you actually want
-changed. Unknown keys are ignored rather than erroring, so an older
-theme.json stays loadable if new fields get added later.
+User-editable color theme in ~/ConanOps/theme.json, separate from server
+config so themes can be shared as files. Missing or invalid keys fall back
+to DEFAULT_PALETTE one field at a time; unknown keys are ignored.
 """
 from __future__ import annotations
 
@@ -27,10 +20,7 @@ _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 @dataclass
 class ThemePalette:
-    # Charcoal + ember defaults (the 9router-inspired redesign). Fonts
-    # are bundled with the app (assets/fonts, loaded by ui.assets), so
-    # Geist is always available; the fallbacks only matter for a
-    # theme.json that names a font that isn't installed.
+    # Geist is bundled (assets/fonts); fallbacks matter only for custom fonts.
     bg: str = "#1d1d1d"          # page background
     panel: str = "#252525"       # cards / tiles
     panel_alt: str = "#181818"   # sidebar, inputs, log views
@@ -49,12 +39,8 @@ class ThemePalette:
 
 DEFAULT_PALETTE = ThemePalette()
 
-# The defaults before the redesign. Older versions of ConanOps wrote the
-# whole palette to theme.json on every Apply, so most people's file is
-# full of these exact values even though they never chose them. Any
-# field still holding its OLD default is read as "not customized" and
-# gets the new default instead; fields someone actually changed are
-# kept. (Accent is the same in both, so it's unaffected either way.)
+# Old defaults that older versions saved to every theme.json; a field still
+# holding one is treated as not customized.
 LEGACY_DEFAULTS = {
     "bg": "#1c1712",
     "panel": "#1c1712",
@@ -71,9 +57,7 @@ LEGACY_DEFAULTS = {
     "font_mono": "'IBM Plex Mono', Consolas, monospace",
 }
 
-# Human-readable labels for the fields a color-picker UI should show,
-# in display order. Font fields are edited as plain text, not a color
-# picker, so they're listed separately.
+# Display order and labels for the theme editor; fonts are edited as text.
 COLOR_FIELD_LABELS = [
     ("accent", "Accent"),
     ("bg", "Background"),
@@ -122,9 +106,9 @@ def load_theme(path: Optional[str] = None) -> ThemePalette:
 
     for key, value in raw.items():
         if key not in _VALID_FIELDS:
-            continue  # unknown/future key -- ignore rather than error
+            continue
         if isinstance(value, str) and LEGACY_DEFAULTS.get(key, "").lower() == value.strip().lower():
-            continue  # an old default nobody chose -- see LEGACY_DEFAULTS
+            continue  # see LEGACY_DEFAULTS
         if key in _COLOR_FIELDS:
             if isinstance(value, str) and _HEX_RE.match(value):
                 setattr(palette, key, value)

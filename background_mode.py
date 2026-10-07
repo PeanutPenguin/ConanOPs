@@ -1,38 +1,9 @@
-"""
-Unattended ("background") mode: keeps servers managed when nobody is
-signed into Windows -- after a power cut, a Windows Update restart, or
-someone signing out.
+"""Unattended ("background") mode: keeps servers managed when nobody is signed in.
 
-How it works
-------------
-A Task Scheduler task ("\\ConanOps\\ConanOps Background") runs as the
-person's own account with "run whether the user is logged on or not"
-(S4U logon -- no password is stored). It fires at startup and then every
-2 minutes. Each run is a tiny PowerShell check: if no ConanOps process
-exists, it starts `ConanOps.exe --background` and waits on it. While
-that instance runs, the task stays "Running", so the 2-minute repeats
-are skipped (MultipleInstances = IgnoreNew). The ConanOps.exe onefile
-bundle is therefore only unpacked when it's actually needed, not every
-2 minutes.
-
-The background instance is the normal app with no window: same
-scheduler, watchdog, auto-resume, updates and backups. Servers it starts
-live in the background session, so they survive people signing in and
-out.
-
-Handoff
--------
-Only one ConanOps runs at a time (main.py's lock file). When someone
-opens ConanOps normally while a background instance holds the lock, the
-new window drops a handoff request file; the background instance sees
-it within ~2 seconds and exits WITHOUT stopping any server, and the
-window takes over (it finds the already-running servers by their exe
-path). When the window is closed or the person signs out, the task
-starts a background instance again within 2 minutes.
-
-Registering the task needs Administrator rights (one permission
-prompt). The task itself runs with normal rights (RunLevel Limited), the
-same as the window, so both can read and write the same files.
+A Task Scheduler task (S4U logon, RunLevel Limited, so it shares files with the
+window) runs at startup and every 2 minutes, starting `ConanOps.exe --background`
+only if no ConanOps process exists. When a window opens, it drops a handoff file;
+the background instance exits within ~2s without stopping any server.
 """
 from __future__ import annotations
 
@@ -47,11 +18,8 @@ import powershell
 
 _log = applog.get_logger(__name__)
 
-# Off for now: tasks that run with "Do not store password" (S4U) can
-# break Windows' data protection (DPAPI) for the account -- ConanOps
-# encrypts RCON/server passwords with it, and the same breakage can hit
-# browsers' saved passwords and other apps. The setting is only shown to
-# someone who already turned it on, so they can turn it back off.
+# Disabled: S4U tasks can break DPAPI for the account, which ConanOps (and
+# browsers) use to encrypt saved passwords. Shown only so it can be turned off.
 AVAILABLE = False
 
 TASK_NAME = "ConanOps Background"
@@ -63,12 +31,7 @@ _OWNER_FILE = "instance.json"
 _HANDOFF_FILE = "handoff.request"
 
 
-# --------------------------------------------------------------------- #
-# What the task runs
-# --------------------------------------------------------------------- #
-
 def _app_command() -> tuple:
-    """(executable, argument list) that starts ConanOps itself."""
     if getattr(sys, "frozen", False):
         return sys.executable, []
     exe = sys.executable
@@ -86,11 +49,8 @@ def task_action() -> tuple:
     if getattr(sys, "frozen", False):
         workdir = ntpath.dirname(exe)
         process_name = ntpath.splitext(ntpath.basename(exe))[0]
-        # WaitForExit() on the started process only -- NOT Start-Process
-        # -Wait, which in Windows PowerShell also waits for every
-        # descendant, i.e. the game servers, and would keep the task
-        # "Running" (blocking the 2-minute restarts) long after ConanOps
-        # itself handed off and exited.
+        # Not Start-Process -Wait: that also waits for descendants (the game
+        # servers), keeping the task "Running" after ConanOps exits.
         check = (
             f"if (-not (Get-Process -Name {powershell.ps_str(process_name)} -ErrorAction SilentlyContinue)) "
             f"{{ Start-Process -FilePath {powershell.ps_str(exe)} -ArgumentList {powershell.ps_str(BACKGROUND_FLAG)} "
@@ -98,7 +58,6 @@ def task_action() -> tuple:
         )
         args = f'-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "{check}"'
         return powershell.powershell_exe(), args, workdir
-    # Running from source: the lock file alone keeps this to one instance.
     workdir = os.path.dirname(os.path.abspath(extra[0]))
     args = " ".join(f'"{a}"' for a in [*extra, BACKGROUND_FLAG])
     return exe, args, workdir
@@ -110,13 +69,8 @@ def _current_user() -> str:
     return f"{domain}\\{user}" if domain else user
 
 
-# --------------------------------------------------------------------- #
-# Task registration (elevated) and status (read-only)
-# --------------------------------------------------------------------- #
-
 def register() -> str:
-    """Creates/updates the task. Returns powershell.RUN_OK / RUN_DECLINED
-    / RUN_FAILED. One permission prompt."""
+    """Creates/updates the task (one UAC prompt). Returns powershell.RUN_OK / RUN_DECLINED / RUN_FAILED."""
     if sys.platform != "win32":
         return powershell.RUN_FAILED
     execute, arguments, workdir = task_action()
@@ -130,8 +84,7 @@ def register() -> str:
         f"$principal = New-ScheduledTaskPrincipal -UserId {q(_current_user())} -LogonType S4U -RunLevel Limited\n"
         "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
         "-ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable\n"
-        # Task Scheduler runs tasks at below-normal priority (7) by default,
-        # which the game servers would inherit. 4 = normal.
+        # Default task priority 7 (below normal) would be inherited by servers; 4 = normal.
         "$settings.Priority = 4\n"
         f"Register-ScheduledTask -TaskName {q(TASK_NAME)} -TaskPath {q(TASK_PATH)} -Action $action "
         "-Trigger @($atStartup, $repeat) -Principal $principal -Settings $settings "
@@ -150,10 +103,7 @@ def unregister() -> str:
     q = powershell.ps_str
     script = (
         f"$t = Get-ScheduledTask -TaskName {q(TASK_NAME)} -TaskPath {q(TASK_PATH)} -ErrorAction SilentlyContinue\n"
-        # No Stop-ScheduledTask: stopping a running task can end its whole
-        # process tree, which would include servers a background instance
-        # started. (This runs from the window, so no background instance
-        # is running anyway.)
+        # No Stop-ScheduledTask: it can kill the whole process tree, including servers.
         "if ($t) { $t | Unregister-ScheduledTask -Confirm:$false }\n"
         "exit 0\n"
     )
@@ -163,8 +113,7 @@ def unregister() -> str:
 
 
 def status() -> Optional[dict]:
-    """{"exists": bool, "state": str, "matches": bool} or None if the
-    check couldn't run (or the task isn't visible to this account)."""
+    """{"exists", "state", "matches"}, or None if the check couldn't run."""
     if sys.platform != "win32":
         return None
     q = powershell.ps_str
@@ -190,10 +139,6 @@ def status() -> Optional[dict]:
                and str(data.get("arguments", "")) == arguments)
     return {"exists": True, "state": data.get("state", ""), "matches": matches}
 
-
-# --------------------------------------------------------------------- #
-# Which instance owns the app right now, and handoff
-# --------------------------------------------------------------------- #
 
 def _path(name: str) -> str:
     return os.path.join(conanops_paths.no_space_root(), name)
@@ -260,14 +205,8 @@ def clear_handoff() -> None:
         pass
 
 
-# --------------------------------------------------------------------- #
-# Uninstall
-# --------------------------------------------------------------------- #
-
 def stop_other_instances() -> int:
-    """Ends every other ConanOps process (window or background) --
-    never the game servers, which are separate processes and keep
-    running. Used by the uninstaller so the app's files aren't locked."""
+    """Ends every other ConanOps process (not the game servers) so the uninstaller can remove files."""
     import psutil
     me = os.getpid()
     skip = {me}

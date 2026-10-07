@@ -1,19 +1,7 @@
-"""
-"Access from anywhere": a Cloudflare quick tunnel.
+"""Access from anywhere: the web UI via a Cloudflare quick tunnel (free, no account, HTTPS).
 
-cloudflared (Cloudflare's official tunnel program) makes an outgoing
-connection to Cloudflare and gets a random https://<words>.trycloudflare.com
-address that forwards to the web version on this PC. No router changes,
-the home IP stays hidden, and Cloudflare provides the HTTPS -- so the
-password and session cookie are encrypted on the way.
-
-  * cloudflared is downloaded once from Cloudflare's GitHub releases into
-    ConanOps' data folder, and only used if Windows confirms it's validly
-    signed by Cloudflare.
-  * The address changes each time the tunnel starts; ConanOps shows the
-    current one (and sends it to ntfy alerts when it changes).
-  * Quick tunnels are Cloudflare's free, no-account option and come
-    without an uptime guarantee; if it drops, it's restarted.
+cloudflared is downloaded once and only used if validly signed by Cloudflare.
+The trycloudflare.com address changes on each start; dropped tunnels restart.
 """
 from __future__ import annotations
 
@@ -58,8 +46,7 @@ def _signed_by_cloudflare(path: str) -> bool:
 
 
 def ensure_installed(progress: Callable[[str], None] = lambda _m: None) -> bool:
-    """Downloads cloudflared if it isn't there yet. Never runs anything
-    that isn't validly signed by Cloudflare."""
+    """Downloads cloudflared if missing; rejects it unless signed by Cloudflare."""
     path = exe_path()
     if os.path.exists(path):
         return True
@@ -83,7 +70,7 @@ def ensure_installed(progress: Callable[[str], None] = lambda _m: None) -> bool:
 
 
 def _kill_leftover() -> None:
-    """A cloudflared ConanOps started before it last closed (or crashed)."""
+    """Kills a cloudflared left over from a previous run."""
     try:
         with open(_pid_file(), "r", encoding="utf-8") as f:
             pid = int(f.read().strip())
@@ -104,9 +91,8 @@ def _kill_leftover() -> None:
 
 
 class Tunnel:
-    """Keeps one quick tunnel running to http://localhost:<port>.
-    on_change(url_or_empty, status_text) is called from a background
-    thread whenever the address or status changes."""
+    """Keeps one quick tunnel to http://localhost:<port> running.
+    on_change(url_or_empty, status_text) is called from a background thread."""
 
     def __init__(self, on_change: Callable[[str, str], None]):
         self._on_change = on_change

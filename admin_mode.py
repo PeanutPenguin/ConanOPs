@@ -1,28 +1,8 @@
-"""
-"Run with admin rights": ConanOps runs elevated without a permission
-(UAC) prompt each time, so nothing it does -- from the app or from the
-web version -- ever waits for someone to click "Yes" at the PC.
-
-How it works
-------------
-Turning it on registers a Task Scheduler task, "ConanOps (admin)", that
-runs ConanOps as the signed-in person with highest privileges. Windows
-asks for permission ONCE, to create the task. After that:
-
-  * Whenever ConanOps starts without admin rights (from the Start menu,
-    at sign-in, or reopened by keep-alive) it asks Task Scheduler to
-    start the task -- which needs no prompt -- and closes; the copy the
-    task starts has admin rights. A copy started that way carries
-    --elevated, so it never tries again (no loops).
-  * If the task can't start, ConanOps just keeps running normally.
-  * Copies ConanOps starts itself (after an update) inherit the rights.
-
-The task has no trigger of its own -- it only runs when ConanOps starts
-it -- and runs only while that person is signed in. Turning the option
-off (or Delete Everything / uninstalling) removes it.
-
-Trade-off: anything that can change the files in ConanOps' folder could
-then run with admin rights without a prompt.
+""""Run with admin rights": a Task Scheduler task ("ConanOps (admin)") runs
+ConanOps elevated with no UAC prompt. An unelevated start asks Task Scheduler
+to run the task and exits; the elevated copy gets --elevated so it never loops.
+The task has no trigger of its own. Trade-off: anything that can change files
+in ConanOps' folder could run with admin rights without a prompt.
 """
 from __future__ import annotations
 
@@ -83,8 +63,7 @@ def _current_user() -> str:
 
 
 def register_script() -> str:
-    """Comment line first: it's what shows up if the web version has to
-    report that this needs the PC."""
+    """The leading comment line is what the web version shows if this needs the PC."""
     q = powershell.ps_str
     exe, args, workdir = _app_command()
     return (
@@ -147,7 +126,7 @@ def enable() -> str:
 
 def disable() -> str:
     """Stops using admin rights from the next start. The switch file goes
-    first, so even if removing the task fails, it's no longer used."""
+    first so the task is unused even if removing it fails."""
     _remove_switch()
     if sys.platform != "win32":
         return powershell.RUN_OK
@@ -186,8 +165,8 @@ def status() -> Optional[dict]:
 
 
 def ensure(enabled: bool) -> Optional[str]:
-    """Background startup check. Elevated: silently re-registers a
-    missing or outdated task. Returns a problem to show, or None."""
+    """Background startup check; when elevated, re-registers a missing or
+    outdated task. Returns a problem to show, or None."""
     if sys.platform != "win32" or not enabled:
         return None
     try:
@@ -215,10 +194,8 @@ def should_relaunch(argv: List[str]) -> bool:
 
 
 def task_points_here() -> bool:
-    """Whether the task starts THIS copy of ConanOps. A task left pointing
-    at a moved or older copy must not be used: it would start that copy
-    (with admin rights) instead of this one. Fast (schtasks, no
-    PowerShell), since it runs at every start."""
+    """Whether the task starts THIS copy; a stale task would start another
+    copy with admin rights. Uses schtasks (fast) since it runs at every start."""
     import xml.etree.ElementTree as ET
     try:
         proc = subprocess.run(["schtasks.exe", "/Query", "/TN", TASK_PATH + TASK_NAME, "/XML"], capture_output=True,
@@ -280,11 +257,9 @@ def _run_task() -> bool:
 
 
 def relaunch_elevated(argv: List[str], lock, lock_path: str, wait_seconds: float = 20.0) -> bool:
-    """Called with the single-instance `lock` held. Hands over to the
-    elevated copy: releases the lock, starts the task, and returns True
-    once the new copy has taken the lock (this copy should then exit).
-    Returns False -- with the lock held again -- if that didn't happen,
-    so this copy carries on without admin rights."""
+    """Called with the single-instance `lock` held. Returns True once the
+    elevated copy holds the lock (this copy should exit), else False with
+    the lock re-acquired."""
     from PySide6.QtCore import QLockFile
     try:
         with open(_path(_ARGS_FILE), "w", encoding="utf-8") as f:
@@ -314,9 +289,7 @@ def relaunch_elevated(argv: List[str], lock, lock_path: str, wait_seconds: float
 
 
 def restart_elevated() -> bool:
-    """From a running (unelevated) ConanOps: start the elevated copy. The
-    caller closes this one (releasing the lock) only if this returns True;
-    the new copy waits for the lock."""
+    """Start the elevated copy; the caller closes this one only if True."""
     try:
         with open(_path(_ARGS_FILE), "w", encoding="utf-8") as f:
             json.dump({"time": time.time(), "args": []}, f)
@@ -328,8 +301,8 @@ def restart_elevated() -> bool:
 # --------------------------------------------------------------------- #
 # Closing an elevated copy from an unelevated one (the uninstaller)
 # --------------------------------------------------------------------- #
-# A program without admin rights can't end one that has them, so the
-# uninstaller asks: it writes a file the elevated copy checks for.
+# Unelevated programs can't end elevated ones, so the uninstaller writes a
+# file the elevated copy checks for.
 
 def request_quit() -> None:
     try:

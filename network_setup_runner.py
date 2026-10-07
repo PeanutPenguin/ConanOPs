@@ -1,8 +1,5 @@
-"""
-Background QThread workers for networking changes (firewall rules and
-UPnP router forwards), so netsh/PowerShell, UAC prompts and router
-round-trips never run on the GUI thread.
-"""
+"""QThread workers for firewall and UPnP changes, so netsh/PowerShell, UAC
+prompts and router round-trips never run on the GUI thread."""
 from __future__ import annotations
 
 from typing import Iterable, Optional
@@ -16,19 +13,9 @@ _log = applog.get_logger(__name__)
 
 
 class FirewallReconcileWorker(QThread):
-    """Brings one server's networking in line with its settings, or
-    removes it entirely.
-
-    - remove=False: firewall rules re-created for game/game+1/query (any
-      older ConanOps rule for this server id is removed in the same
-      script -- one UAC prompt total), and UPnP forwards reconciled to
-      bind_ip (stale forwards for old ports/IPs removed).
-    - remove=True: every firewall rule and UPnP forward for this server
-      id is removed (server deleted / wizard cancelled).
-
-    Emits finished_reconcile(dict) with "fw_results", "upnp" and
-    "error" keys; always emits, even on an unexpected exception, so the
-    caller's worker list gets cleaned up."""
+    """Reconcile one server's firewall rules and UPnP forwards with its
+    settings (one UAC prompt), or remove them all when remove=True.
+    Always emits finished_reconcile({"fw_results", "upnp", "error"})."""
     finished_reconcile = Signal(object)
 
     def __init__(self, server_id: str, display_name: str = "", game_port: int = 0, query_port: int = 0,
@@ -110,8 +97,8 @@ class WizardNetworkSetupWorker(QThread):
             public_ip = network_setup.get_public_ip()
             router_ip = network_utils.get_default_gateway(detected_ip)
             external_ip = upnp.get("external_ip")
-            # Double NAT / CGNAT: the router's own WAN address is private,
-            # or differs from the address the internet sees.
+            # Double NAT / CGNAT: router WAN address is private or differs
+            # from the public address.
             double_nat = bool(upnp.get("double_nat")) or bool(
                 external_ip and public_ip and external_ip != public_ip
             )
@@ -133,8 +120,7 @@ class WizardNetworkSetupWorker(QThread):
 
 
 class GuideInfoWorker(QThread):
-    """Router + public IP lookups for the port-forwarding guide, off the
-    GUI thread (route print + an HTTPS round trip)."""
+    """Router and public IP lookups for the port-forwarding guide."""
     finished_info = Signal(object)  # (router_ip, public_ip)
 
     def __init__(self, local_ip: Optional[str], parent=None):

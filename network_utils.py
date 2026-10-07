@@ -1,21 +1,7 @@
 """
-Networking helpers used across ConanOps.
-
-- get_local_ip(): the machine's real LAN-facing IP (for -MULTIHOME). This is
-  deliberately NOT the public/WAN IP -- MULTIHOME needs a local interface
-  address to bind to.
-- is_udp_port_free / is_tcp_port_free: true bind-tests, not just "ask the OS
-  for a process list" -- this catches anything holding the port regardless
-  of what owns it.
-- find_free_port_pair(): given a starting game port, finds a free
-  (game_port, query_port) pair, skipping any also used by other ConanOps
-  servers (passed in as `reserved`).
-- query_a2s_info(): sends a real Source-engine A2S_INFO query over UDP so
-  the app can confirm a server is actually bound and answering, not just
-  that its process exists.
-- get_default_gateway(): best-effort router IP (from the routing table), for the manual
-  port-forwarding guide (ui/port_forwarding_guide_dialog.py) -- so its
-  first step can say "try this address" instead of nothing at all.
+Networking helpers: LAN IP detection (for -MULTIHOME, never the public IP),
+real bind-tests for free ports, free port-pair search, A2S_INFO queries to
+confirm a server is answering, and best-effort default gateway lookup.
 """
 from __future__ import annotations
 
@@ -29,10 +15,8 @@ import psutil
 import proc_utils
 
 
-# Interface names that are almost never the LAN adapter a home server
-# should bind to / have ports forwarded to: VPN clients, virtual
-# switches, VM host adapters. Matched case-insensitively against the
-# adapter's friendly name (psutil.net_if_addrs() keys).
+# Adapter names (VPNs, virtual switches, VMs) that are never the LAN adapter
+# a home server should bind to. Matched against psutil's friendly names.
 _VIRTUAL_IFACE_RE = re.compile(
     r"vpn|\btap\b|tap-|\btun\b|wireguard|\bwg\d|nordlynx|openvpn|tailscale|zerotier|hamachi|"
     r"radmin|proton|mullvad|expressvpn|surfshark|windscribe|cisco|anyconnect|fortinet|forticlient|"
@@ -66,16 +50,14 @@ def is_private_ipv4(ip: str) -> bool:
 
 
 def is_cgnat_ipv4(ip: str) -> bool:
-    """RFC 6598 shared address space (100.64.0.0/10) -- what carrier-
-    grade NAT hands a home router as its 'WAN' address."""
+    """RFC 6598 CGNAT range (100.64.0.0/10)."""
     o = _octets(ip)
     return bool(o) and o[0] == 100 and 64 <= o[1] <= 127
 
 
 def is_non_public_ipv4(ip: str) -> bool:
-    """True for any address that can't be a real public internet
-    address: private, CGNAT, loopback, link-local, or unspecified. Used
-    to spot double NAT / CGNAT when the router reports its own WAN IP."""
+    """Private, CGNAT, loopback, link-local or unspecified. Used to spot
+    double NAT / CGNAT from the router's WAN IP."""
     o = _octets(ip)
     if not o:
         return False
@@ -86,10 +68,7 @@ def is_non_public_ipv4(ip: str) -> bool:
 
 
 def is_usable_lan_ipv4(ip: str) -> bool:
-    """A real, assigned interface address: not loopback, not
-    unspecified, and not a 169.254.x.x APIPA address (which is what
-    Windows self-assigns when DHCP hasn't answered yet -- e.g. early
-    during boot -- and is never what a server should bind to)."""
+    """Not loopback, unspecified, or 169.254.x.x (APIPA, DHCP not ready)."""
     o = _octets(ip)
     if not o:
         return False
@@ -117,10 +96,8 @@ def is_virtual_interface_ip(ip: str) -> bool:
     return bool(name and _VIRTUAL_IFACE_RE.search(name))
 
 
-# `route print -4` data rows are plain numbers in every Windows display
-# language (only the headers are translated), unlike `ipconfig`, whose
-# "Default Gateway" label is localized and whose IPv4 gateway sits on an
-# unlabeled continuation line on any dual-stack adapter.
+# `route print -4` data rows are language-independent, unlike `ipconfig`'s
+# localized labels and split gateway lines on dual-stack adapters.
 _DEFAULT_ROUTE_RE = re.compile(
     r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s*$"
 )
@@ -158,18 +135,10 @@ def _udp_route_guess() -> Optional[str]:
 
 
 def get_local_ip() -> str:
-    """Best-effort LAN IP of the PHYSICAL network adapter -- the one a
-    home router forwards ports to.
-
-    The old approach (open a UDP 'connection' to 8.8.8.8 and read the
-    local address back) returns whatever adapter owns the default route,
-    which with a VPN connected is the VPN tunnel -- so the server got
-    bound to, and port-forwarded to, the VPN's address. This prefers,
-    in order: the lowest-metric default route on a non-VPN/non-virtual
-    adapter; the routing-table guess if it isn't a virtual adapter; any
-    private address on a non-virtual adapter; then anything usable at
-    all. Never returns a 169.254.x.x APIPA address (DHCP not ready yet);
-    falls back to 127.0.0.1 only if nothing real exists."""
+    """Best-effort LAN IP of the physical adapter (not a VPN tunnel that
+    owns the default route). Prefers the lowest-metric non-virtual default
+    route, then other non-virtual guesses. Never returns APIPA; falls back
+    to 127.0.0.1."""
     names = _iface_name_by_ip()
 
     def virtual(ip: str) -> bool:
@@ -199,15 +168,9 @@ def get_local_ip() -> str:
 
 
 def list_local_ipv4s() -> set:
-    """Every non-loopback IPv4 address currently bound to a local
-    network interface, via psutil (already a dependency). Used to
-    tell a genuinely stale bind_ip (the interface it named no longer
-    exists -- NIC change, DHCP renewal, a USB adapter unplugged) apart
-    from one that's simply not whichever interface get_local_ip()'s
-    single default-route guess would currently pick -- e.g. a
-    deliberately chosen secondary NIC on a multi-homed machine.
-    Returns an empty set if enumeration itself fails, so callers can
-    tell "couldn't check" apart from "checked and found nothing"."""
+    """Non-loopback IPv4 addresses on local interfaces, to tell a stale
+    bind_ip from a deliberately chosen secondary NIC. Empty set if
+    enumeration fails."""
     addrs = set()
     try:
         for family_addrs in psutil.net_if_addrs().values():
@@ -220,13 +183,9 @@ def list_local_ipv4s() -> set:
 
 
 def _exclusive(sock: socket.socket) -> None:
-    """On Windows, a plain bind to 0.0.0.0 can SUCCEED while another
-    process holds the same port on a specific address (exactly how the
-    Conan server binds with -MULTIHOME), so the test would report a taken
-    port as free. SO_EXCLUSIVEADDRUSE makes the test bind fail if any
-    socket holds the port on any local address. (SO_REUSEADDR does the
-    opposite on Windows -- it lets a bind succeed on a port that's
-    already in use -- which is why the old TCP check used it wrongly.)"""
+    """Windows: a bind to 0.0.0.0 can succeed while another process holds
+    the port on a specific address (as -MULTIHOME does). SO_EXCLUSIVEADDRUSE
+    makes the test fail in that case; SO_REUSEADDR would do the opposite."""
     opt = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
     if opt is not None:
         try:
@@ -263,18 +222,9 @@ def find_free_port_pair(
     start_query_port: int = 27015,
     max_attempts: int = 50,
 ) -> Tuple[int, int]:
-    """Returns (game_port, query_port), each independently the first free
-    UDP port at/after its own starting point that isn't in `reserved`
-    (e.g. ports already claimed by this app's other configured servers).
-    Game port and query port have no fixed numeric relationship in Conan
-    -- they're just two independent ports -- so each is searched on its
-    own rather than derived from the other.
-
-    The game port's search also requires game_port + 1 to be free and
-    unreserved: Conan's dedicated server binds a second UDP port right
-    above the game port for its own networking, so a game_port whose
-    neighbor is taken would still collide even though this function
-    only hands back game_port itself."""
+    """(game_port, query_port), each the first free UDP port at/after its
+    start and not in `reserved`. The two are independent in Conan, but
+    game_port + 1 must also be free because Conan binds it too."""
     reserved = reserved or set()
 
     def find_one(start: int) -> int:
@@ -301,19 +251,14 @@ def find_free_port_pair(
     game = find_game(start_game_port)
     query = find_one(start_query_port if start_query_port not in (start_game_port, game, game + 1)
                       else game + 2)
-    # Guard against the query search landing on the game port or its
-    # +1 neighbor.
     while query in (game, game + 1):
         query = find_one(query + 1)
     return game, query
 
 
 def query_a2s_info(ip: str, port: int, timeout: float = 1.5) -> Optional[dict]:
-    """Sends a Source-engine A2S_INFO query. Returns a dict with at least
-    {'name', 'map', 'players', 'max_players'} on success, or None if the
-    server didn't answer in time. This is the same query Steam's server
-    browser uses, so a successful reply means the server is genuinely
-    bound and reachable -- not just that the process exists."""
+    """Source-engine A2S_INFO query (what Steam's browser uses). Returns
+    {'name', 'map', 'players', 'max_players'}, or None if no answer."""
     req = b"\xFF\xFF\xFF\xFFTSource Engine Query\x00"
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
@@ -370,19 +315,9 @@ def query_a2s_info(ip: str, port: int, timeout: float = 1.5) -> Optional[dict]:
 
 
 def get_default_gateway(local_ip: Optional[str] = None) -> Optional[str]:
-    """Best-effort router (default gateway) IP, for the manual
-    port-forwarding guide's first step.
-
-    Reads the IPv4 routing table (`route print -4`, whose data rows are
-    language-independent) and returns the gateway of the default route
-    that goes out through `local_ip`'s adapter -- not just the first
-    gateway listed, which with a VPN or Hyper-V adapter present can be
-    the wrong network entirely. Falls back to the lowest-metric
-    non-virtual default route, then to the ".1 on your own subnet"
-    convention (a guess, which is why the guide phrases it as "try this
-    first"). Returns None if not even a guess is possible.
-
-    Runs a subprocess -- call it off the GUI thread."""
+    """Best-effort router IP for the port-forwarding guide: the default
+    route through `local_ip`'s adapter, then any non-virtual default route,
+    then a ".1" guess. Runs a subprocess -- call off the GUI thread."""
     ip = local_ip or get_local_ip()
     routes = _default_routes()
     for gw, iface_ip, _metric in routes:

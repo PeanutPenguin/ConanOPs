@@ -1,11 +1,7 @@
 """
-SteamCMD integration: detect/install it, run updates for the Conan Exiles
-dedicated server (app id 443030), and read back the installed build id.
-
-Note: this module shells out to steamcmd.exe and is Windows-oriented (the
-whole app targets Windows, matching the original scripts). Long-running
-calls (download, update) are meant to be invoked from a QThread worker in
-the UI layer, not the main thread.
+SteamCMD integration: install it, update the Conan Exiles dedicated server
+(app 443030) and Workshop mods, and read installed/latest build ids.
+Long-running calls must run on a worker thread, not the GUI thread.
 """
 from __future__ import annotations
 
@@ -29,26 +25,16 @@ import applog
 
 _log = applog.get_logger(__name__)
 
-# Forces SteamCMD to fetch the Windows build of an app regardless of
-# what platform SteamCMD itself is running on -- every published
-# Conan Exiles server setup guide includes this, and its absence is a
-# documented cause of `app_update` failing with "ERROR! Failed to
-# install app '443030' (Missing configuration)" even when everything
-# else about the command is correct.
+# Without this, app_update can fail with "Failed to install app '443030'
+# (Missing configuration)".
 _FORCE_WINDOWS_PLATFORM_ARGS = ["+@sSteamCmdForcePlatformType", "windows"]
 
-# Matches SteamCMD's own progress line for a download/validate pass, e.g.:
-#   "Update state (0x61) downloading, progress: 45.32 (390911489 / 862992488)"
-# The percentage is what actually drives the UI's determinate progress bar
-# (see ui/setup_wizard.py's InstallPage) instead of an indeterminate spinner
-# that gives no sense of whether ~60 GB have downloaded or the process is
-# stuck.
+# e.g. "Update state (0x61) downloading, progress: 45.32 (390911489 / 862992488)"
 _PROGRESS_RE = re.compile(r"progress:\s*([\d.]+)")
 
 
 def _sleep_cancelable(seconds: float, should_cancel: Optional[Callable[[], bool]] = None) -> None:
-    """time.sleep() that wakes early if should_cancel() turns True, so a
-    Cancel click never waits out a full pause."""
+    """time.sleep() that returns early once should_cancel() is True."""
     import time
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -58,11 +44,8 @@ def _sleep_cancelable(seconds: float, should_cancel: Optional[Callable[[], bool]
 
 
 def _remove_if_empty_dir(path: str) -> None:
-    """Removes `path` only if it exists and is completely empty, so
-    SteamCMD's +force_install_dir creates the folder itself. Every
-    successful manual run pointed SteamCMD at a folder that didn't
-    exist yet; ConanOps pre-created it empty. Never touches a folder
-    with anything in it, so an existing install is always safe."""
+    """Removes `path` only if empty: SteamCMD's +force_install_dir works
+    reliably only when it creates the folder itself."""
     try:
         if os.path.isdir(path) and not os.listdir(path):
             os.rmdir(path)
@@ -71,8 +54,7 @@ def _remove_if_empty_dir(path: str) -> None:
 
 
 def parse_progress_percent(line: str) -> Optional[float]:
-    """Extracts the percentage from one line of SteamCMD's own progress
-    output, or None if this line isn't a progress line."""
+    """Percentage from a SteamCMD progress line, or None."""
     m = _PROGRESS_RE.search(line)
     if not m:
         return None
@@ -89,16 +71,12 @@ class UpdateResult:
     success: bool
     output: str
     installed_buildid: Optional[str] = None
-    # Why it failed, when known: "disk" (not enough free space -- nothing
-    # was touched), "backup" (the pre-update backup failed -- nothing was
-    # touched), "steamcmd" (SteamCMD ran and didn't finish cleanly).
+    # "disk" or "backup" (nothing touched), or "steamcmd" (ran but didn't finish).
     reason: str = ""
 
 
-# Free space required before an update starts: whichever is larger, a
-# fixed floor or the server's current size. SteamCMD downloads changed
-# files into a staging area before swapping them in, so a big patch can
-# briefly need close to the install's size again on top of it.
+# Required free space is the larger of this and the install's size, since
+# SteamCMD stages changed files before swapping them in.
 MIN_FREE_BYTES_FOR_UPDATE = 15 * 1024 ** 3
 
 
@@ -135,16 +113,8 @@ def format_gb(n: int) -> str:
 
 
 def download_workshop_items(steamcmd_dir: str, workshop_ids: list, max_attempts: int = 2) -> "UpdateResult":
-    """Downloads (or updates, if already present) each of the given
-    Steam Workshop items for Conan Exiles into steamcmd's own
-    steamapps/workshop/content/440900/<id>/ folder -- the same location
-    mod_manager.workshop_pak_path() points modlist.txt entries at.
-
-    Nothing in ConanOps used to actually call this: mods added on the
-    Mods page got written into modlist.txt with a path pointing at
-    where the .pak SHOULD be, but the .pak itself was never fetched, so
-    the server would start with every configured mod silently missing
-    unless someone happened to have placed the files there by hand."""
+    """Downloads/updates Workshop items into steamapps/workshop/content/440900/<id>/,
+    where mod_manager.workshop_pak_path() expects them."""
     exe = steamcmd_exe_path(steamcmd_dir)
     if not os.path.exists(exe):
         return UpdateResult(False, "SteamCMD isn't installed at the configured location.")
@@ -166,11 +136,7 @@ def download_workshop_items(steamcmd_dir: str, workshop_ids: list, max_attempts:
         combined_output.append(proc.stdout)
         combined_output.append(proc.stderr)
         if proc.returncode == 0:
-            # A directory existing isn't enough -- SteamCMD can create
-            # the numbered content folder without ever actually
-            # placing a .pak inside it (a failed/partial download,
-            # e.g.), which used to read as "downloaded" here even
-            # though nothing playable was ever fetched.
+            # SteamCMD can create the folder without a .pak in it, so check for the .pak.
             missing = [wid for wid in workshop_ids if mod_manager.find_workshop_pak(steamcmd_dir, str(wid)) is None]
             if not missing:
                 return UpdateResult(True, "\n".join(combined_output))
@@ -188,40 +154,10 @@ def is_steamcmd_installed(steamcmd_dir: str) -> bool:
 
 def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable[[], bool]] = None,
                      poll_interval: float = 0.25, on_line: Optional[Callable[[str], None]] = None):
-    """Like subprocess.run(), but polls `should_cancel` every
-    `poll_interval` seconds and terminates the process early if it ever
-    returns True, instead of blocking uninterruptibly for up to
-    `timeout` seconds. Returns an object with .returncode/.stdout/
-    .stderr (a real CompletedProcess on normal completion, or a
-    minimal stand-in on cancel/timeout).
-
-    Without this, a Cancel button wired to QThread.requestInterruption()
-    was pure theater during a SteamCMD download/update: the worker
-    thread was blocked inside subprocess.run() the whole time, which
-    has no way to observe that flag, so the process would keep running
-    to completion (or its own hour-long timeout) regardless of Cancel
-    having been clicked.
-
-    If `on_line` is given, it's called with each line of output AS IT
-    ARRIVES (stripped of its trailing newline), rather than only once
-    the whole process has finished. This used to be the actual cause
-    of downloads looking "stalled": the previous implementation drove
-    this same polling loop with proc.communicate(timeout=poll_interval)
-    in a loop, and Popen.communicate() only ever RETURNS output once
-    the process has fully exited -- so between "SteamCMD update attempt
-    1 of 2..." and the next log line, a real multi-minute-to-multi-hour
-    download produced zero visible feedback, indistinguishable from a
-    hang. Reading the pipe as it's written (via a background reader
-    thread feeding a queue, since Windows pipes don't support select())
-    fixes that and is also what makes a real progress percentage (see
-    parse_progress_percent()) possible instead of an indeterminate
-    spinner.
-
-    stdout and stderr are merged (steamcmd interleaves status and error
-    text on both, and a caller reading it as one combined stream for
-    progress/diagnostics doesn't need them kept separate) -- the
-    returned/raised object's .stderr is always "".
-    """
+    """Like subprocess.run(), but can be cancelled via should_cancel and
+    calls on_line with each output line as it arrives (a reader thread feeds
+    a queue, since Windows pipes don't support select()). stdout and stderr
+    are merged, so .stderr is always "". Raises TimeoutExpired on timeout."""
     proc = subprocess.Popen(
         args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         encoding="utf-8", errors="replace", bufsize=1, env=proc_utils.child_env(), **hidden_console_kwargs(),
@@ -240,9 +176,7 @@ def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable
     reader.start()
 
     def _drain_remaining() -> None:
-        """Pulls anything already buffered in the queue without
-        blocking, for the cancel/timeout paths below where the reader
-        thread may have a few more lines queued up already."""
+        """Non-blocking read of lines already queued (cancel path)."""
         while True:
             try:
                 raw_line = line_queue.get_nowait()
@@ -259,10 +193,9 @@ def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable
         try:
             raw_line = line_queue.get(timeout=poll_interval)
         except queue.Empty:
-            raw_line = ""  # nothing new this tick -- fall through to the cancel/timeout checks below
+            raw_line = ""
         else:
             if raw_line is None:
-                # Reader hit EOF: the process has exited. Reap it and return.
                 returncode = proc.wait()
                 return subprocess.CompletedProcess(args, returncode, "".join(lines), "")
             lines.append(raw_line)
@@ -292,9 +225,7 @@ def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable
 
 def install_steamcmd(steamcmd_dir: str, progress: Optional[Callable[[str], None]] = None,
                       should_cancel: Optional[Callable[[], bool]] = None) -> bool:
-    """Downloads and extracts steamcmd.exe if it isn't already present.
-    steamcmd.exe self-bootstraps (updates itself) the first time it runs,
-    so no separate installer is needed beyond this."""
+    """Downloads, extracts and bootstraps steamcmd.exe if missing."""
     def log(msg: str) -> None:
         if progress:
             progress(msg)
@@ -325,12 +256,8 @@ def install_steamcmd(steamcmd_dir: str, progress: Optional[Callable[[str], None]
     except subprocess.TimeoutExpired:
         log("SteamCMD bootstrap timed out.")
 
-    # The bootstrap above self-updates SteamCMD and relaunches it. In
-    # every failed setup, the server download started immediately
-    # afterward and hit "Missing configuration", while the identical
-    # command succeeded later against the same, already-settled
-    # SteamCMD folder. A second plain start lets that post-update
-    # relaunch finish settling before anything real is asked of it.
+    # Right after its self-update, SteamCMD fails with "Missing configuration";
+    # a second plain start lets it settle first.
     if not (should_cancel and should_cancel()):
         log("Letting SteamCMD finish settling after its update...")
         _sleep_cancelable(3, should_cancel)
@@ -357,20 +284,13 @@ def update_server(
     should_cancel: Optional[Callable[[], bool]] = None,
     on_progress_percent: Optional[Callable[[float], None]] = None,
 ) -> UpdateResult:
-    """Runs steamcmd +app_update against the dedicated server app id,
-    validating files. Retries once on failure, mirroring the original
-    .bat script's behavior.
-
-    If given, on_progress_percent is called with SteamCMD's own
-    download percentage (0-100, as a float) as it's parsed out of the
-    live output -- see _run_cancelable()'s docstring for why this
-    exists (a real progress bar instead of an indeterminate spinner,
-    and feedback that isn't indistinguishable from a hang)."""
+    """Runs +app_update ... validate, with retries. on_progress_percent gets
+    SteamCMD's download percentage (0-100) from the live output."""
     def log(msg: str) -> None:
         if progress:
             progress(msg)
 
-    last_shown_percent = [None]  # mutable box so the nested function below can update it
+    last_shown_percent = [None]
 
     def on_line(line: str) -> None:
         pct = parse_progress_percent(line)
@@ -379,11 +299,7 @@ def update_server(
             return
         if on_progress_percent:
             on_progress_percent(pct)
-        # Only echo a progress line to the text log when the whole
-        # percentage actually advanced -- SteamCMD can print several
-        # of these a second, and echoing every single one verbatim
-        # would flood the log without showing anything the progress
-        # bar isn't already showing.
+        # Log only when the whole percent changes, to avoid flooding the log.
         shown = int(pct)
         if shown != last_shown_percent[0]:
             last_shown_percent[0] = shown
@@ -404,9 +320,7 @@ def update_server(
             combined_output.append("Cancelled before this attempt started.")
             return UpdateResult(False, "\n".join(combined_output))
         if attempt > 1:
-            # Give SteamCMD a moment between tries rather than
-            # hammering it again instantly -- the failures seen so far
-            # were timing-sensitive.
+            # Failures seen so far were timing-sensitive.
             _sleep_cancelable(5, should_cancel)
         _remove_if_empty_dir(install_dir)
         log(f"SteamCMD update attempt {attempt} of {max_attempts}...")
@@ -432,13 +346,7 @@ def update_server(
         combined_output.append(proc.stderr)
 
         state = get_install_state(install_dir)
-        # A non-zero SteamCMD exit code, or install state != 4 (fully
-        # installed per Steam's StateFlags), both mean the attempt
-        # didn't actually complete -- checking state alone isn't enough,
-        # since a NO-OP failed run (network blip before SteamCMD even
-        # touches the manifest) leaves state at whatever it already was
-        # from a previous successful install, which would otherwise be
-        # misreported as "this attempt succeeded."
+        # Need both: a failed no-op run leaves an old StateFlags 4 (fully installed) in place.
         if proc.returncode == 0 and state == 4:
             build_id = get_installed_buildid(install_dir)
             log("Update succeeded.")
@@ -469,9 +377,7 @@ def get_installed_buildid(install_dir: str) -> Optional[str]:
 
 
 def get_latest_buildid(steamcmd_dir: str) -> Optional[str]:
-    """Asks Steam (anonymously, no key needed) what the current public
-    branch build id is for the app, via `app_info_print`. Used to detect
-    whether an update is available without downloading anything."""
+    """Current public-branch build id via anonymous app_info_print, or None."""
     exe = steamcmd_exe_path(steamcmd_dir)
     if not os.path.exists(exe):
         return None
@@ -486,34 +392,11 @@ def get_latest_buildid(steamcmd_dir: str) -> Optional[str]:
 
 
 def _extract_public_buildid(vdf_text: str) -> Optional[str]:
-    """Finds the buildid specifically inside the "public" branch block of
-    a `+app_info_print` VDF dump, e.g.:
-
-        "branches"
-        {
-            "public"
-            {
-                "buildid"      "1234567"
-                ...
-            }
-            "beta"
-            {
-                "buildid"      "7654321"
-                ...
-            }
-        }
-
-    Grabbing the first "buildid" anywhere in the dump (the previous
-    approach) can pick up a beta/other branch's buildid instead, or any
-    other unrelated "buildid" field earlier in the text, and silently
-    misreport whether an update is available. This scopes the search to
-    the "public" block specifically by locating its opening brace and
-    matching braces to find where that block ends.
-    """
+    """buildid from the "public" branch block of an app_info_print dump,
+    so beta branches or other buildid fields aren't picked up by mistake."""
     m = re.search(r'"public"\s*\{', vdf_text)
     if not m:
-        # Fall back to the old best-effort behavior if the VDF doesn't
-        # look like what we expect (format could have changed).
+        # Unexpected format: fall back to the first buildid anywhere.
         matches = re.findall(r'"buildid"\s*"(\d+)"', vdf_text)
         return matches[0] if matches else None
 
@@ -532,7 +415,5 @@ def _extract_public_buildid(vdf_text: str) -> Optional[str]:
     if bm:
         return bm.group(1)
 
-    # "public" block found but no buildid line in it (unexpected) --
-    # fall back rather than silently returning nothing.
     matches = re.findall(r'"buildid"\s*"(\d+)"', vdf_text)
     return matches[0] if matches else None

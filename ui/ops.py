@@ -1,12 +1,7 @@
 """
-Run a blocking call (stopping a server that's saving its world) without
-freezing the window: the call runs on a worker thread while a local
-event loop keeps the UI painting and responsive, then this returns the
-call's result (or re-raises its exception) like a normal function call.
-
-For places that genuinely need the result before carrying on -- e.g.
-the manual bisect's "reset the world" step, which has to have the
-server stopped before it can touch the save files.
+Run a blocking call (e.g. stopping a server that's saving) on a worker thread
+while a local event loop keeps the UI responsive, then return its result or
+re-raise its exception. For callers that need the result before continuing.
 """
 from __future__ import annotations
 

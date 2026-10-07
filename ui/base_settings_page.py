@@ -1,18 +1,8 @@
 """
-Shared plumbing for every Settings sub-page: a header with a pending-
-changes badge and Apply/Discard buttons, plus the dirty-tracking that
-decides when those buttons are enabled. Nothing here writes to the real
-.ini files -- that's each page's on_apply() -- this just manages the
-draft-vs-committed UI state.
-
-The pending-changes badge shows the TOTAL pending count across every
-settings sub-tab, not just this page's own -- a container that holds
-several of these pages (SettingsContainer) calls set_total_pending()
-on all of them whenever any one page's dirty_changed signal fires, so
-switching to a tab with no edits of its own doesn't make it look like
-a change you made on another tab was lost. Apply/Discard themselves
-still only ever act on this page's own fields -- only the displayed
-number is cross-tab.
+Shared base for Settings sub-pages: header with a pending-changes badge and
+Apply/Discard, plus dirty tracking. Subclasses write the real files in
+on_apply(). A container may show the cross-tab pending total and make Apply
+apply every page; Discard only affects this page.
 """
 from __future__ import annotations
 
@@ -27,7 +17,7 @@ from PySide6.QtWidgets import (
 
 class SettingsPageBase(QWidget):
     applied = Signal()
-    dirty_changed = Signal()  # this page's OWN dirty count changed
+    dirty_changed = Signal()  # this page's own dirty count changed
 
     def __init__(self, page_title: str, parent=None, requires_restart: bool = True, card_form: bool = False):
         super().__init__(parent)
@@ -35,11 +25,8 @@ class SettingsPageBase(QWidget):
         self._getters: Dict[str, Callable] = {}     # name -> widget -> value
         self._setters: Dict[str, Callable] = {}     # name -> (widget, value) -> None
         self._committed: Dict[str, Any] = {}
-        self._total_pending = 0  # what the badge shows; defaults to own count, see set_total_pending
-        # If a container holding multiple settings pages sets this (see
-        # set_apply_all_hook), clicking Apply on ANY page applies every
-        # page's pending changes at once instead of just this one's --
-        # otherwise (a page used standalone) Apply just applies its own.
+        self._total_pending = 0  # what the badge shows
+        # Set by a container so Apply applies every page at once.
         self._apply_all_hook: Optional[Callable[[], None]] = None
         self.page_title = page_title
 
@@ -61,25 +48,10 @@ class SettingsPageBase(QWidget):
 
         self.discard_btn = QPushButton("Discard")
         self.discard_btn.clicked.connect(self.discard)
-        # Most settings pages write into the Conan Exiles server's own
-        # .ini files, which it only reads at startup -- Apply saves the
-        # change right away, but it won't actually take effect on a
-        # currently-running server until the NEXT time it restarts
-        # (scheduled, watchdog, or manual). "Restart" specifically
-        # means the SERVER process, not Windows or the PC -- a previous
-        # wording ("Apply on Next Reset") used "Reset" for this, which
-        # reads as ambiguous next to ConanOps' own PC-restart features.
-        #
-        # requires_restart=False is for pages that DON'T touch the
-        # server's .ini files at all -- Backups and Restart Schedule
-        # are pure ConanOps-side scheduler settings, read live by
-        # ConanOps' own code, so labeling them with a restart caveat
-        # that doesn't apply to them would be actively misleading, not
-        # just imprecise. A page with genuinely MIXED fields (some
-        # restart-gated, some not -- see SettingsAlertsPage) also
-        # passes False here rather than overclaiming for its immediate
-        # fields, and instead notes the restart requirement inline,
-        # scoped to just the fields it actually applies to.
+        # The server reads its .ini files only at startup, so most pages
+        # apply on the next server restart. requires_restart=False is for
+        # ConanOps-only settings, and for mixed pages that note the restart
+        # inline on the affected fields.
         self.apply_btn = QPushButton("Apply on Next Restart" if requires_restart else "Apply")
         self.apply_btn.setObjectName("PrimaryButton")
         self.apply_btn.clicked.connect(self._on_apply_clicked)
@@ -96,10 +68,8 @@ class SettingsPageBase(QWidget):
         self.form_layout.setContentsMargins(24, 8, 24, 24)
         self.form_layout.setSpacing(18)
         if card_form:
-            # The whole form sits in one card (the design's tile look).
-            # Subclasses keep adding to self.form_layout as before -- it
-            # just lives inside the card now; the stretch outside the
-            # card keeps the card only as tall as its contents.
+            # Wrap the whole form in one card; the outer stretch keeps the
+            # card only as tall as its contents.
             outer = self.form_layout
             self.form_card = QFrame()
             self.form_card.setObjectName("Card")
@@ -131,17 +101,11 @@ class SettingsPageBase(QWidget):
         return sum(1 for k in current if current.get(k) != self._committed.get(k))
 
     def dirty_count(self) -> int:
-        """This page's own pending-edit count, independent of whatever
-        the badge is currently displaying -- used by a container to
-        compute the cross-tab total."""
+        """This page's own pending-edit count (the badge may show more)."""
         return self._dirty_count()
 
     def set_total_pending(self, total: int) -> None:
-        """Called by a container holding multiple settings pages (e.g.
-        SettingsContainer) to make the badge show the sum across every
-        tab rather than just this page's own count. A page used on its
-        own, with no container calling this, just shows its own count
-        (set in _update_pending_ui below) as before."""
+        """Called by a container so the badge shows the cross-tab total."""
         self._total_pending = total
         self._refresh_pending_label()
         self._refresh_apply_enabled()
@@ -153,24 +117,14 @@ class SettingsPageBase(QWidget):
         )
 
     def _refresh_apply_enabled(self) -> None:
-        # Apply reflects whether there's anything to apply ACROSS ALL
-        # tabs (via _apply_all_hook, see the constructor comment), not
-        # just this page's own edits -- otherwise this page's own
-        # button would stay disabled while a different tab still had
-        # an unsaved change, even though clicking it would apply that
-        # change too.
+        # Enabled if any tab has changes, since Apply may apply them all.
         self.apply_btn.setEnabled(self._total_pending > 0 and self.can_apply())
 
     def _update_pending_ui(self) -> None:
         own = self._dirty_count()
         self.discard_btn.setEnabled(own > 0)
-        # Default the badge to this page's own count; a connected
-        # container overrides it with the cross-tab total immediately
-        # after, via the dirty_changed signal below (same call stack,
-        # so there's no visible flash of the wrong number). Also
-        # refreshes Apply's enabled state at each step, since a
-        # standalone page (no container) never gets set_total_pending()
-        # called on it at all.
+        # Default to this page's count; a container overrides it right away
+        # via dirty_changed (same call stack, so no flicker).
         self._total_pending = own
         self._refresh_pending_label()
         self._refresh_apply_enabled()
@@ -192,10 +146,7 @@ class SettingsPageBase(QWidget):
         self._update_pending_ui()
 
     def set_apply_all_hook(self, fn: Optional[Callable[[], None]]) -> None:
-        """Called by a container holding multiple settings pages (e.g.
-        SettingsContainer) so this page's own Apply button applies
-        every page's pending changes at once instead of just this
-        one's -- see the constructor comment on _apply_all_hook."""
+        """Set by a container so this page's Apply applies every page."""
         self._apply_all_hook = fn
 
     def _on_apply_clicked(self) -> None:
@@ -205,12 +156,9 @@ class SettingsPageBase(QWidget):
             self.apply_own()
 
     def apply_own(self) -> None:
-        """Applies and commits THIS page's own pending changes only.
-        A container's apply-all hook calls this on each page in turn;
-        a standalone page (no hook set) reaches it via its own Apply
-        button through _on_apply_clicked()."""
+        """Apply and commit this page's own pending changes."""
         if not self.can_apply():
-            return  # shouldn't normally be reachable (button is disabled), but guard against it directly too
+            return
         values = self._current_values()
         self.on_apply(values)
         self._committed = values
@@ -218,14 +166,9 @@ class SettingsPageBase(QWidget):
         self.applied.emit()
 
     def can_apply(self) -> bool:
-        """Subclasses can override to veto Apply even when there are
-        pending changes -- e.g. SettingsNetworkPage refuses to apply a
-        port configuration it's already flagged as conflicting, since
-        the conflict warning shown on that page used to be purely
-        informational and Apply would go through anyway."""
+        """Override to block Apply, e.g. on a known port conflict."""
         return True
 
     def on_apply(self, values: Dict[str, Any]) -> None:
-        """Subclasses override to actually persist `values` (write to the
-        ServerConfig object + real .ini files)."""
+        """Override to persist `values` to the ServerConfig and .ini files."""
         raise NotImplementedError

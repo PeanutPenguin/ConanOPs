@@ -1,28 +1,10 @@
 """
-Running PowerShell scripts from ConanOps -- shared by firewall rules
-(network_setup.py), the background-mode scheduled task
-(background_mode.py) and Windows Update settings (windows_update.py).
+Shared PowerShell runner (firewall, scheduled tasks, Windows Update).
 
-How scripts are passed
-----------------------
-Never with -EncodedCommand. Base64-encoded command lines are a classic
-malware pattern, so antivirus products and Defender's attack-surface
-rules flag them -- exactly the false-positive problem an unsigned
-PyInstaller app already has too much of. Instead the script is written
-to a temp .ps1 file and run with a short, readable -Command:
-
-  * read-only / unelevated: the file is read and run with
-    Invoke-Expression (not -File, so a Group-Policy-enforced execution
-    policy doesn't block it).
-  * elevated: the file sits in a folder any unelevated process can
-    write to, so the elevated command reads it ONCE, checks its SHA-256
-    against the hash ConanOps computed when writing it, and only then
-    runs that same in-memory text. Swapping the file between writing
-    and elevating just makes the hash check fail -- nothing runs.
-
-Values are embedded with ps_str() (a single-quoted literal with every
-quote character PowerShell recognizes doubled), never by string
-concatenation of raw user text.
+Scripts are never passed with -EncodedCommand (antivirus flags it); they're
+written to a temp .ps1 and loaded with Invoke-Expression (so execution
+policy can't block them). Elevated runs verify the file's SHA-256 before
+running, since an unelevated process could swap it. Embed values only via ps_str().
 """
 from __future__ import annotations
 
@@ -48,26 +30,17 @@ RUN_FAILED = "failed"
 RUN_NEEDS_PC = "needs_pc"  # a Windows permission prompt was needed, but nobody is at the PC to answer it
 
 
-# --------------------------------------------------------------------- #
-# No prompts while nobody's at the PC
-# --------------------------------------------------------------------- #
-# The web version runs actions for someone who isn't at the PC. A
-# Windows permission (UAC) prompt there would sit on the screen with
-# nobody to answer it, so while a web action runs, run_privileged()
-# doesn't prompt: it returns RUN_NEEDS_PC instead (unless ConanOps
-# already has administrator rights, when no prompt is needed at all).
+# Web actions run for someone not at the PC, so a UAC prompt would go
+# unanswered; under no_prompts() run_privileged() returns RUN_NEEDS_PC.
 _gate_lock = threading.Lock()
-# thread id -> the note lists of the no_prompts() blocks active on that
-# thread. Per thread, so a prompt someone starts at the PC at the same
-# moment as a web action isn't blocked.
+# Per thread, so a prompt started at the PC isn't blocked by a web action.
 _gates: Dict[int, List[List[str]]] = {}
 
 
 @contextmanager
 def no_prompts():
-    """While inside (on this thread, and in work handed on with
-    carry_gate()), run_privileged() never shows a permission prompt.
-    Yields a list that collects a note for each change that needed one."""
+    """Blocks UAC prompts on this thread (and carry_gate() work). Yields a
+    list collecting a note for each change that needed one."""
     hits: List[str] = []
     ident = threading.get_ident()
     with _gate_lock:
@@ -84,8 +57,7 @@ def no_prompts():
 
 
 def carry_gate(fn):
-    """Wraps fn so that, when it runs on another thread, it's under the
-    same no_prompts() block as the thread that wrapped it."""
+    """Wraps fn to carry this thread's no_prompts() state to another thread."""
     with _gate_lock:
         lists = list(_gates.get(threading.get_ident(), []))
     if not lists:
@@ -109,8 +81,7 @@ def carry_gate(fn):
 
 
 def prompts_blocked() -> bool:
-    """True while a web action runs on this thread and a permission
-    prompt couldn't be answered (ConanOps without administrator rights)."""
+    """True inside no_prompts() when not already running as admin."""
     with _gate_lock:
         active = bool(_gates.get(threading.get_ident()))
     return active and not proc_utils.is_admin()
@@ -131,9 +102,8 @@ PREAMBLE = (
 
 
 def ps_str(value: str) -> str:
-    """A PowerShell single-quoted literal. PowerShell treats the curly
-    quotes U+2018-U+201B as single quotes too, so all of them get
-    doubled, not just the ASCII one. Control characters are dropped."""
+    """Single-quoted PowerShell literal. PowerShell also treats curly quotes
+    U+2018-U+201B as quotes, so those are doubled too; control chars dropped."""
     value = re.sub(r"[\x00-\x1f\x7f]", "", str(value))
     for q in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):
         value = value.replace(q, q + q)
@@ -154,8 +124,7 @@ _BASE_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
 
 
 def _write_script(script: str) -> tuple:
-    """Writes the script (UTF-8 with BOM, so Windows PowerShell 5.1 reads
-    non-ASCII correctly) and returns (folder, path, sha256-hex)."""
+    """Writes UTF-8 with BOM (needed by PowerShell 5.1); returns (folder, path, sha256)."""
     folder = tempfile.mkdtemp(prefix="conanops-ps-")
     path = os.path.join(folder, "script.ps1")
     data = ("\ufeff" + script).encode("utf-8")
@@ -166,8 +135,7 @@ def _write_script(script: str) -> tuple:
 
 
 def _runner_command(path: str, expected_hash: Optional[str]) -> str:
-    """The short -Command that loads the script file. With a hash, the
-    text is verified before it runs (see module docstring)."""
+    """-Command that loads the file; with a hash it exits 97 on mismatch."""
     load = f"$s = [IO.File]::ReadAllText({ps_str(path)}, [Text.Encoding]::UTF8).TrimStart([char]0xFEFF)"
     if expected_hash:
         check = (
@@ -187,9 +155,7 @@ def args_for(script: str) -> tuple:
 
 
 def run_readonly(script: str, timeout: float = 30.0) -> Optional[subprocess.CompletedProcess]:
-    """Runs a script with this process's own rights and returns the
-    completed process (stdout = whatever the script printed), or None if
-    PowerShell couldn't run at all."""
+    """Runs unelevated; returns the completed process, or None if PowerShell failed to run."""
     folder = None
     try:
         args, folder = args_for(script)
@@ -207,10 +173,8 @@ def run_readonly(script: str, timeout: float = 30.0) -> Optional[subprocess.Comp
 
 
 def run_privileged(script: str, timeout: float = 90.0) -> str:
-    """Runs `script` with Administrator rights: directly if this process
-    is already elevated, else through ONE Windows permission (UAC)
-    prompt. Returns RUN_OK / RUN_DECLINED / RUN_FAILED, or RUN_NEEDS_PC
-    while prompts are blocked (see no_prompts())."""
+    """Runs as admin (directly if elevated, else one UAC prompt). Returns
+    RUN_OK / RUN_DECLINED / RUN_FAILED / RUN_NEEDS_PC."""
     if prompts_blocked():
         _note_blocked(script)
         return RUN_NEEDS_PC

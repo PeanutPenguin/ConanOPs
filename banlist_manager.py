@@ -1,19 +1,10 @@
 """
 Whitelist and ban management.
 
-ConanOps keeps the authoritative list (SteamID64 strings) on the
-ServerConfig and pushes it to the running server via RCON commands when
-changed, since that takes effect immediately without a restart. A local
-text file is also written as a human-readable backup/reference.
-
-Caveat, stated plainly: the exact RCON command names for
-ban/kick/whitelist can vary by Conan Exiles version, and this module's
-command strings (`banplayer`, `unbanplayer`, `kickplayer`) reflect the
-commonly-documented set at the time this was written. If a command
-doesn't take effect, checking the current in-game `listcommands` RCON
-output against these strings is the first thing to try -- same category
-of caveat as mod_manager's file format, not something pre-flight checks
-can catch.
+The lists (SteamID64 strings) live on ServerConfig, are written to the files
+the server reads, and are pushed live over RCON when enabled. The RCON command
+names are community-documented, not official; if one stops working, compare
+against the server's `listcommands` output.
 """
 from __future__ import annotations
 
@@ -26,22 +17,14 @@ from models import ServerConfig
 
 
 def _list_path(install_dir: str, kind: str) -> str:
-    # These are the actual filenames Conan Exiles itself reads from
-    # ConanSandbox/Saved/ -- "whitelist.txt" and "blacklist.txt" (ban),
-    # one SteamID64 per line, no other formatting. A previous version
-    # wrote to "ConanOps_whitelist.txt"/"ConanOps_banlist.txt" instead,
-    # which the server has no reason to ever look at, so nothing
-    # written there took effect even after a restart.
+    # The exact files Conan Exiles reads from ConanSandbox/Saved/: one SteamID64 per line.
     filename = "whitelist.txt" if kind == "whitelist" else "blacklist.txt"
     return os.path.join(install_dir, "ConanSandbox", "Saved", filename)
 
 
 def set_whitelist_enabled(server: ServerConfig) -> None:
-    """Writes EnableWhitelist to ServerSettings.ini -- whitelist.txt
-    alone does nothing; the server only enforces it when this flag is
-    also on. Previously nothing wrote this key at all, so toggling
-    "Whitelist-only mode" in the UI never actually changed server
-    behavior."""
+    """Writes EnableWhitelist to ServerSettings.ini; the server ignores
+    whitelist.txt unless this flag is on."""
     if not server.install_dir:
         return
     settings_ini = os.path.join(server.install_dir, "ConanSandbox", "Saved", "Config", "WindowsServer", "ServerSettings.ini")
@@ -69,8 +52,7 @@ def remove_whitelist(server: ServerConfig, steam_id: str) -> None:
 
 
 def ban_player(server: ServerConfig, steam_id: str, host: str = "127.0.0.1") -> str:
-    """Adds to the local ban bookkeeping and, if RCON is enabled, issues
-    the ban immediately. Returns a human-readable status string."""
+    """Adds to the ban list and bans live via RCON if enabled. Returns a status string."""
     if steam_id not in server.banned_ids:
         server.banned_ids.append(steam_id)
     write_list_file(server.install_dir, "banlist", server.banned_ids)
@@ -108,19 +90,8 @@ def kick_player(server: ServerConfig, player_name: str, host: str = "127.0.0.1")
 
 
 def broadcast_message(server: ServerConfig, message: str, host: str = "127.0.0.1") -> bool:
-    """Sends an in-game broadcast to everyone currently connected --
-    used to warn players a restart is about to happen (see
-    MainWindow._warn_then_restart) rather than just disconnecting them
-    with zero notice. Returns whether the RCON command was sent
-    successfully; best-effort by design, since a restart that's about
-    to happen shouldn't be blocked on a broadcast failing to send --
-    worst case, players just don't get the heads-up this time.
-
-    Same caveat as this module's own docstring already states for
-    kickplayer/banplayer/unbanplayer: `broadcast` is a commonly-
-    documented RCON command for Conan Exiles, not an officially
-    published one, so it's exactly the kind of thing to check against
-    live `listcommands` RCON output first if it doesn't seem to work."""
+    """Best-effort in-game broadcast (e.g. a restart warning). Returns whether
+    it was sent; callers must not block a restart on failure."""
     if not server.rcon_enabled:
         return False
     try:

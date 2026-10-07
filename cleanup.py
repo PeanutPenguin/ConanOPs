@@ -1,34 +1,11 @@
 """
-Leave-no-trace removal: what "remove this server" and "Delete
-Everything" have to clean up so the PC ends up the way it was before
-ConanOps was installed.
+Leave-no-trace removal for "remove this server" and "Delete Everything".
 
-Everything ConanOps can leave behind, and who handles it:
-
-  Files
-    - each server's install folder, its backups, its SteamCMD folder
-      (when no other server shares it), its session history, and the
-      per-server folder ConanOps created around them   -> server_paths()
-    - ConanOps' own folders: the data folder, ~/ConanOps (log, sessions,
-      update backups), C:\\Users\\Public\\ConanOps     -> owned_roots()
-    - temp leftovers: scripts, downloads, and unpacked copies of
-      ConanOps.exe (_MEIxxxxx)                          -> temp_leftovers()
-    - the program folder itself, removed by the installer's own
-      uninstaller when there is one                    -> self_delete.py
-  Windows settings (one permission prompt, cleanup_script())
-    - ConanOps' firewall rules, plus the allow/block rules Windows itself
-      creates for a server program when its "allow access?" popup is
-      answered
-    - the background scheduled task (older versions)
-    - Windows Update active hours, put back to what they were before
-    - the Microsoft Visual C++ runtime, only if ConanOps installed it
-  Not needing admin
-    - router port forwards (UPnP) and the sign-in startup entry
-
-Every delete goes through is_safe_to_delete(), which refuses drive
-roots, the user's home and its standard folders, and Windows/program
-folders -- so a backup folder pointed at, say, Documents can never take
-Documents with it (only ConanOps' own backup files inside it go).
+Files: server_paths() (per server), owned_roots() (ConanOps data folders),
+temp_leftovers(); the program folder is self_delete.py's job. Windows
+settings (firewall rules, scheduled tasks, active hours, VC++ runtime) are
+undone by one elevated cleanup_script(). Every delete goes through
+is_safe_to_delete(), so drive roots and standard user/system folders are never removed.
 """
 from __future__ import annotations
 
@@ -49,8 +26,7 @@ import powershell
 _log = applog.get_logger(__name__)
 
 _BACKUP_NAME_RE = re.compile(r"^\d{8}-\d{6}_.+\.zip$", re.IGNORECASE)
-# A file that's only in ConanOps' own unpacked copies -- how a _MEIxxxxx
-# temp folder is recognized as ours and not some other app's.
+# Marks a _MEIxxxxx temp folder as ours rather than another PyInstaller app's.
 _OWN_MEI_MARKER = os.path.join("assets", "conanops-icon-small.svg")
 
 
@@ -81,9 +57,8 @@ def _protected_paths() -> set:
 
 
 def is_safe_to_delete(path: str) -> bool:
-    """False for anything that must never be deleted wholesale: a drive
-    root, the user's home or its standard folders, Windows, Program
-    Files, the temp folder itself, and anything above those."""
+    """False for drive roots, home and its standard folders, system folders,
+    the temp folder, and anything containing those."""
     if not path:
         return False
     p = _norm(path)
@@ -93,13 +68,11 @@ def is_safe_to_delete(path: str) -> bool:
     protected = _protected_paths()
     if p in protected:
         return False
-    # Never a folder that CONTAINS a protected one (e.g. C:\Users).
     return not any(_within(q, p) for q in protected)
 
 
 def _onerror(func, path, exc_info):
-    # Read-only files (SteamCMD and Steam content often have them) make
-    # rmtree fail on Windows; clear the flag and try once more.
+    # Read-only files (common in Steam content) make rmtree fail on Windows.
     try:
         os.chmod(path, stat.S_IWRITE)
         func(path)
@@ -108,8 +81,7 @@ def _onerror(func, path, exc_info):
 
 
 def _long(path: str) -> str:
-    """\\\\?\\ prefix on Windows so paths over 260 characters (deep
-    mod/content folders) can still be deleted."""
+    """Adds the \\\\?\\ prefix on Windows so paths over 260 chars can be deleted."""
     if sys.platform == "win32":
         p = os.path.abspath(path)
         if not p.startswith("\\\\?\\"):
@@ -119,9 +91,8 @@ def _long(path: str) -> str:
 
 
 def remove_path(path: str, retries: int = 3) -> Optional[str]:
-    """Deletes a file or folder. Returns None on success (or if it was
-    already gone), else a short error message. A just-stopped server
-    can hold its files for a moment, so failures are retried."""
+    """Returns None on success or if already gone, else an error message.
+    Retries because a just-stopped server can hold its files briefly."""
     if not path or not os.path.lexists(path):
         return None
     if not is_safe_to_delete(path):
@@ -147,9 +118,8 @@ def remove_path(path: str, retries: int = 3) -> Optional[str]:
 
 
 def remove_backups(folder: str, owned: bool) -> List[str]:
-    """A server's backups. If ConanOps created the folder (owned), the
-    whole folder goes; otherwise only ConanOps' own backup zips inside
-    it are deleted, and the folder only if that leaves it empty."""
+    """Owned folder: delete it all. Otherwise delete only our backup zips,
+    and the folder only if that leaves it empty."""
     if not folder or not os.path.isdir(folder):
         return []
     if owned:
@@ -169,13 +139,8 @@ def remove_backups(folder: str, owned: bool) -> List[str]:
     return errors
 
 
-# --------------------------------------------------------------------- #
-# What belongs to ConanOps
-# --------------------------------------------------------------------- #
-
 def owned_roots() -> List[str]:
-    """ConanOps' own data folders that exist on this PC (not the program
-    folder -- see self_delete.py)."""
+    """ConanOps' own data folders that exist (not the program folder)."""
     candidates = [
         conanops_paths.no_space_root(),
         os.path.join(os.path.expanduser("~"), "ConanOps"),
@@ -186,8 +151,7 @@ def owned_roots() -> List[str]:
         n = _norm(c)
         if n in seen or not os.path.isdir(c) or not is_safe_to_delete(c):
             continue
-        # A generically named folder (the "data" folder next to the exe)
-        # only counts if it actually holds ConanOps' files.
+        # A generically named folder only counts if it holds our files.
         if os.path.basename(c.rstrip("\\/")).lower() != "conanops" and not any(
                 os.path.exists(os.path.join(c, m)) for m in ("config.json", "conanops.lock", "theme.json")):
             continue
@@ -205,10 +169,8 @@ def sessions_file(server_id: str) -> str:
 
 
 def server_paths(server, other_servers: Iterable) -> dict:
-    """What deleting this server's files means, given the servers that
-    remain: {"files": [...], "backups": (folder, owned) or None,
-    "always": [...]} -- "always" is ConanOps' own record of the server
-    (session history) that goes even when files are kept."""
+    """{"files": [...], "backups": (folder, owned) or None, "always": [...]},
+    skipping paths other servers use. "always" goes even when files are kept."""
     others = list(other_servers)
     other_paths = [p for o in others for p in (o.install_dir, o.steamcmd_dir, o.backup_destination) if p]
 
@@ -220,7 +182,7 @@ def server_paths(server, other_servers: Iterable) -> dict:
         files.append(server.install_dir)
     if server.steamcmd_dir and not used_by_others(server.steamcmd_dir):
         files.append(server.steamcmd_dir)
-    # The per-server folder ConanOps creates around them (<data>\<id>\).
+    # The per-server folder we created around them (<data>\<id>\).
     for p in (server.install_dir, server.steamcmd_dir):
         parent = os.path.dirname(os.path.abspath(p)) if p else ""
         if parent and os.path.basename(parent) == server.id and is_owned_location(parent) \
@@ -248,25 +210,18 @@ def temp_leftovers() -> List[str]:
     return found
 
 
-# --------------------------------------------------------------------- #
-# Windows settings: one elevated script
-# --------------------------------------------------------------------- #
-
 def cleanup_script(server_ids: Iterable[str] = (), legacy_names: Iterable[str] = (),
                    program_dirs: Iterable[str] = (), remove_task: bool = False,
                    restore_active_hours: Optional[dict] = None, uninstall_vcredist: bool = False) -> str:
-    """PowerShell (run with powershell.run_privileged) that undoes
-    ConanOps' Windows-level changes. Every part is best-effort and
-    independent, so one failing doesn't stop the rest."""
+    """Elevated PowerShell undoing our Windows changes; each part is
+    independent and best-effort."""
     import network_setup
     q = powershell.ps_str
     parts = [network_setup._remove_script(list(server_ids), list(legacy_names))]
 
     dirs = [os.path.abspath(d).rstrip("\\/") for d in program_dirs if d]
     if dirs:
-        # Rules Windows made itself when a server program's "allow
-        # access?" popup was answered (allow AND block), for programs
-        # inside these folders.
+        # Allow/block rules Windows itself made from "allow access?" popups.
         parts.append(
             f"$dirs = {powershell.ps_array(dirs)}\n"
             "try { Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { "

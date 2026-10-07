@@ -1,12 +1,5 @@
-"""
-First-run tour: a short walkthrough of the dashboard, shown once after
-the first server is set up (and on demand from App Settings).
-
-An overlay dims the window, cuts a highlighted "spotlight" around the
-part being explained, and shows a small card next to it with Back /
-Next / Skip. Steps whose target isn't on screen are skipped, so the
-tour never points at nothing.
-"""
+"""First-run dashboard tour: a dimming overlay that spotlights each widget with a
+Back/Next/Skip card. Steps whose targets aren't visible are skipped."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,8 +14,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 class TourStep:
     title: str
     text: str
-    # Returns the widgets to highlight (their combined area), or [] for
-    # a centered card with no spotlight.
+    # Widgets to spotlight; [] means a centered card.
     targets: Callable[[], List[QWidget]]
     before: Optional[Callable[[], None]] = None  # e.g. switch to the page being shown
 
@@ -102,7 +94,7 @@ class TourOverlay(QWidget):
                 self._index = i
                 self._show_step(step, targets)
                 return
-            i += direction  # nothing to point at for this one -- skip it
+            i += direction
         if direction > 0:
             self._end(True)
 
@@ -161,7 +153,6 @@ class TourOverlay(QWidget):
         for p in candidates:
             if area.contains(QRect(p, self.card.size())):
                 return p
-        # Nothing fits cleanly (huge target): clamp the first choice on screen.
         p = candidates[0]
         x = max(8, min(p.x(), area.width() - cw - 8))
         y = max(8, min(p.y(), area.height() - ch - 8))
@@ -210,7 +201,6 @@ class TourOverlay(QWidget):
 
 
 def dashboard_steps(main_window) -> List[TourStep]:
-    """The tour's content, pointing at MainWindow's real widgets."""
     dash = main_window.dashboard_page
     side = main_window.sidebar
 

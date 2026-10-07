@@ -1,10 +1,6 @@
 """
 Launching, finding, and stopping the Conan Exiles server process.
-
-Kept deliberately simple and explicit: builds the real launch command from
-a ServerConfig (using the LOCAL LAN ip for -MULTIHOME, never the public
-IP -- that mismatch was the bug that started this whole project) and uses
-psutil to check whether the process is actually running.
+-MULTIHOME must be the local LAN IP, never the public IP.
 """
 from __future__ import annotations
 
@@ -43,9 +39,7 @@ def build_launch_args(server: ServerConfig) -> list:
 
 
 def find_running_pid(install_dir: str) -> Optional[int]:
-    """Matches on process name AND that its exe path is under this
-    server's install_dir, so two ConanOps-managed servers on the same
-    machine aren't confused with each other."""
+    """Matches name AND exe path, so two servers on one machine aren't confused."""
     target_exe = os.path.normcase(os.path.abspath(server_exe_path(install_dir)))
     for proc in psutil.process_iter(["pid", "name", "exe"]):
         try:
@@ -68,12 +62,8 @@ def game_ini_path(install_dir: str) -> str:
 
 
 def sync_rcon_ini(server: ServerConfig) -> bool:
-    """Makes Game.ini's RCON settings match ConanOps' (enabled, port,
-    password). Called before every launch, so a server that got RCON
-    switched on -- new servers have it on by default -- actually has it
-    the first time it starts, not only after someone presses Apply on
-    RCON & Alerts. Only writes when something differs (every write also
-    backs the ini up). Returns True if it wrote."""
+    """Makes Game.ini's RCON settings match ConanOps' before launch. Only
+    writes (and backs up) when something differs. Returns True if it wrote."""
     import ini_utils  # local: keeps this module's import graph minimal
     path = game_ini_path(server.install_dir)
     wanted = {
@@ -101,11 +91,8 @@ def launch(server: ServerConfig) -> subprocess.Popen:
     args = build_launch_args(server)
     kwargs = dict(cwd=os.path.dirname(exe), env=proc_utils.child_env(), **hidden_gui_window_kwargs())
     if sys.platform == "win32":
-        # When ConanOps itself was started by a Windows scheduled task
-        # (the keep-alive watcher), it runs inside that task's job object;
-        # breaking the server out of it means nothing that happens to the
-        # task can take the game server down with it. Not every job
-        # allows breaking away, so fall back to a normal launch.
+        # Break out of the keep-alive task's job object so ending the task
+        # can't kill the server. Not every job allows it, so fall back.
         try:
             flags = kwargs.get("creationflags", 0) | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
             return subprocess.Popen(args, **dict(kwargs, creationflags=flags))
@@ -114,12 +101,8 @@ def launch(server: ServerConfig) -> subprocess.Popen:
     return subprocess.Popen(args, **kwargs)
 
 
-# After an RCON `saveworld`, how long the world database has to go
-# without being written to before the save counts as finished, and
-# the most this will ever wait for that before stopping anyway.
-# Every caller now runs this off the UI thread, so it can afford to wait
-# properly for a big world: 5 quiet seconds (a large save can pause
-# between writes), up to 2 minutes.
+# After `saveworld`: how long the world DB must stay unwritten to count as
+# saved (big saves pause between writes), and the max wait. Off the UI thread.
 SAVE_QUIET_SECONDS = 5.0
 SAVE_MAX_WAIT_SECONDS = 120.0
 _SAVE_POLL_SECONDS = 0.5
@@ -139,10 +122,8 @@ def _latest_world_save_mtime(install_dir: str) -> float:
 
 def _wait_for_save_to_settle(install_dir: str, pid: int, quiet: float = SAVE_QUIET_SECONDS,
                              max_wait: float = SAVE_MAX_WAIT_SECONDS) -> None:
-    """Returns once the world database files haven't been modified for
-    `quiet` seconds (the save `saveworld` triggered has finished
-    writing), the process has exited on its own, or `max_wait` has
-    passed -- whichever comes first."""
+    """Returns once the world DB is unchanged for `quiet` seconds, the
+    process exits, or `max_wait` passes."""
     deadline = time.monotonic() + max_wait
     last_mtime = _latest_world_save_mtime(install_dir)
     last_change = time.monotonic()
@@ -159,18 +140,9 @@ def _wait_for_save_to_settle(install_dir: str, pid: int, quiet: float = SAVE_QUI
 
 
 def graceful_stop(server: ServerConfig, timeout: float = 15.0) -> bool:
-    """Prefer a graceful shutdown over stop()'s hard kill: if RCON is
-    enabled, ask the server to save its world first and wait for that
-    save to actually finish writing, THEN stop it. psutil's terminate()
-    maps to TerminateProcess on Windows -- a hard kill with no chance
-    for the game to flush the world save itself.
-
-    `saveworld` only saves; it doesn't make the server exit. An earlier
-    version waited a fixed 5s for an exit that never came and then
-    hard-killed regardless -- potentially in the middle of the very
-    save it had just requested, on a large world. This waits for the
-    database files to stop changing instead (see
-    _wait_for_save_to_settle)."""
+    """If RCON is enabled, `saveworld` and wait for the save to finish
+    writing before stop(), since terminate() is a hard TerminateProcess
+    on Windows. `saveworld` does not make the server exit."""
     pid = find_running_pid(server.install_dir)
     if pid is None:
         return True
@@ -198,13 +170,7 @@ def stop(install_dir: str, timeout: float = 10.0) -> bool:
     except psutil.TimeoutExpired:
         try:
             proc.kill()
-            # kill() (TerminateProcess on Windows) doesn't guarantee
-            # the process -- or the ports it was holding -- are
-            # actually gone the instant this call returns; waiting
-            # here for it to actually finish exiting is what lets a
-            # caller trust "stopped" enough to safely launch a
-            # replacement right after, instead of racing whatever's
-            # left of the old one.
+            # Wait for real exit so ports are free before a relaunch.
             proc.wait(timeout=5.0)
             return True
         except psutil.TimeoutExpired:

@@ -1,12 +1,6 @@
 """
-Reads and writes the app's own settings pages for the web version.
-
-Instead of a second copy of every settings form (which would drift from
-the app), the web version describes each page's registered fields --
-label, type, limits, choices, current value -- straight from the page's
-widgets, and saves by putting the values into those same widgets and
-running the page's own Apply. Validation, conflict checks and what
-happens on save are therefore exactly the app's.
+Describes and fills the app's own settings pages for the web version, so
+validation and saving reuse the page's widgets and its own Apply.
 """
 from __future__ import annotations
 
@@ -58,9 +52,8 @@ def _preceding_label(widget: QWidget) -> Optional[QLabel]:
 
 
 def _label_widget(widget: QWidget) -> Optional[QLabel]:
-    """The QLabel naming a field: the one before it in its layout -- or,
-    when the field sits inside a small wrapper with a button (password +
-    Show, address + Auto-detect), the one before that wrapper."""
+    """The QLabel before the field in its layout (or before its wrapper,
+    e.g. password + Show button)."""
     w = widget
     for _ in range(3):
         lbl = _preceding_label(w)
@@ -136,8 +129,7 @@ def describe_field(name: str, widget: QWidget, getter, slider_scale=None) -> Dic
         f.update(type="time", value=value)
     elif isinstance(widget, QLineEdit):
         if is_secret(name, widget):
-            # Never sent to the browser: it only learns whether one is set.
-            # Typing a new one replaces it; leaving it alone keeps it.
+            # Secrets never go to the browser; it only learns whether one is set.
             f.update(type="secret", value="", has_value=bool(str(value or "")),
                      placeholder=widget.placeholderText())
         else:
@@ -157,8 +149,7 @@ def page_error(page) -> str:
 
 
 def _enabled_when(page, disabled: List[str]) -> Dict[str, Dict[str, Any]]:
-    """For fields greyed out until a switch on the same page is ticked
-    (scheduled restart times, say): {field: {switch: value}}."""
+    """Fields disabled until a switch is ticked: {field: {switch: value}}."""
     out: Dict[str, Dict[str, Any]] = {}
     if not disabled:
         return out
@@ -208,8 +199,7 @@ def _coerce(widget: QWidget, value: Any) -> Any:
 
 
 def put_values(page, values: Dict[str, Any]) -> None:
-    """Puts `values` into a page's widgets (unknown keys are ignored).
-    Raises WebActionError for a value that doesn't fit the field."""
+    """Ignores unknown keys; raises WebActionError for a value that doesn't fit."""
     for name, value in values.items():
         if name not in page._fields:
             continue

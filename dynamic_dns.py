@@ -1,17 +1,5 @@
-"""
-Dynamic DNS via DuckDNS (https://www.duckdns.org) -- for home-hosting
-behind a residential ISP without a static IP: the public IP can change,
-silently breaking everyone's saved server entry until someone happens
-to notice and re-share a new address. A single periodic call to
-DuckDNS's update endpoint keeps a chosen subdomain pointed at whatever
-this machine's current public IP actually is.
-
-DuckDNS specifically (rather than building support for every DDNS
-provider) because it's free, needs no account beyond a GitHub/Google/
-etc. sign-in, and has the simplest possible update API of the major
-options -- a single authenticated GET request, no per-provider request
-signing or OAuth flow to implement.
-"""
+"""Dynamic DNS via DuckDNS: keeps a subdomain pointed at this PC's changing
+home IP. DuckDNS was chosen because it's free and its update API is one GET."""
 from __future__ import annotations
 
 import re
@@ -31,16 +19,8 @@ class DuckDnsResult:
 
 
 def update(domain: str, token: str, timeout: float = 8.0) -> DuckDnsResult:
-    """Points `domain`.duckdns.org at whatever public IP this request
-    appears to come from -- DuckDNS auto-detects it from the request
-    itself, so nothing here needs to separately determine this
-    machine's own public IP first (and can't be fooled by a stale
-    cached value the way a separately-fetched-then-compared IP could
-    be). `domain` is just the subdomain (no ".duckdns.org" suffix).
-
-    Never raises: any network/HTTP problem comes back as ok=False with
-    a human-readable message, same convention as steam_workshop_api.py
-    and network_setup.py's other external calls."""
+    """Points `domain`.duckdns.org (subdomain only) at the IP DuckDNS sees this
+    request come from. Never raises; failures return ok=False with a message."""
     if not domain or not token:
         return DuckDnsResult(ok=False, message="No DuckDNS domain/token configured -- add them on App Settings.")
 
@@ -54,11 +34,8 @@ def update(domain: str, token: str, timeout: float = 8.0) -> DuckDnsResult:
     except Exception as e:  # noqa: BLE001 - network errors of every shape land here, all reported the same way
         return DuckDnsResult(ok=False, message=f"DuckDNS update failed: {e}")
 
-    # Verbose response: "OK", then the IPv4, the IPv6 (often blank) and
-    # UPDATED/NOCHANGE -- one per LINE in DuckDNS's actual output (some
-    # docs show them space-separated on one line). Tokenize across the
-    # whole body so either layout parses; a plain "KO" means the
-    # domain/token combination was rejected outright.
+    # Verbose reply is "OK", IPv4, IPv6, UPDATED/NOCHANGE, one per line (docs
+    # sometimes show one line), so split on any whitespace. "KO" = rejected.
     tokens = body.split()
     if not tokens or tokens[0] != "OK":
         return DuckDnsResult(ok=False, message=f"DuckDNS rejected this domain/token: {body or '(empty response)'}")

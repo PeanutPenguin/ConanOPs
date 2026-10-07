@@ -1,10 +1,6 @@
 """
-Pre-flight validation: checks that everything a server needs is actually
-where it should be, and auto-fixes what it safely can. Every fix is
-returned in the result so the UI can show "auto-repaired: X" rather than
-silently patching things.
-
-Runs before: launch, scheduled auto-update, and on demand from the UI.
+Pre-flight validation before launch, auto-update, or on demand. Auto-fixes
+what it safely can and reports every repair so nothing is patched silently.
 """
 from __future__ import annotations
 
@@ -33,26 +29,22 @@ class CheckResult:
 def run_preflight(server: ServerConfig) -> CheckResult:
     result = CheckResult(ok=True)
 
-    # 1. Install folder
     if not os.path.isdir(server.install_dir):
         result.ok = False
         result.problems.append(f"Install folder not found: {server.install_dir}")
     else:
-        # 2. Server exe present (catches the Enhanced folder-rename risk)
+        # Also catches the Enhanced folder-rename risk.
         exe = process_manager.server_exe_path(server.install_dir)
         if not os.path.exists(exe):
             result.ok = False
             result.problems.append(f"Server executable not found: {exe}")
 
-    # 3. Log directory reachable (created on first run, so just note it,
-    #    don't fail preflight over a folder that legitimately doesn't
-    #    exist yet on a server that's never launched).
+    # The log folder is created on first run, so a missing one is only noted.
     log_dir = os.path.join(server.install_dir, "ConanSandbox", "Saved", "Logs")
     if os.path.isdir(server.install_dir) and not os.path.isdir(log_dir):
         result.repairs.append("Log directory did not exist yet (normal for a fresh install).")
 
-    # 3b. Free space on the install drive. A world save that can't be
-    #     written is how worlds get corrupted -- don't start into that.
+    # A world save that can't be written corrupts the world.
     if os.path.isdir(server.install_dir):
         try:
             import shutil
@@ -66,9 +58,7 @@ def run_preflight(server: ServerConfig) -> CheckResult:
         except OSError:
             pass
 
-    # 3c. Microsoft Visual C++ runtime. Only a definite "missing" fails
-    #     here (the server can't start without it); an older version is
-    #     left to Diagnostics, since it usually still works.
+    # Only a definitely missing VC++ runtime fails; an old one usually still works.
     if vcredist.status().state == vcredist.STATUS_MISSING:
         result.ok = False
         result.problems.append(
@@ -76,37 +66,24 @@ def run_preflight(server: ServerConfig) -> CheckResult:
             "and click \"Install Visual C++ Runtime\" (Windows will ask for permission once)."
         )
 
-    # 4. SteamCMD present
     if not steamcmd.is_steamcmd_installed(server.steamcmd_dir):
         result.ok = False
         result.problems.append(f"SteamCMD not found at: {server.steamcmd_dir}")
 
-    # 5. Install state healthy (StateFlags == 4 means fully installed)
+    # StateFlags == 4 means fully installed.
     if os.path.isdir(server.install_dir):
         state = steamcmd.get_install_state(server.install_dir)
         if state is not None and state != 4:
             result.ok = False
             result.problems.append(f"SteamCMD reports install state {state} (expected 4 / fully installed).")
 
-    # 6. Bind IP still matches a real local interface -- auto-repairable,
-    #    but only when it's genuinely gone (the NIC it named no longer
-    #    exists), not just because it isn't whichever interface the OS's
-    #    default route happens to prefer right now. This respects an
-    #    intentional choice on a multi-homed machine instead of silently
-    #    overwriting it every time preflight runs (which happens before
-    #    every launch, scheduled restart, and auto-update).
+    # Re-detect the bind IP only if its interface is gone, so an intentional
+    # choice on a multi-homed machine is respected.
     local_ips = network_utils.list_local_ipv4s()
     if not server.bind_ip:
         new_ip = network_utils.get_local_ip()
         if not network_utils.is_usable_lan_ipv4(new_ip):
-            # get_local_ip() only falls all the way through to loopback
-            # when it genuinely couldn't detect a real LAN interface (no
-            # default route, hostname lookup failed too) -- saving that
-            # as the "auto-detected" bind IP used to be treated as a
-            # successful repair, which would silently configure the
-            # server to bind only to itself: unreachable from the LAN
-            # or internet, with nothing anywhere saying so. Surface it
-            # as a real problem instead so it doesn't launch this way.
+            # Loopback would make the server unreachable from the network.
             result.ok = False
             result.problems.append(
                 "Couldn't auto-detect a real network interface for the Bind IP (only loopback/127.0.0.1 "
@@ -127,13 +104,8 @@ def run_preflight(server: ServerConfig) -> CheckResult:
         else:
             server.bind_ip = new_ip
             result.repairs.append(f"Bind IP was stale ({old}, no longer a local interface); re-detected as {new_ip}.")
-    # else: local_ips came back empty (couldn't enumerate interfaces) or
-    # bind_ip is still a valid local address -- leave it alone either way.
-
-    # 7. Router forwards: refresh in the background before every launch,
-    #    so a bind IP that just changed (DHCP, repaired above) gets its
-    #    UPnP forwards re-pointed, and leases on routers that refuse
-    #    permanent ones get renewed. Never blocks or fails preflight.
+    # Refresh UPnP forwards in the background so a changed bind IP is
+    # re-pointed and expiring leases renewed. Never blocks preflight.
     if result.ok and network_setup.UPNP_REFRESH_ENABLED:
         try:
             network_setup.refresh_upnp_async(server)

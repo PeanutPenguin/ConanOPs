@@ -1,21 +1,8 @@
 """
-Server settings for the web version, for any server, without touching
-the app's own settings pages.
-
-The web version keeps its OWN, never-shown copy of every settings page
-(the same classes the app uses). For a request it loads the server's
-saved values into that copy, describes it, and on save puts the web's
-values in, runs the page's own checks (port conflicts, time format...)
-and calls the app's own save function for that server. So:
-
-  * validation and what saving does are exactly the app's;
-  * the app's pages, and anything someone is half-way through editing
-    on the PC, are never touched -- if that server is open in the app,
-    its pages just take the new saved values for fields nobody's
-    editing (WebActionsMixin.settings_saved_elsewhere);
-  * it works for every server, not only the one open in the app.
-
-Must be used on the GUI thread (webui.bridge).
+Server settings for the web version, for any server. Uses its own hidden
+copies of the app's settings pages: loads the server's saved values, and on
+save runs the page's own checks and save function. The app's visible pages
+and any unsaved edits there are never touched. GUI thread only (webui.bridge).
 """
 from __future__ import annotations
 
@@ -39,7 +26,6 @@ class WebSettings:
         self._sid: Optional[str] = None
         self._entries: Optional[List[tuple]] = None
 
-    # ------------------------------------------------------------ pages --
     def _build(self) -> List[tuple]:
         if self._entries is not None:
             return self._entries
@@ -84,8 +70,7 @@ class WebSettings:
         return page
 
     def _load(self, server, key: Optional[str] = None) -> None:
-        """Puts the server's saved values into the web's copy of the pages
-        (all of them, or just one)."""
+        """Loads the server's saved values into our copy of all pages, or just `key`."""
         self._sid = server.id
         values = self.win.settings_values(server)
         for k, _t, page in self._build():
@@ -95,7 +80,6 @@ class WebSettings:
             if k == "identity":
                 page.set_install_dir(server.install_dir)
 
-    # ------------------------------------------------------------- read --
     def describe(self, server) -> Dict[str, Any]:
         self._load(server)
         pages = []
@@ -106,7 +90,6 @@ class WebSettings:
             pages.append(d)
         return {"pages": pages}
 
-    # ------------------------------------------------------------ write --
     def _fill(self, server, key: str, values: Dict[str, Any]):
         if not isinstance(values, dict):
             raise WebActionError("Nothing to save.")
@@ -127,9 +110,8 @@ class WebSettings:
         return {"changed": True}
 
     def run_action(self, server, key: str, action: str, values: Dict[str, Any]) -> Dict[str, Any]:
-        """A fill-in button (suggest a free port...): applies the web's
-        unsaved values, runs it, and returns the page as it then looks.
-        Nothing is saved."""
+        """Runs a fill-in button (e.g. suggest a free port) on the web's
+        unsaved values and returns the page. Nothing is saved."""
         spec = PAGE_ACTIONS.get(action)
         if spec is None or spec[0] != key:
             raise WebActionError("Unknown action.")

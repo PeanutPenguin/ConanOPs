@@ -1,35 +1,12 @@
 """
-Updates ConanOps' own application files from a zip the person picks
-themselves via the App Settings page. Deliberately not automatic or
-networked -- this only ever installs a file someone has already put
-on disk and explicitly selected; nothing here reaches out to the
-internet on its own.
+Installs a ConanOps update zip already on disk (picked by the person or
+downloaded by app_updates).
 
-Safety model:
-  1. Validate the zip actually looks like a ConanOps package before
-     touching anything on disk.
-  2. Back up the current install directory.
-  3. Overlay every file from the zip on top of the install directory
-     (never deletes a file that isn't present in the zip). A file that
-     can't be overwritten in place because it's locked (Windows won't
-     let you overwrite a running .exe/.dll) is renamed aside instead,
-     so the running process keeps working from the renamed copy while
-     the new one lands in its place.
-  4. If step 3 fails partway through, restore from the backup so the
-     app is left in a known-working state, and keep the backup around
-     since something went wrong.
-  5. If the copy succeeds, the backup is NOT deleted yet -- a pending
-     marker is written instead, and the backup is only cleared once
-     the NEW process actually confirms it started up cleanly (see
-     confirm_update_success(), called from main.py after MainWindow
-     finishes constructing). If the new version crashes before that,
-     the *next* launch finds the marker still "pending confirmation"
-     and rolls the install back to the backup automatically -- see
-     check_and_recover_pending_update().
-
-Actually running the new code still requires the process to restart
-(Python already has the old modules loaded in memory) -- that's the
-caller's job, not this module's; see MainWindow._relaunch_after_update.
+Steps: validate the zip, back up the files it will replace, overlay it
+(locked files are renamed aside, since Windows can't overwrite a running
+.exe), and restore the backup if copying fails. On success the backup is
+kept until the new version confirms a clean start; if it crashes first,
+the next launch rolls back (check_and_recover_pending_update). The caller restarts the app.
 """
 from __future__ import annotations
 
@@ -47,45 +24,22 @@ import applog
 
 _log = applog.get_logger(__name__)
 
-# Deliberately NOT conanops_paths.no_space_root(): the update backup and
-# pending-update marker only ever get copied with shutil (never handed
-# to SteamCMD, which is the actual source of the no-space requirement),
-# and this module's whole job is recovering from a broken update, so it
-# stays on the one path-resolution rule (~) that every other file in
-# this module already assumes and that doesn't depend on any other
-# ConanOps module resolving correctly.
-
-# Must match conanops_paths.APP_DATA_DIRNAME exactly -- hardcoded
-# rather than imported so a broken update to conanops_paths.py can't
-# also break this module's ability to back up, roll back, or clean up
-# after that same update (see the comment above this one for the same
-# reasoning applied to the backup/marker paths). This is the subfolder
-# everything ConanOps creates (server installs, backups, config) lives
-# under when it defaults to living alongside the app itself -- and it
-# has to be excluded from every operation below that treats
-# APP_INSTALL_DIR as a single unit, or backing up/restoring/relaunching
-# the APP would drag every SERVER's files (many GB, and world-save
-# files a running server has open) along with it.
+# Paths here are hardcoded (not from conanops_paths) so a broken update to
+# another module can't break rollback. Must match conanops_paths.APP_DATA_DIRNAME.
+# The data folder holds server installs and world saves, so every app-file
+# operation below must exclude it.
 _APP_DATA_DIRNAME = "data"
 
-# Files that must be present (at the same relative location) for a zip
-# to be considered a real ConanOps package, not just any zip file.
-# Only meaningful for a SOURCE install -- see _expected_marker_files().
+# Files proving a zip is a ConanOps package (source installs only).
 MARKER_FILES = ("main.py", "models.py")
 
-# Suffix used when a file can't be overwritten in place (it's locked --
-# almost always our own currently-running .exe on Windows) and gets
-# renamed aside instead. Swept up by _cleanup_old_files() once the new
-# version has confirmed it started successfully and the old process
-# holding the lock has had time to exit.
+# Suffix for locked files renamed aside during an update; swept on later startups.
 _OLD_SUFFIX = ".conanops-old"
 
 _PENDING_MARKER_NAME = "pending_self_update.json"
 
-# List of every file the last update installed, relative to the install
-# folder. Lets the NEXT update remove files ConanOps itself shipped
-# before but no longer ships -- without ever touching a file it didn't
-# install (anything the person added themselves is never in the list).
+# Files the last update installed, so the next one can remove files we
+# no longer ship without touching anything the person added.
 _MANIFEST_NAME = ".conanops-manifest.json"
 
 
@@ -94,30 +48,15 @@ def _pending_marker_path() -> str:
 
 
 def _expected_marker_files() -> tuple:
-    """What "looks like a real ConanOps package" means depends on how
-    ConanOps itself is currently running:
-
-    - Source install (this file being run with `python main.py`):
-      main.py/models.py living at the same place inside the zip as they
-      do in the current install, exactly as before.
-    - PyInstaller-frozen build (the packaged .exe): there's no main.py
-      or models.py on disk in this kind of install at all -- everything
-      is bundled into the executable -- so requiring them, as a
-      previous version of this module unconditionally did, meant a
-      real update package for the shipped app could NEVER pass
-      validation. The marker instead has to be the executable itself,
-      by name, since that's the one file guaranteed to exist in both
-      the current install and a legitimately-built update package for
-      the same app.
-    """
+    """Source install: main.py/models.py. Frozen build: the running exe's name,
+    since nothing else is guaranteed to be on disk."""
     if getattr(sys, "frozen", False):
         return (os.path.basename(sys.executable),)
     return MARKER_FILES
 
 
 def _exes_at_root(names: List[str], prefix: str) -> List[str]:
-    """.exe files that sit directly at `prefix` inside the zip (not
-    nested in a further subfolder)."""
+    """.exe files directly at `prefix` inside the zip (not nested)."""
     out = []
     plen = len(prefix)
     for n in names:
@@ -130,8 +69,7 @@ def _exes_at_root(names: List[str], prefix: str) -> List[str]:
 
 
 class UpdateValidationError(Exception):
-    """Raised when the selected file doesn't look like a real ConanOps
-    update package. Safe to show str(e) directly to the person."""
+    """Not a valid update package; str(e) is safe to show the person."""
 
 
 @dataclass
@@ -141,18 +79,9 @@ class UpdateResult:
 
 
 def _find_source_root(names: List[str]) -> str:
-    """Returns the path prefix under which the expected marker files
-    (see _expected_marker_files()) live inside the zip -- "" if they're
-    at the zip's root, or e.g. "conanops/" if the zip wraps everything
-    in one top-level folder (the shape every zip this app hands out
-    uses). Raises UpdateValidationError if neither shape is found.
-
-    Frozen builds get one extra fallback: if the zip's exe isn't named
-    exactly like the currently-running one (someone's browser saved it
-    as "ConanOps (1).exe", say) but there's still exactly one .exe file
-    sitting at a candidate root, that's accepted too -- a renamed
-    download shouldn't be indistinguishable from a bogus zip when
-    there's really only one plausible file it could mean."""
+    """Prefix inside the zip where the marker files live ("" or "folder/").
+    Frozen builds also accept a single .exe at a candidate root, in case the
+    download was renamed (e.g. "ConanOps (1).exe"). Raises UpdateValidationError."""
     markers = _expected_marker_files()
     name_set = set(names)
     candidate_prefixes = [""] + sorted({n.split("/", 1)[0] + "/" for n in names if "/" in n})
@@ -180,9 +109,7 @@ def _find_source_root(names: List[str]) -> str:
 
 
 def _zip_exe_name(names: List[str], source_root: str) -> Optional[str]:
-    """The .exe filename actually inside the zip at source_root, which
-    may differ from the currently-running exe's name (see the renamed-
-    download fallback in _find_source_root). None for a source install."""
+    """The zip's exe name at source_root (may differ from ours); None for source installs."""
     if not getattr(sys, "frozen", False):
         return None
     exes = _exes_at_root(names, source_root)
@@ -190,9 +117,7 @@ def _zip_exe_name(names: List[str], source_root: str) -> Optional[str]:
 
 
 def validate_update_zip(zip_path: str) -> None:
-    """Best-effort sanity check before touching anything on disk. Raises
-    UpdateValidationError with a message safe to show the person if the
-    check fails; does nothing if it passes."""
+    """Raises UpdateValidationError if the zip isn't a ConanOps package."""
     if not zipfile.is_zipfile(zip_path):
         raise UpdateValidationError(f"{os.path.basename(zip_path)} isn't a zip file.")
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -200,9 +125,8 @@ def validate_update_zip(zip_path: str) -> None:
 
 
 def _backup_app_files(install_dir: str, backup_dir: str, rel_paths: set) -> int:
-    """Copies each existing install_dir/<rel> into backup_dir/<rel>.
-    Paths outside the install folder or inside its data folder are
-    skipped (see _safe_target). Returns how many files were copied."""
+    """Copies each existing install_dir/<rel> to backup_dir (skipping unsafe
+    paths); returns the count copied."""
     os.makedirs(backup_dir, exist_ok=True)
     copied = 0
     for rel in sorted(rel_paths):
@@ -217,13 +141,7 @@ def _backup_app_files(install_dir: str, backup_dir: str, rel_paths: set) -> int:
 
 
 def _ignore_at_top_level(root_dir: str, name: str):
-    """Returns a shutil.copytree() ignore callback that excludes a
-    single entry, but only when it's directly inside root_dir -- not
-    any folder that happens to share the same name nested deeper in
-    the tree. shutil calls this once per directory it visits, passing
-    that directory's own path each time, so comparing against
-    root_dir (normalized once, up front) is enough to tell "top
-    level" apart from everything under it."""
+    """copytree() ignore callback excluding `name` only directly inside root_dir."""
     root_norm = os.path.normcase(os.path.abspath(root_dir))
 
     def _ignore(dirpath, names):
@@ -235,14 +153,8 @@ def _ignore_at_top_level(root_dir: str, name: str):
 
 
 def _copy_file_with_swap(src_path: str, dest_path: str) -> None:
-    """Copies src_path over dest_path. If dest_path can't be overwritten
-    in place because something has it open -- on Windows this is almost
-    always our own currently-running .exe/.dll -- it's renamed aside
-    (Windows allows renaming an open file even though it disallows
-    overwriting one) and the new file takes its place instead. The
-    still-running old process keeps executing fine from the renamed
-    copy; the renamed leftover is swept up later by _cleanup_old_files()
-    once the update is confirmed."""
+    """Copies over dest_path; if it's locked (a running .exe/.dll), renames it
+    aside first, since Windows allows renaming an open file but not overwriting it."""
     try:
         shutil.copy2(src_path, dest_path)
         return
@@ -259,12 +171,7 @@ def _copy_file_with_swap(src_path: str, dest_path: str) -> None:
 
 
 def _overlay_copy(source_dir: str, dest_dir: str) -> None:
-    """Copies every file from source_dir into dest_dir, creating
-    subfolders as needed and overwriting any existing files with the
-    same relative path (see _copy_file_with_swap for locked files).
-    Never deletes anything in dest_dir that isn't present in
-    source_dir -- an intentionally non-destructive overlay, both for
-    the forward update and for restoring from a backup."""
+    """Copies every file into dest_dir, overwriting; never deletes anything."""
     for root, _dirs, files in os.walk(source_dir):
         rel = os.path.relpath(root, source_dir)
         dest_root = dest_dir if rel == "." else os.path.join(dest_dir, rel)
@@ -274,33 +181,14 @@ def _overlay_copy(source_dir: str, dest_dir: str) -> None:
 
 
 def cleanup_leftover_update_files(install_dir: str) -> None:
-    """Public wrapper around _cleanup_old_files(), meant to be called
-    unconditionally on every startup (see main.py), not only when a
-    pending-update marker exists. confirm_update_success() and
-    check_and_recover_pending_update() both already sweep as part of
-    finishing their own marker-driven work, but if a file was still
-    locked at that moment (best-effort: the cleanup only logs a
-    warning and moves on), the marker gets cleared anyway -- and with
-    it, the only trigger that would have retried the sweep. Calling
-    this independently every launch means a leftover file left behind
-    by a previous cleanup attempt still eventually gets swept, instead
-    of sitting there permanently once nothing references it anymore."""
+    """Run on every startup: a file still locked during the marker-driven
+    sweep would otherwise never be retried."""
     _cleanup_old_files(install_dir)
 
 
 def _cleanup_old_files(install_dir: str) -> None:
-    """Removes leftover *.conanops-old[.N] files from a previous update
-    that had to rename a locked file aside (see _copy_file_with_swap).
-    Called once an update is confirmed, by which point the old process
-    that was holding the file open has exited and released it. Best
-    effort -- if a file's still locked for some reason, it's simply
-    left for the next confirm to try again.
-
-    Prunes _APP_DATA_DIRNAME out of the walk rather than just skipping
-    files found inside it: server folders can be large, and there's
-    never a reason to walk into them at all here -- .conanops-old
-    files only ever come from swapping a locked APP file aside (see
-    _copy_file_with_swap), never anything under the data folder."""
+    """Best-effort removal of *.conanops-old files; skips walking the
+    (possibly huge) data folder."""
     top = os.path.normcase(os.path.abspath(install_dir))
     for root, dirs, files in os.walk(install_dir):
         if os.path.normcase(os.path.abspath(root)) == top:
@@ -343,9 +231,8 @@ def _write_manifest(install_dir: str, files: set) -> None:
 
 
 def _safe_target(install_dir: str, rel: str) -> Optional[str]:
-    """Absolute path for a manifest entry, or None if it would land
-    outside the install folder or inside its data folder -- a damaged or
-    hand-edited manifest must never be able to delete anything else."""
+    """Absolute path for a manifest entry, or None if outside the install
+    folder or in the data folder, so a bad manifest can't delete anything else."""
     if not rel or rel.startswith("/") or ".." in rel.split("/"):
         return None
     if rel.split("/", 1)[0] == _APP_DATA_DIRNAME:
@@ -380,11 +267,8 @@ def _prune_files(install_dir: str, remove: set) -> list:
 
 
 def _prune_and_write_manifest(install_dir: str, new_files: set) -> None:
-    """Deletes files the previous update installed that the new one
-    doesn't ship, then records the new list. The very first update (no
-    manifest yet) deletes nothing -- it only starts the list, since
-    there's no way to tell an old ConanOps file from one the person
-    added. Never raises: a leftover file is harmless."""
+    """Deletes files the old manifest lists but the new version doesn't
+    ship, then writes the new list. No manifest yet = delete nothing. Never raises."""
     try:
         old = _read_manifest(install_dir)
         if old is not None:
@@ -397,10 +281,8 @@ def _prune_and_write_manifest(install_dir: str, new_files: set) -> None:
 
 
 def defer_update_confirmation() -> None:
-    """Startup ended on purpose before the main window came up (the
-    person closed the PIN prompt). Resets a pending update to "not yet
-    tried", so the next launch gets a fair first run instead of rolling
-    back a perfectly good update -- a declined unlock isn't a crash."""
+    """Startup was cancelled on purpose (PIN prompt closed): reset a pending
+    update to "not yet tried" so it isn't rolled back."""
     marker = _read_pending_marker()
     if marker is not None and marker.get("attempted"):
         _write_pending_marker(marker.get("backup_dir", ""), marker.get("install_dir", ""), attempted=False)
@@ -433,11 +315,8 @@ def _clear_pending_marker() -> None:
 
 
 def confirm_update_success() -> None:
-    """Call once, after the app has finished starting up normally (see
-    main.py, right after MainWindow is constructed and shown). If an
-    update is pending confirmation, this is what actually deletes its
-    backup and sweeps up any renamed-aside locked files -- reaching
-    this point is the signal that the new version came up cleanly."""
+    """Call once the main window is shown: deletes a pending update's backup
+    and leftover files, marking it successful."""
     marker = _read_pending_marker()
     if marker is None:
         return
@@ -455,22 +334,11 @@ def confirm_update_success() -> None:
 
 
 def check_and_recover_pending_update() -> Optional[str]:
-    """Call once, as close to the very start of the app as possible
-    (see main.py). Returns a message to show the person if it rolled
-    an update back, else None.
+    """Call at the very start of the app. Returns a message if it rolled
+    back an update, else None.
 
-    An update is only "pending" between apply_update() writing the
-    marker and confirm_update_success() clearing it. The first launch
-    after an update finds the marker with attempted=False, marks it
-    attempted=True, and lets that launch proceed normally -- if it's
-    this same launch that calls confirm_update_success() later, the
-    marker is cleared and nothing else happens. But if that launch
-    crashes before reaching confirm_update_success(), the process
-    dies with attempted=True still on disk, and the *next* launch
-    (this function, on that next run) finds attempted=True and knows
-    the update didn't survive its first run -- so it restores the
-    backup right now, before the rest of the app has a chance to load
-    whatever the broken update left behind."""
+    The first launch after an update marks it attempted; if a launch finds
+    it already attempted, that run crashed before confirming, so restore the backup."""
     marker = _read_pending_marker()
     if marker is None:
         return None
@@ -491,8 +359,7 @@ def check_and_recover_pending_update() -> Optional[str]:
     try:
         failed_files = _read_manifest(install_dir)
         _overlay_copy(backup_dir, install_dir)
-        # The backup's own manifest (now restored) lists the previous
-        # version's files; anything only the failed version shipped goes.
+        # Remove files only the failed version shipped.
         restored_files = _read_manifest(install_dir)
         if failed_files is not None and restored_files is not None:
             _prune_files(install_dir, failed_files - restored_files)
@@ -509,21 +376,11 @@ def check_and_recover_pending_update() -> Optional[str]:
 
 
 def apply_update(zip_path: str, install_dir: str) -> UpdateResult:
-    """Validates, backs up, and installs the update. Returns a result
-    rather than raising for anything that happens after validation, so
-    the caller can show a clear message either way without needing to
-    catch a grab-bag of exception types. On success the backup is kept
-    and a pending marker is written -- see confirm_update_success()."""
+    """Validates, backs up and installs the update. Raises only for validation;
+    later failures come back as an UpdateResult. On success a pending marker is written."""
     validate_update_zip(zip_path)  # raises before anything is touched
 
-    # Refuse to stack a second update on top of one that hasn't been
-    # confirmed yet, rather than silently overwriting its marker: that
-    # would orphan the first update's backup (nothing would ever clean
-    # it up) and would mean check_and_recover_pending_update() rolling
-    # back to the wrong version if this second update turns out to be
-    # the one that fails to start. This also closes off the narrow
-    # window where two apply_update() calls landing in the same second
-    # could otherwise race on the same backup_dir path.
+    # Don't stack updates: it would orphan the first backup and roll back to the wrong version.
     existing = _read_pending_marker()
     if existing is not None:
         return UpdateResult(
@@ -547,13 +404,7 @@ def apply_update(zip_path: str, install_dir: str) -> UpdateResult:
             source_dir = os.path.join(extract_dir, source_root) if source_root else extract_dir
 
             if getattr(sys, "frozen", False):
-                # The zip's exe may be named differently than the one
-                # actually running (see the renamed-download fallback
-                # in _find_source_root). The overlay below copies by
-                # relative path, so if we left it named e.g. "ConanOps
-                # (1).exe" it would land as a NEW file alongside the
-                # real one instead of replacing it. Rename it to match
-                # the running exe's name before the overlay runs.
+                # A renamed exe would land beside ours instead of replacing it.
                 running_exe_name = os.path.basename(sys.executable)
                 zip_exe_name = _zip_exe_name(zip_names, source_root)
                 if zip_exe_name and zip_exe_name != running_exe_name:
@@ -563,14 +414,8 @@ def apply_update(zip_path: str, install_dir: str) -> UpdateResult:
             try:
                 _log.info(f"Backing up current install ({install_dir}) to {backup_dir} before update.")
                 os.makedirs(os.path.dirname(backup_dir), exist_ok=True)
-                # Only the files this update will overwrite or remove --
-                # never the whole folder. ConanOps.exe often sits in a
-                # folder with other things in it (Downloads, the Desktop,
-                # a drive root, or right next to a 50+ GB server
-                # install), and copying all of that is what made an
-                # update sit on "Updating…" for hours. Restoring this
-                # backup (see check_and_recover_pending_update) puts
-                # exactly these files back.
+                # Only files this update touches: the exe often shares a folder
+                # with huge unrelated data (e.g. a server install).
                 _backup_app_files(install_dir, backup_dir,
                                   _files_in(source_dir) | (_read_manifest(install_dir) or set()) | {_MANIFEST_NAME})
             except Exception as e:  # noqa: BLE001 - nothing installed yet; report and stop cleanly either way
@@ -580,9 +425,6 @@ def apply_update(zip_path: str, install_dir: str) -> UpdateResult:
             try:
                 _log.info(f"Copying update files from {source_dir} into {install_dir}.")
                 _overlay_copy(source_dir, install_dir)
-                # Remove files the previous version shipped that this one
-                # doesn't. The backup made above still has them, so a
-                # rollback brings them back.
                 _prune_and_write_manifest(install_dir, _files_in(source_dir))
             except Exception as e:  # noqa: BLE001 - copy partly landed; always try to restore rather than propagate
                 _log.error(f"Update failed while copying new files ({e}); restoring from backup.")
@@ -602,9 +444,7 @@ def apply_update(zip_path: str, install_dir: str) -> UpdateResult:
         _log.error(f"Update failed unexpectedly: {e}")
         return UpdateResult(False, f"Update failed unexpectedly, and nothing should have been changed: {e}")
 
-    # Copy succeeded. Don't delete the backup yet -- keep it until the
-    # NEW process confirms it actually starts up cleanly (see
-    # confirm_update_success() / check_and_recover_pending_update()).
+    # Keep the backup until the new version confirms a clean start.
     _write_pending_marker(backup_dir, install_dir, attempted=False)
     _log.info("Update files installed; pending confirmation on next successful launch.")
     return UpdateResult(True, "Update installed.")

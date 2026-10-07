@@ -1,9 +1,6 @@
 """
-Bar chart of player activity by hour of day (24 bars), used on the
-Restart Schedule page. The hours inside the current restart window get
-a tinted full-height column plus an accent bar, so the window stays
-visible even when its bars are tiny -- which they should be, since the
-point is to restart when nobody's around.
+Player-activity-by-hour bar chart for the Restart Schedule page. Restart
+window hours get a tinted column so the window stays visible when its bars are tiny.
 """
 from __future__ import annotations
 
@@ -19,9 +16,8 @@ def hour_name(h: int) -> str:
 
 
 def window_hours(start_h: Optional[int], end_h: Optional[int]) -> List[int]:
-    """Hours covered by a start-end window, wrapping past midnight
-    (22 -> 2 covers 22, 23, 0, 1). Empty if either end is unknown;
-    start == end means a one-hour window."""
+    """Hours in a start-end window, wrapping past midnight (22 -> 2 is 22, 23, 0, 1).
+    Empty if either end is unknown; start == end is a one-hour window."""
     if start_h is None or end_h is None:
         return []
     if start_h == end_h:
@@ -81,7 +77,6 @@ class ActivityChart(QWidget):
         return (f"Quietest {hour_name(quiet)}–{hour_name((quiet + 1) % 24)} "
                 f"({self._values[quiet]}) · Busiest {hour_name(busy)}–{hour_name((busy + 1) % 24)} ({self._values[busy]})")
 
-    # ---------------------------------------------------------- geometry --
     def _plot_rect(self) -> QRectF:
         return QRectF(self.AXIS_W + 6, 4, max(1, self.width() - self.AXIS_W - 8), self.PLOT_HEIGHT)
 
@@ -97,15 +92,12 @@ class ActivityChart(QWidget):
         peak = max(self._values) if self._values else 0
         if peak <= 0:
             return 1
-        # A round axis maximum: the peak itself up to 5, then the next
-        # multiple of 5 (or of 10 past 50) so the half-way gridline lands
-        # on a whole-ish number.
+        # Round axis maximum so the half-way gridline is a whole-ish number.
         if peak <= 5:
             return peak
         unit = 5 if peak <= 50 else 10
         return -(-peak // unit) * unit
 
-    # ------------------------------------------------------------- paint --
     def paintEvent(self, event) -> None:  # noqa: N802 -- Qt's naming
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -115,7 +107,6 @@ class ActivityChart(QWidget):
         small.setPixelSize(11)
         p.setFont(small)
 
-        # Gridlines + y-axis labels at 0, half and top.
         for frac, label in ((0.0, "0"), (0.5, str(top / 2).rstrip("0").rstrip(".")), (1.0, str(top))):
             y = plot.bottom() - frac * plot.height()
             p.setPen(self._grid)

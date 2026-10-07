@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 import changelog
 from models import ServerConfig
 from update_runner import CheckWorker, UpdateWorker
+from ui.workers import keep_until_finished
 
 
 class UpdatesPage(QWidget):
@@ -25,9 +26,7 @@ class UpdatesPage(QWidget):
         self.on_update_now_guard = None      # callable(server) -> bool: True if an update is already in flight elsewhere
         self.on_stop_before_update = None    # callable(server) -> bool: stops the server if running, returns was_running
         self.on_relaunch_after_update = None  # callable(server, was_running) -> None
-        # Per server (by id), so a check or update keeps going -- and its
-        # result stays -- when someone switches servers, and so the web
-        # version can show and start them for any server.
+        # Keyed by server id so work continues across server switches.
         self._check_workers: Dict[str, CheckWorker] = {}
         self._update_workers: Dict[str, UpdateWorker] = {}
         self._state: Dict[str, dict] = {}
@@ -130,12 +129,8 @@ class UpdatesPage(QWidget):
         root.addWidget(self.history_table, 1)
 
     def _retire_worker(self, worker: Optional[UpdateWorker]) -> None:
-        if worker is None:
-            return
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)
 
-    # ------------------------------------------------------------ state --
     def state_for(self, server: ServerConfig) -> dict:
         """What's known about a server's updates: "build_state" (text,
         pill), "pending" (headline or ""), "latest", "changelog",
@@ -179,8 +174,7 @@ class UpdatesPage(QWidget):
         self._render()
 
     def refresh_settings(self) -> None:
-        """Shows the server's saved auto-update settings (after they were
-        changed somewhere else, e.g. the web version)."""
+        """Re-shows the saved auto-update settings after an outside change."""
         if not self.server:
             return
         self.auto_update_check.blockSignals(True)
@@ -227,11 +221,7 @@ class UpdatesPage(QWidget):
             st.update(pending="", latest="", changelog="",
                       build_state=("● Up to date", "PillOn") if latest_buildid else ("● Couldn't check", "PillWarn"))
         else:
-            # installed_buildid/latest_buildid are bare Steam build ids, not
-            # dotted version strings -- pass "" for both so this only goes
-            # on the changelog's own keyword check (see is_major_update's
-            # docstring); comparing two build ids as if they were versions
-            # made every update show up as MAJOR UPDATE.
+            # Build ids aren't version strings, so only the keyword check is used.
             body = getattr(info, "body", "") if getattr(info, "fetched_ok", False) else ""
             is_major = changelog.is_major_update("", "", body)
             st.update(
@@ -266,11 +256,8 @@ class UpdatesPage(QWidget):
                 QMessageBox.information(self, "Update already in progress", msg)
             return msg
 
-        # The backup happens inside UpdateWorker, AFTER the server has
-        # stopped -- a backup taken first would copy a live database.
-        # A manual update stops the server first, the same as the
-        # automatic update path, so files being validated/replaced
-        # aren't also open and being written to by the running process.
+        # Stop first so files aren't in use; UpdateWorker backs up after the
+        # stop, since a backup of a live database is unsafe.
         was_running = self.on_stop_before_update(server) if self.on_stop_before_update else False
         worker = UpdateWorker(
             server.steamcmd_dir, server.install_dir,

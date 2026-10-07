@@ -11,21 +11,16 @@ from ini_field_specs import FieldSpec
 
 
 class GenericSettingsPage(SettingsPageBase):
-    """Builds its entire form from a list of FieldSpec -- see
-    ini_field_specs.py. Every float field gets the same ghost-marker
-    slider treatment as the original Gameplay Rates page, for
-    consistency across all ~70 settings rather than just the original
-    three."""
+    """Builds its form from a list of FieldSpec (ini_field_specs.py)."""
 
     def __init__(self, title: str, specs: List[FieldSpec], parent=None):
         super().__init__(title, parent)
         self.specs = specs
-        self._sliders: dict = {}  # key -> (GhostSlider, scale), for committed-value sync
+        self._sliders: dict = {}  # key -> (GhostSlider, scale)
         self._build_form()
 
     def _build_form(self) -> None:
-        # One card, one row per setting: name on the left, its control on
-        # the right -- the same layout as the design mockup.
+        # One card, one row per setting: name left, control right.
         self.card = QFrame()
         self.card.setObjectName("Card")
         card_layout = QVBoxLayout(self.card)

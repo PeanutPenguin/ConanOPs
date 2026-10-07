@@ -1,8 +1,4 @@
-"""
-Background work for removing a server and for "Delete Everything":
-stopping servers, the one elevated Windows cleanup, router forwards,
-and deleting files -- see cleanup.py for what gets removed and why.
-"""
+"""QThread workers for removing a server and for "Delete Everything" (see cleanup.py)."""
 from __future__ import annotations
 
 import time
@@ -19,8 +15,7 @@ _log = applog.get_logger(__name__)
 
 
 def _stop_and_wait(server, timeout: float = 60.0) -> bool:
-    """Saves and stops a running server, then waits until its process is
-    really gone so its files aren't locked."""
+    """Stops the server and waits for its process to exit so files aren't locked."""
     if not server.install_dir or not process_manager.is_running(server.install_dir):
         return True
     try:
@@ -36,10 +31,8 @@ def _stop_and_wait(server, timeout: float = 60.0) -> bool:
 
 
 class ServerRemovalWorker(QThread):
-    """Removes one server: stops it, removes its firewall rules (ConanOps'
-    and the ones Windows made for its program) and router forwards, then
-    deletes its files/backups/session history. Emits finished_removal
-    with the list of things that couldn't be removed (empty = clean)."""
+    """Removes one server's firewall rules, router forwards and chosen files.
+    Emits finished_removal with a list of problems (empty = clean)."""
     finished_removal = Signal(list)
 
     def __init__(self, server, other_servers, delete_files: bool, delete_backups: bool, parent=None):
@@ -84,8 +77,7 @@ class ServerRemovalWorker(QThread):
 
 
 class DeleteEverythingWorker(QThread):
-    """Everything except the program folder and ConanOps' own open files
-    (self_delete.py finishes those after ConanOps exits)."""
+    """Removes everything except the program folder and open files (self_delete.py does those)."""
     progress = Signal(str)
     finished_cleanup = Signal(list)
 

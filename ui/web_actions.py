@@ -1,17 +1,7 @@
 """
-Server actions with real results, for the web version.
-
-The app's buttons report problems with dialogs on the PC. The web
-version needs the same actions to say what happened instead, and to
-work on ANY server -- not just the one the app happens to show -- so
-using it from a phone never switches or disturbs what's open on the PC.
-
-Each action returns "" when it went ahead, or a plain-language reason
-it didn't. Everything here runs on the GUI thread (webui.bridge) and
-reuses the same building blocks as the app's own buttons.
-
-Written as a mixin, like ui/mod_recovery.py; MainWindow provides the
-state it uses.
+Server actions for the web version (a MainWindow mixin). They work on any
+server without disturbing what's open on the PC, and return "" on success or
+a plain-language reason instead of showing dialogs. All run on the GUI thread.
 """
 from __future__ import annotations
 
@@ -30,10 +20,8 @@ _log = applog.get_logger(__name__)
 
 
 class WebActionsMixin:
-    # ------------------------------------------------------------ status --
     def server_busy(self, server) -> str:
-        """What's keeping a server busy right now ("" if nothing). Start,
-        stop, restores, updates and mod changes wait for these."""
+        """What's keeping a server busy right now ("" if nothing)."""
         sid = server.id
         if sid in getattr(self, "_recovery_workers", {}):
             return "Finding a broken mod"
@@ -56,8 +44,7 @@ class WebActionsMixin:
         return bool(server.install_dir) and process_manager.is_running(server.install_dir)
 
     def _clear_online(self, server_id: str) -> None:
-        """Nobody can be online once a server stops; the app's player
-        lists are told right away (not at the next join/leave)."""
+        """Clears a stopped server's online players right away."""
         self._online_by_server[server_id] = set()
         if self.config.active_server_id == server_id:
             self.dashboard_page.set_online_players(set())
@@ -82,7 +69,6 @@ class WebActionsMixin:
             return f"Wait until this finishes: {busy}."
         return ""
 
-    # ------------------------------------------------------------- power --
     def start_server(self, server) -> str:
         problem = self._ready(server, allow_busy=())
         if problem:
@@ -100,9 +86,7 @@ class WebActionsMixin:
         return ""
 
     def _launch_by_request(self, server) -> None:
-        """What a person clicking Start means (shared with the app's
-        Start button): run it, keep it running through reboots, and
-        override any hold or wait for a mod fix."""
+        """A manual Start: launch, keep running through reboots, and clear any hold."""
         process_manager.launch(server)
         self._known_running[server.id] = True
         server.desired_running = True
@@ -129,16 +113,13 @@ class WebActionsMixin:
         problem = self._preflight_problem(server, "restart")
         if problem:
             return problem
-        # manual="web": a failure later goes to the server's alerts, not
-        # a dialog on the PC that nobody would see.
+        # manual="web": failures go to alerts, not a PC dialog nobody sees.
         self._warn_then_restart(server, manual="web")
         self._refresh_chrome()
         return ""
 
     def enable_rcon(self, server) -> None:
-        """RCON on with a random password and a port no other server uses
-        (the dashboard's "Turn On RCON"). Written to Game.ini now; the
-        server picks it up the next time it starts."""
+        """Turns RCON on with a random password and unused port. Takes effect on next start."""
         server.rcon_enabled = True
         if not server.rcon_password:
             server.rcon_password = secrets.token_urlsafe(12)
@@ -157,10 +138,8 @@ class WebActionsMixin:
                                                   if running else ""), title="RCON On")
         self._refresh_chrome()
 
-    # ----------------------------------------------------------- players --
     def kick(self, server, name: str) -> str:
-        """Returns the result message (also sent to the server's alerts,
-        same as the app)."""
+        """Returns the result message (also sent to the server's alerts)."""
         if not server.rcon_enabled:
             return ("Kicking needs RCON, which is off for this server. Turn it on (Dashboard → Turn On RCON); "
                     "it works after the server's next restart.")
@@ -189,10 +168,8 @@ class WebActionsMixin:
         if self.config.active_server_id == server.id:
             self.access_page.set_server(server)
 
-    # ----------------------------------------------------------- backups --
     def back_up_now(self, server) -> str:
-        """Same as the Backups page's "Back Up Now". Returns "" or why not.
-        Runs on the GUI thread like the app's button."""
+        """Same as the Backups page's "Back Up Now". Returns "" or why not."""
         if not server.install_dir:
             return "This server isn't set up yet -- finish setup in the app on the PC."
         if not server.backup_destination:
@@ -219,11 +196,8 @@ class WebActionsMixin:
         if self.config.active_server_id == server.id:
             self.settings_backups_page.refresh()
 
-    # -------------------------------------------------------------- mods --
     def download_mods(self, server) -> str:
-        """The Mods page's "Download Mods", for any server: fetches every
-        mod with SteamCMD, rewrites modlist.txt, and reports the result
-        in the server's alerts."""
+        """Downloads every mod, rewrites modlist.txt, and reports in the server's alerts."""
         if not server.mods:
             return "There are no mods to download."
         if not server.steamcmd_dir:
@@ -253,8 +227,7 @@ class WebActionsMixin:
                          title="Mod Download Problems")
 
     def mods_changed_elsewhere(self, server) -> None:
-        """Mods changed outside the Mods page (the web version, a download,
-        mod recovery): show it there if that server is open."""
+        """Refreshes the Mods page if it shows this server."""
         if self.config.active_server_id == server.id and getattr(self.mods_page, "server", None) is server:
             self.mods_page._refresh()
 
@@ -274,10 +247,8 @@ class WebActionsMixin:
             return "The mod check couldn't start -- see conanops.log on the PC."
         return ""
 
-    # ---------------------------------------------------------- settings --
     def settings_values(self, server) -> Dict[str, dict]:
-        """A server's saved values for each settings page, by page key --
-        exactly what the app's settings pages load."""
+        """A server's saved values for each settings page, by page key."""
         values = {"identity": server.gameplay, "progression": server.gameplay}
         for key in self.gameplay_pages:
             values[key] = server.gameplay
@@ -321,10 +292,8 @@ class WebActionsMixin:
         return next((page for k, _label, page in self.settings_container_entries if k == key), None)
 
     def settings_saved_elsewhere(self, server, key: Optional[str] = None) -> None:
-        """Settings were saved for `server` somewhere other than the app's
-        settings pages (the web version). If that server is open in the
-        app, its pages take the new saved values -- without touching
-        anything someone is still editing there."""
+        """After an outside save, refreshes the open pages for `server`
+        without touching in-progress edits."""
         if self.config.active_server_id != server.id:
             return
         values = self.settings_values(server)
@@ -339,9 +308,7 @@ class WebActionsMixin:
 
 
 def merge_committed(page, values: dict) -> None:
-    """Gives a settings page new saved values. A field the person hasn't
-    touched shows the new value; a field they're editing keeps their
-    edit (and still counts as a pending change)."""
+    """Gives a settings page new saved values; fields being edited keep their edit."""
     for name, new in values.items():
         if name not in page._fields:
             continue

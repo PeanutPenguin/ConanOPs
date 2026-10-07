@@ -20,22 +20,11 @@ def _row(label_text: str, widget) -> QVBoxLayout:
 
 
 class SettingsBackupsPage(SettingsPageBase):
-    """Everything backup-related lives here now, not as its own main
-    sidebar tab: the schedule/retention/destination settings (this
-    page's own deferred fields, same Apply/Discard pattern as every
-    other settings page) PLUS the immediate actions -- Back Up Now,
-    Import, and the list of existing backups with Restore -- via an
-    embedded BackupsPage, whose own actions take effect right away and
-    aren't part of this page's pending-changes queue."""
+    """Backup schedule/retention/destination settings (normal Apply/Discard)
+    plus an embedded BackupsPage whose actions take effect immediately."""
 
     def __init__(self, parent=None):
-        # requires_restart=False: this page's fields are ConanOps' own
-        # scheduler settings (destination folder, retention counts,
-        # interval), read live by ConanOps itself -- never written to
-        # any Conan Exiles .ini file, so there's no server restart
-        # involved in them taking effect. See base_settings_page.py's
-        # constructor comment for the general rule this is an
-        # exception to.
+        # These are ConanOps' own scheduler settings, not server .ini keys.
         super().__init__("Backups", parent, requires_restart=False, card_form=True)
         self._build_form()
 
@@ -86,17 +75,13 @@ class SettingsBackupsPage(SettingsPageBase):
         divider.setFrameShape(QFrame.HLine)
         self.form_layout.addWidget(divider)
 
-        # The immediate-action part: create/import/restore, none of
-        # which goes through this page's pending-changes queue above.
         self.backups_widget = BackupsPage(embedded=True)
         self.form_layout.addWidget(self.backups_widget)
 
         self.form_layout.addStretch(1)
 
     def set_server(self, server) -> None:
-        """Feeds the embedded backup list/actions -- separate from
-        load_committed(), which only handles this page's own deferred
-        settings fields (schedule/retention/destination)."""
+        """Feeds the embedded backup list; load_committed() handles the settings fields."""
         self.backups_widget.set_server(server)
 
     def refresh(self) -> None:

@@ -1,22 +1,9 @@
 """
-Online updates for ConanOps itself, hosted on GitHub Releases -- so
-there's no server to run. Publishing an update is: create a GitHub
-release with a higher version tag and attach the update zip (see
-RELEASING.md).
+Online updates for ConanOps from GitHub Releases (see RELEASING.md).
 
-  check_latest()  -- asks GitHub for the newest published release
-                     (drafts and pre-releases are ignored) and says
-                     whether it's newer than this copy.
-  download()      -- downloads the release's update zip with progress,
-                     checks its size and SHA-256 (GitHub publishes a
-                     digest for every release file), and validates it
-                     as a ConanOps package. The existing installer
-                     (self_update.apply_update) does the rest: backup,
-                     install, restart, automatic rollback if the new
-                     version won't start.
-
-Only HTTPS to api.github.com / github.com is used, and nothing is
-installed without passing those checks.
+check_latest() finds a newer non-draft, non-prerelease release; download()
+fetches its update zip and verifies size, SHA-256 and package layout.
+self_update.apply_update does the actual install. HTTPS to GitHub only.
 """
 from __future__ import annotations
 
@@ -41,16 +28,13 @@ _API = "https://api.github.com/repos/{repo}/releases/latest"
 
 
 def update_repo() -> str:
-    """"owner/name" of the GitHub repository releases come from, set in
-    version.py. Empty = online updates turned off (file updates still
-    work)."""
+    """"owner/name" from version.py; empty means online updates are off."""
     repo = (getattr(version, "UPDATE_REPO", "") or "").strip().strip("/")
     return repo if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) else ""
 
 
 def parse_version(text: str) -> Optional[Tuple[int, ...]]:
-    """"v1.2.3" / "1.2" / "1.2.3-beta" -> (1, 2, 3) / (1, 2, 0) / None.
-    Pre-release suffixes aren't offered as updates."""
+    """"v1.2.3" -> (1, 2, 3), "1.2" -> (1, 2, 0), "1.2.3-beta" -> None."""
     m = re.fullmatch(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", (text or "").strip())
     if not m:
         return None
@@ -88,9 +72,8 @@ def _request(url: str, timeout: float):
 
 
 def check_latest(timeout: float = 15.0) -> Optional[ReleaseInfo]:
-    """The newest release IF it's newer than this copy and has an update
-    zip attached; None if this copy is current. Raises UpdateCheckError
-    when the check itself fails (offline, rate-limited, no releases)."""
+    """Newest release if newer and it has an update zip, else None.
+    Raises UpdateCheckError if the check itself fails."""
     repo = update_repo()
     if not repo:
         raise UpdateCheckError("Online updates aren't set up for this copy of ConanOps.")
@@ -133,10 +116,8 @@ def check_latest(timeout: float = 15.0) -> Optional[ReleaseInfo]:
 
 def download(info: ReleaseInfo, progress: Optional[Callable[[int, int], None]] = None,
              should_cancel: Optional[Callable[[], bool]] = None, timeout: float = 30.0) -> str:
-    """Downloads and verifies the update zip; returns its path (in a temp
-    folder the caller should delete after installing). Raises
-    UpdateCheckError on failure or cancel -- never returns a file that
-    didn't pass every check."""
+    """Downloads and verifies the update zip and returns its path in a temp
+    folder (caller deletes it). Raises UpdateCheckError on failure or cancel."""
     folder = tempfile.mkdtemp(prefix="conanops-update-")
     path = os.path.join(folder, UPDATE_ASSET_NAME)
     sha = hashlib.sha256()

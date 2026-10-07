@@ -1,13 +1,7 @@
 """
-First-run setup wizard for a server: checks/installs SteamCMD, downloads
-the Conan Exiles dedicated server via SteamCMD, auto-detects local IP and
-a free port pair, adds Windows Firewall rules, attempts UPnP forwarding,
-and reports what still needs to be done manually.
-
-This is what turns "download the exe" into "and now it just works" for
-as much of the process as is actually automatable -- the spec's own
-Known Gaps called out that manual router forwarding is unavoidable when
-UPnP isn't available, and that's reflected honestly in the final step.
+First-run setup wizard for a server: installs SteamCMD, downloads the
+dedicated server, picks a local IP and free ports, adds firewall rules,
+tries UPnP, and reports anything (e.g. router forwarding) left to do by hand.
 """
 from __future__ import annotations
 
@@ -34,10 +28,8 @@ from models import ServerConfig
 
 class _InstallWorker(QThread):
     def _ensure_vc_runtime(self) -> None:
-        """The server needs Microsoft's Visual C++ runtime, which SteamCMD
-        doesn't install (the Steam client would). Never fails the setup:
-        if it's declined or can't download, the server's pre-launch check
-        and Diagnostics both offer it again."""
+        """Installs the VC++ runtime the server needs (SteamCMD doesn't).
+        Never fails setup; pre-launch checks offer it again."""
         try:
             if self.isInterruptionRequested() or not vcredist.needs_install():
                 return
@@ -46,7 +38,7 @@ class _InstallWorker(QThread):
             self.progress.emit(f"Couldn't set up the Visual C++ runtime: {e}")
 
     progress = Signal(str)
-    progress_percent = Signal(float)  # SteamCMD's own download percentage, once known (see steamcmd.parse_progress_percent)
+    progress_percent = Signal(float)  # SteamCMD download percentage
     finished_ok = Signal(bool)
 
     def __init__(self, steamcmd_dir: str, install_dir: str, restore_backup_path: Optional[str] = None, parent=None):
@@ -96,16 +88,13 @@ class _InstallWorker(QThread):
                     return
 
             self.finished_ok.emit(True)
-        except Exception as e:  # surface any unexpected error into the log instead of crashing the thread silently
+        except Exception as e:  # report instead of silently killing the thread
             self.progress.emit(f"Unexpected error: {e}")
             self.finished_ok.emit(False)
 
 
 def _no_space_default_base() -> str:
-    """A default base folder for new servers' SteamCMD/install paths.
-    See conanops_paths.no_space_root()'s docstring -- this is the same
-    root ConanOps' own app data (config.json, theme.json, sessions)
-    lives under, so everything ConanOps creates lands in one place."""
+    """Default base folder for new servers (conanops_paths.no_space_root())."""
     return conanops_paths.no_space_root()
 
 
@@ -151,13 +140,12 @@ def _dir_has_contents(path: str) -> bool:
 
 
 def _clean_server_name(name: str) -> str:
-    return " ".join(name.split())  # trims, and collapses tabs/newlines/runs of spaces
+    return " ".join(name.split())
 
 
 _MAX_NAME_LEN = 80
 
-# Free space on the install drive: below the first, setup refuses (same
-# floor ConanOps uses before an update); below the second, it asks.
+# Install-drive free space: below the first setup refuses, below the second it asks.
 _MIN_FREE_FOR_INSTALL = steamcmd_mod.MIN_FREE_BYTES_FOR_UPDATE
 _COMFORTABLE_FREE_FOR_INSTALL = 40 * 1024 ** 3
 
@@ -198,13 +186,7 @@ class PathsPage(QWizardPage):
 
         layout.addWidget(QLabel("SteamCMD folder:"))
         row1 = QHBoxLayout()
-        # If this server doesn't have its own SteamCMD folder yet,
-        # default to one an existing server is already using (if any)
-        # rather than suggesting a fresh per-server folder -- the tool
-        # and its Workshop mod cache are safe to share across servers
-        # (see AppConfig.default_steamcmd_dir()'s docstring), so this
-        # saves a second SteamCMD download and re-fetching any mods
-        # already pulled down for another server, with nothing to type.
+        # Default to an existing server's SteamCMD folder; it and its mod cache are safe to share.
         default_steamcmd = (get_default_steamcmd_dir() if get_default_steamcmd_dir else "") or \
             os.path.join(_no_space_default_base(), server.id, "steamcmd")
         self.steamcmd_edit = QLineEdit(server.steamcmd_dir or default_steamcmd)
@@ -235,15 +217,8 @@ class PathsPage(QWizardPage):
         self.registerField("name*", self.name_edit)
         self.registerField("steamcmd_dir*", self.steamcmd_edit)
         self.registerField("install_dir*", self.install_edit)
-        # PySide6's automatic "mandatory field" wiring (the "*" above)
-        # is unreliable when a field's text is set PROGRAMMATICALLY --
-        # as both of these are, via the pre-filled defaults above --
-        # rather than typed by the user: isComplete() can come back
-        # False even with valid text in both boxes, leaving Next
-        # silently disabled with no visible explanation. Overriding
-        # isComplete() to check the actual widget text directly, and
-        # wiring textChanged to completeChanged ourselves, sidesteps
-        # that binding quirk entirely.
+        # PySide6's "*" mandatory-field check misses text set from code and can
+        # leave Next disabled, so isComplete() checks the widgets directly.
         self.name_edit.textChanged.connect(self.completeChanged)
         self.steamcmd_edit.textChanged.connect(self.completeChanged)
         self.install_edit.textChanged.connect(self.completeChanged)
@@ -261,11 +236,8 @@ class PathsPage(QWizardPage):
             edit.setText(path)
 
     def validatePage(self) -> bool:
-        """Blocks moving on if the name or folders would cause trouble
-        later, and writes the cleaned-up values back into the fields --
-        the Install step and apply_to_server() read the fields, so they
-        must hold exactly what was validated (no stray trailing spaces
-        or relative paths)."""
+        """Rejects bad names/folders and writes the cleaned values back into
+        the fields, since later steps read the fields."""
         raw_name = self.name_edit.text()
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_name.strip()):
             QMessageBox.warning(self, "Name not allowed", "The server name can't contain tabs or line breaks.")
@@ -290,10 +262,7 @@ class PathsPage(QWizardPage):
         install_dir = _norm(install_raw)
         steamcmd_dir = _norm(steamcmd_raw)
 
-        # SteamCMD's own +app_update can fail with a cryptic "Missing
-        # configuration" error when either path contains a space --
-        # confirmed against a real install where C:\Users\<name with a
-        # space>\... was the install path. Blocked rather than warned.
+        # SteamCMD's app_update can fail with "Missing configuration" on paths with spaces.
         for label, path in (("SteamCMD folder", steamcmd_dir), ("server install folder", install_dir)):
             if _path_has_spaces(path):
                 QMessageBox.warning(
@@ -392,8 +361,7 @@ class PathsPage(QWizardPage):
             if answer != QMessageBox.Yes:
                 return False
 
-        # Remember what was already there, so cancelling the wizard only
-        # ever offers to delete folders THIS setup created/filled.
+        # So cancelling only offers to delete folders this setup created.
         self.install_dir_preexisting = _dir_has_contents(install_dir)
         self.steamcmd_dir_preexisting = _dir_has_contents(steamcmd_dir)
 
@@ -404,11 +372,8 @@ class PathsPage(QWizardPage):
 
 
 class RestorePage(QWizardPage):
-    """Optional step: seed the new server's world from an existing
-    backup instead of starting fresh. Placed after PathsPage (so the
-    install folder is already decided) and before InstallPage (the
-    actual restore happens right after the SteamCMD download, in
-    _InstallWorker)."""
+    """Optional: seed the world from an existing backup. The restore runs
+    in _InstallWorker right after the download."""
 
     def __init__(self, get_backup_sources=None, parent=None):
         super().__init__(parent)
@@ -473,9 +438,7 @@ class RestorePage(QWizardPage):
             self.selected_backup_path = None
             return True
 
-        # An explicitly browsed-to file takes priority over the combo,
-        # since choosing one is a more deliberate action than whatever
-        # the combo happened to default to.
+        # A browsed-to file wins over the combo's default.
         path = self._external_path or self.source_combo.currentData()
         if not path:
             QMessageBox.warning(
@@ -502,7 +465,7 @@ class InstallPage(QWizardPage):
         self._done = False
         self._ok = False
         self._worker = None
-        self.started = False  # True once any install attempt has begun (wizard cancel cleanup uses it)
+        self.started = False  # for wizard-cancel cleanup
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -515,7 +478,7 @@ class InstallPage(QWizardPage):
         status_row.addWidget(self.status_label, 1)
         layout.addLayout(status_row)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # indeterminate until the first real percentage arrives (see _on_progress_percent)
+        self.progress_bar.setRange(0, 0)  # indeterminate until a percentage arrives
         self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
         self.log_view = QPlainTextEdit()
@@ -546,7 +509,7 @@ class InstallPage(QWizardPage):
         self.retry_btn.hide()
         self.failure_hint.hide()
         self.completeChanged.emit()
-        self.progress_bar.setRange(0, 0)  # back to indeterminate for the SteamCMD bootstrap step, which has no percentage
+        self.progress_bar.setRange(0, 0)  # the SteamCMD bootstrap has no percentage
         self.spinner.show()
         self.status_label.setText("Getting SteamCMD ready…")
         steamcmd_dir = self.field("steamcmd_dir")
@@ -560,9 +523,8 @@ class InstallPage(QWizardPage):
         self._worker.start()
 
     def cleanupPage(self) -> None:
-        """Back was clicked: stop any running download (otherwise coming
-        forward again would start a SECOND install into the same folder
-        while the first is still writing to it) and reset."""
+        """Back clicked: stop the download so going forward again can't start a
+        second install into the same folder."""
         self.stop_worker()
         self._done = False
         self._ok = False
@@ -571,8 +533,6 @@ class InstallPage(QWizardPage):
         super().cleanupPage()
 
     def _on_progress_percent(self, percent: float) -> None:
-        # Switches from the indeterminate spinner to a real determinate
-        # bar the first time SteamCMD actually reports a percentage.
         if self.progress_bar.maximum() == 0:
             self.progress_bar.setRange(0, 100)
         pct = min(100, max(0, int(percent)))
@@ -580,13 +540,10 @@ class InstallPage(QWizardPage):
         self.status_label.setText(f"Downloading the Conan Exiles server… {pct}%")
 
     def stop_worker(self) -> None:
-        """Called if the wizard is closed/cancelled mid-install (or Back
-        is clicked) so the background thread doesn't outlive its use."""
+        """Stops the install thread on cancel/close/Back."""
         if self._worker and self._worker.isRunning():
             self._worker.requestInterruption()
-            # The cancel check in steamcmd's polling loop runs every
-            # ~0.25s, and a terminate() gets up to 5s of grace before a
-            # hard kill (see steamcmd._run_cancelable).
+            # Cancel is polled every ~0.25s; terminate gets 5s before a kill.
             self._worker.wait(7000)
 
     def _on_finished(self, ok: bool) -> None:
@@ -602,9 +559,7 @@ class InstallPage(QWizardPage):
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:
-        # Only a SUCCESSFUL install unlocks Continue -- a failed one used
-        # to let the person carry on and Finish, saving a server that
-        # had no working install behind it.
+        # Only a successful install unlocks Continue.
         return self._done and self._ok
 
 
@@ -637,18 +592,17 @@ class NetworkPage(QWizardPage):
         self.detected_ip = ""
         self.detected_game_port = 7777
         self.detected_query_port = 27015
-        self._ran = False          # True once we HAVE a usable result to complete on
-        self.touched = False       # True once any run started (rules/forwards may exist -> clean up on cancel)
-        self._auto_ran = False     # True once we've auto-triggered a run for this page instance
+        self._ran = False          # have a usable result
+        self.touched = False       # rules/forwards may exist, so clean up on cancel
+        self._auto_ran = False
         self._worker: Optional[network_setup_runner.WizardNetworkSetupWorker] = None
         self._last_public_ip: Optional[str] = None
         self._last_router_ip: Optional[str] = None
         self._last_double_nat = False
-        self.on_worker_finished = None  # set by SetupWizard.reject() if a run is still in flight
+        self.on_worker_finished = None  # set by SetupWizard.reject() mid-run
 
     def initializePage(self) -> None:
-        # Only auto-run the first time this page is shown; QWizard calls
-        # initializePage() on every visit.
+        # QWizard calls initializePage() on every visit; auto-run only once.
         if not self._auto_ran:
             self._auto_ran = True
             self._run()
@@ -658,7 +612,7 @@ class NetworkPage(QWizardPage):
 
     def _run(self) -> None:
         if self._worker:
-            return  # already running
+            return
         self.status_label.setText("Working... (Windows may ask for permission to add firewall rules -- click Yes.)")
         self.run_btn.setEnabled(False)
         self._ran = False
@@ -680,7 +634,6 @@ class NetworkPage(QWizardPage):
         self._worker = None
         self.run_btn.setEnabled(True)
         if self.on_worker_finished is not None:
-            # The wizard was cancelled while this was running.
             callback, self.on_worker_finished = self.on_worker_finished, None
             callback(result)
             return
@@ -770,8 +723,7 @@ class NetworkPage(QWizardPage):
 
 
 class KeepRunningPage(QWizardPage):
-    """Last step: one switch that sets ConanOps up to run by itself --
-    instead of leaving each of these buried in App Settings."""
+    """Last step: one switch to set ConanOps up to run unattended."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -843,9 +795,7 @@ _WIZARD_STEPS = [
 
 
 class _StepsPanel(QFrame):
-    """The wizard's left column, styled like the main sidebar: the app
-    icon and a numbered list of steps, current one highlighted, finished
-    ones ticked."""
+    """Left column: numbered steps, current highlighted, finished ticked."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -897,18 +847,14 @@ class SetupWizard(QWizard):
                  start_network_cleanup=None, parent=None):
         super().__init__(parent)
         self.server = server
-        # Callable(server_id, ports, bind_ip) that removes firewall rules
-        # and router forwards in the background. MainWindow passes its own
-        # tracked-worker launcher; without one, a worker owned by this
-        # wizard is used.
+        # Callable(server_id, ports, bind_ip) removing firewall rules and
+        # router forwards in the background; falls back to our own worker.
         self._start_network_cleanup_cb = start_network_cleanup
         self._cleanup_workers = []
         self.setWindowTitle(f"Set Up Server — {server.name}")
         self.setWindowIcon(assets.app_icon())
         self.setMinimumSize(820, 560)
-        # ClassicStyle: Windows' default "Aero" wizard style paints its own
-        # black header and white button bar that ignore the app's theme.
-        # Classic leaves every part to our stylesheet.
+        # The Aero wizard style paints its own header and button bar, ignoring our theme.
         self.setWizardStyle(QWizard.ClassicStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.setTitleFormat(Qt.RichText)
@@ -916,8 +862,7 @@ class SetupWizard(QWizard):
         self.setButtonText(QWizard.FinishButton, "Finish Setup")
         self.setButtonText(QWizard.BackButton, "Back")
         self.setButtonText(QWizard.NextButton, "Next")
-        # A property, not an object name: QWizard manages its buttons'
-        # object names itself.
+        # Property, not object name: QWizard owns its buttons' object names.
         for which in (QWizard.NextButton, QWizard.CommitButton, QWizard.FinishButton):
             self.button(which).setProperty("primary", True)
         self.steps_panel = _StepsPanel()
@@ -929,9 +874,7 @@ class SetupWizard(QWizard):
             get_default_steamcmd_dir=get_default_steamcmd_dir,
             get_reserved_names=get_reserved_names,
         )
-        # Keep the title bar's server name in sync as the user types a
-        # new one on the first page, instead of it staying frozen on
-        # whatever name the server had when the wizard was opened.
+        # Keep the title bar's server name in sync with the name field.
         self.paths_page.name_edit.textChanged.connect(
             lambda text: self.setWindowTitle(f"Set Up Server — {text.strip() or server.name}")
         )
@@ -954,8 +897,7 @@ class SetupWizard(QWizard):
         self.steps_panel.set_current(0)
 
     def showEvent(self, event) -> None:  # noqa: N802 -- Qt's naming
-        # Re-polish once the wizard is actually styled by its parent, so
-        # the "primary" property above takes effect.
+        # Re-polish once styled so the "primary" property takes effect.
         super().showEvent(event)
         for which in (QWizard.NextButton, QWizard.CommitButton, QWizard.FinishButton):
             btn = self.button(which)
@@ -985,14 +927,12 @@ class SetupWizard(QWizard):
         self.install_page.stop_worker()
         net = self.network_page
         is_new_server = not self.server.install_dir
-        # Only a brand-new server's networking is undone: re-running
-        # setup for an existing server must not tear down its live rules.
+        # Never tear down an existing server's live rules.
         if is_new_server and net.touched:
             gp, qp = net.detected_game_port, net.detected_query_port
             ports = [gp, gp + 1, qp]
             if net.is_running():
-                # Rules/forwards are being added right now; remove them
-                # once that finishes rather than racing it.
+                # Remove after the in-flight run finishes, rather than racing it.
                 net.on_worker_finished = lambda result: self._start_network_cleanup(
                     [result.get("game_port", gp), result.get("game_port", gp) + 1, result.get("query_port", qp)],
                     result.get("detected_ip") or "",
@@ -1005,10 +945,8 @@ class SetupWizard(QWizard):
         super().reject()
 
     def _offer_to_delete_downloaded_files(self) -> None:
-        """Cancelling a new server's setup after the download started
-        used to leave gigabytes behind with nothing pointing at them.
-        Only folders this setup created/filled are offered for deletion
-        -- never a pre-existing or shared SteamCMD folder."""
+        """Offers to delete folders this setup created/filled, never a
+        pre-existing or shared SteamCMD folder."""
         targets = []
         install_dir = self.field("install_dir") or ""
         steamcmd_dir = self.field("steamcmd_dir") or ""
@@ -1039,17 +977,12 @@ class SetupWizard(QWizard):
         super().closeEvent(event)
 
     def apply_to_server(self) -> None:
-        """Call after exec() returns Accepted to write the wizard's
-        results back into the ServerConfig."""
+        """Call after exec() returns Accepted to write results into the ServerConfig."""
         self.server.name = _clean_server_name(self.field("name") or "") or self.server.name
         self.server.steamcmd_dir = (self.field("steamcmd_dir") or "").strip()
         self.server.install_dir = (self.field("install_dir") or "").strip()
         if not self.server.backup_destination:
-            # See backup_manager.default_backup_destination()'s docstring:
-            # leaving this "" meant scheduled/pre-update backups silently
-            # never ran until someone found the Backups settings page and
-            # set a folder by hand. The field there stays fully editable
-            # -- this is just what it starts pre-filled with.
+            # Without a destination, scheduled backups would never run.
             self.server.backup_destination = backup_manager.default_backup_destination(self.server.install_dir)
         self.server.bind_ip = self.network_page.detected_ip
         self.server.game_port = self.network_page.detected_game_port

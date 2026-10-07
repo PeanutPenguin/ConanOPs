@@ -1,28 +1,10 @@
 """
-"Reopen ConanOps if it stops": a scheduled task that keeps ConanOps
-itself running while someone is signed into Windows.
-
-How it works
-------------
-A Task Scheduler task ("ConanOps Keep-Alive", in the root folder) runs
-as the signed-in person -- "only when the user is logged on", so no
-password is stored and Windows' password protection (DPAPI) is never
-involved, unlike the retired background mode. It starts a tiny hidden
-PowerShell watcher at sign-in. Every minute the watcher checks whether
-ConanOps is running; if it has been gone for two checks in a row (so a
-self-update's quick restart doesn't count), it starts ConanOps again
-with --keep-alive, which opens quietly in the tray.
-
-The watcher stops relaunching when:
-  * the person chose Quit from the tray (a "user-quit" marker, cleared
-    the next time ConanOps starts any other way), or
-  * keep-alive is turned off, ConanOps is uninstalled or everything is
-    deleted (the "keep-alive.on" switch file is gone -- the watcher then
-    exits on its own).
-
-The task repeats every 10 minutes too, so a watcher that somehow died
-comes back (MultipleInstances IgnoreNew stops duplicates). Registering
-a task that runs only as yourself needs no administrator rights.
+"Reopen ConanOps if it stops": a per-user Task Scheduler task (logged-on only,
+so no stored password or admin rights) runs a hidden PowerShell watcher that
+relaunches ConanOps with --keep-alive after two missed checks in a row, so a
+self-update restart doesn't count. It pauses while the "user-quit" marker
+exists and exits once the "keep-alive.on" switch file is gone. The task also
+repeats every 10 minutes to revive a dead watcher (IgnoreNew stops duplicates).
 """
 from __future__ import annotations
 
@@ -59,10 +41,6 @@ def quit_marker() -> str:
     return _path(_QUIT_MARKER)
 
 
-# --------------------------------------------------------------------- #
-# Deliberate quit
-# --------------------------------------------------------------------- #
-
 def mark_user_quit() -> None:
     try:
         os.makedirs(conanops_paths.no_space_root(), exist_ok=True)
@@ -79,10 +57,6 @@ def clear_user_quit() -> None:
         pass
 
 
-# --------------------------------------------------------------------- #
-# The task
-# --------------------------------------------------------------------- #
-
 def _app_command() -> tuple:
     """(exe, arguments) that start ConanOps quietly."""
     if getattr(sys, "frozen", False):
@@ -96,8 +70,7 @@ def _app_command() -> tuple:
 
 
 def watcher_script() -> str:
-    """The PowerShell the task runs. Kept short and readable on purpose:
-    anyone looking at the task in Task Scheduler can see what it does."""
+    """The PowerShell the task runs; kept short so it's readable in Task Scheduler."""
     import ntpath
     exe, args = _app_command()
     q = powershell.ps_str
@@ -218,9 +191,7 @@ def status() -> Optional[dict]:
 
 
 def ensure(enabled: bool) -> None:
-    """Called in the background at startup: makes the task match the
-    setting -- re-registers it if it's missing or points at an old copy
-    of ConanOps, removes it if the setting is off."""
+    """Startup check: re-registers the task if missing or stale, removes it if the setting is off."""
     if sys.platform != "win32":
         return
     try:

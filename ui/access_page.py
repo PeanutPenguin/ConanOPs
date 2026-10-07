@@ -11,17 +11,13 @@ from PySide6.QtWidgets import (
 import applog
 import banlist_manager
 from models import ServerConfig
+from ui.workers import keep_until_finished
 
 _log = applog.get_logger(__name__)
 
 
 class _BanlistActionWorker(QThread):
-    """Runs a banlist_manager ban/unban call off the GUI thread. That
-    call, when RCON is enabled, does a real blocking socket round-trip
-    (rcon.send_command, with its own multi-second timeout) -- clicking
-    Ban/Unban used to freeze the whole app for however long that took,
-    including the full timeout if the server happened to be unreachable
-    right then."""
+    """Runs a ban/unban off the GUI thread (it may do a blocking RCON call)."""
     finished_action = Signal(str, str)  # status message, action label ("Ban"/"Unban")
 
     def __init__(self, fn, server, steam_id, action_label, parent=None):
@@ -32,13 +28,7 @@ class _BanlistActionWorker(QThread):
         self._action_label = action_label
 
     def run(self) -> None:
-        # banlist_manager's ban/unban calls are mostly best-effort about
-        # RCON failures already (they catch rcon.RconError and return a
-        # status string), but a write_list_file() permission error or
-        # anything else unexpected must still emit -- otherwise the Ban/
-        # Unban controls this page disables while the worker is running
-        # (see _run_banlist_action) would stay disabled for the rest of
-        # the session.
+        # Always emit, or the Ban/Unban controls stay disabled.
         try:
             status = self._fn(self._server, self._steam_id)
         except Exception as e:  # noqa: BLE001 - always emit so the UI re-enables
@@ -53,14 +43,8 @@ class AccessPage(QWidget):
         self.server: Optional[ServerConfig] = None
         self.on_changed = None  # callable(server) -- persist config
         self._action_worker: Optional[_BanlistActionWorker] = None
-        # Workers moved here once "logically" finished (see
-        # _on_banlist_action_finished) but kept referenced until Qt's
-        # own QThread.finished fires -- dropping the last Python
-        # reference to a QThread before the underlying OS thread has
-        # actually wound down is a real crash risk ("QThread: Destroyed
-        # while thread is still running"), and finished_action (emitted
-        # from inside run(), just before the thread itself returns) can
-        # arrive slightly before that.
+        # Finished workers stay referenced until QThread.finished fires;
+        # destroying a QThread whose thread is still running crashes.
         self._retiring_workers: list = []
 
         root = QVBoxLayout(self)
@@ -216,7 +200,4 @@ class AccessPage(QWidget):
         QMessageBox.information(self, label, status)
 
     def _retire_worker(self, worker: Optional[_BanlistActionWorker]) -> None:
-        if worker is None:
-            return
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)

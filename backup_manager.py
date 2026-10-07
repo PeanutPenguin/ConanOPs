@@ -1,13 +1,7 @@
-"""
-Backup management: zip up the world save + config, list what's on disk,
-restore one, and prune old backups per the server's retention settings.
+"""Create, list, restore, import and prune world-save backups.
 
-A backup captures:
-  ConanSandbox/Saved/<map>.db (+ -wal / -shm if present)
-  ConanSandbox/Saved/Config/
-
-Filenames encode the trigger so the Backups tab can show it without a
-separate index file: e.g. 20260919-110243_scheduled.zip
+A backup zips ConanSandbox/Saved/*.db (+ -wal/-shm) and Saved/Config/.
+The filename encodes time and trigger, e.g. 20260919-110243_scheduled.zip.
 """
 from __future__ import annotations
 
@@ -42,37 +36,16 @@ class BackupEntry:
 
 
 def saved_dir(install_dir: str) -> str:
-    """The server's live world-save folder -- ConanSandbox/Saved under
-    its install_dir. This is what create_backup() reads from (and what
-    a missing/empty entry means when a backup silently returns None --
-    see diagnostics.py's "World save" check, which is what actually
-    surfaces this to a person instead of a bare "backup failed")."""
+    """The server's live world-save folder (ConanSandbox/Saved)."""
     return os.path.join(install_dir, "ConanSandbox", "Saved")
 
 
-# Old name, kept as an alias since it's still used within this module --
-# no reason to touch every call site just to rename a private helper.
 _saved_dir = saved_dir
 
 
 def default_backup_destination(install_dir: str) -> str:
-    """A sensible default backup folder for a server, given its
-    install_dir: a "backups" folder as a SIBLING of install_dir,
-    inside that server's own ConanOps folder (install_dir is
-    typically .../ConanOps/<server id>/server, so this lands on
-    .../ConanOps/<server id>/backups) -- not a subfolder of install_dir
-    itself, since re-downloading/validating the server there shouldn't
-    ever risk touching backup files.
-
-    Used to auto-populate backup_destination when it's never been set
-    (see MainWindow._load_active_server() and SetupWizard.apply_to_server()):
-    scheduled and pre-update backups silently never ran at all while
-    backup_destination stayed "" ("" is falsy, so every caller's
-    `if server.backup_destination and ...` guard skipped them),
-    requiring a person to notice the Backups settings page and set a
-    folder by hand before backups did anything. Returns "" if
-    install_dir itself is empty (server not set up yet -- nothing
-    sensible to default to)."""
+    """Default backup folder: a "backups" sibling of install_dir (not inside it,
+    so server validation never touches backups). "" if install_dir is empty."""
     if not install_dir:
         return ""
     return os.path.join(os.path.dirname(os.path.abspath(install_dir)), "backups")
@@ -82,10 +55,7 @@ class BackupSpaceError(OSError):
     """Not enough free space at the backup destination to write the zip."""
 
 
-# Headroom on top of the (uncompressed) size of what's being backed up --
-# compression usually makes the zip much smaller, but a world database
-# can compress poorly, and filling the drive to zero is how backups AND
-# the live world save both break.
+# Extra space beyond the uncompressed size; a full drive breaks the live save too.
 _BACKUP_HEADROOM_BYTES = 500 * 1024 ** 2
 
 
@@ -147,13 +117,7 @@ def create_backup(install_dir: str, destination: str, trigger: str, label: str =
 
     size = os.path.getsize(out_path)
 
-    # Verify the zip is actually intact before calling this a success --
-    # testzip() reads every entry's CRC without extracting it anywhere,
-    # so this is cheap regardless of backup size. Without this, a
-    # truncated write (disk filled up mid-copy, a crash during the zip)
-    # could report success and only be discovered corrupt the one time
-    # someone actually needed to restore it -- exactly the wrong moment
-    # to find out a backup never worked.
+    # Check every entry's CRC so a truncated zip is never reported as a good backup.
     try:
         with zipfile.ZipFile(out_path, "r") as zf:
             bad_entry = zf.testzip()
@@ -171,17 +135,8 @@ def create_backup(install_dir: str, destination: str, trigger: str, label: str =
 
 
 def create_backup_for_server(server, destination: str, trigger: str, label: str = "") -> Optional[BackupEntry]:
-    """Same as create_backup(), but first asks the running server to
-    checkpoint via RCON (if RCON is enabled) so the .db/-wal/-shm files
-    being copied reflect a save that just happened, rather than
-    whatever they happened to look like mid-write. This is still not a
-    perfect atomic snapshot (the copy itself isn't a single transaction
-    against a live, changing database -- SQLite's own WAL mode is what
-    keeps a mid-copy read consistent enough to be restorable, not this
-    function), but it substantially narrows the window compared to
-    copying files off a server that's never been told to save at all.
-    Best-effort: if RCON isn't enabled, or the save command fails, this
-    falls back to the plain copy exactly as create_backup() does."""
+    """create_backup(), after a best-effort RCON "saveworld" so the copied files are fresh.
+    Not an atomic snapshot; SQLite WAL keeps a live copy restorable."""
     if server.rcon_enabled:
         import rcon
         try:
@@ -210,25 +165,9 @@ def list_backups(destination: str) -> List[BackupEntry]:
 
 
 def _restore_target_path(name: str, saved: str) -> Optional[str]:
-    """Maps one entry from a backup zip to the file it should land at
-    under `saved` (ConanSandbox/Saved), regardless of how that zip is
-    internally laid out.
-
-    restore_backup() used to just extractall() the zip relative to the
-    install dir's ConanSandbox folder, which only works when every
-    entry is already rooted at "Saved/...". But validate_backup_zip()
-    (the check a person's import has to pass) accepts several other
-    shapes too -- a full "ConanSandbox/Saved/..." path from a whole-
-    server backup, or even a bare "game.db" with no folder structure at
-    all -- so an accepted-but-differently-shaped zip would previously
-    extract to the wrong place (or the install root) while restore
-    still reported success. This normalizes any of those shapes down
-    to the one restore_backup() actually needs.
-
-    Returns None for an entry that isn't part of the save at all (a
-    directory entry, or something unrelated the zip happened to
-    contain), so it's skipped rather than dumped somewhere arbitrary.
-    """
+    """Maps a zip entry to its target under `saved`, whatever the zip layout
+    ("Saved/...", "ConanSandbox/Saved/...", bare "game.db", "Config/...").
+    Returns None for entries that aren't part of a save."""
     norm = name.replace("\\", "/")
     if norm.endswith("/") or not norm:
         return None  # directory entry
@@ -259,26 +198,16 @@ def _restore_target_path(name: str, saved: str) -> Optional[str]:
 
 
 def restore_backup(install_dir: str, backup: BackupEntry) -> None:
-    """Extracts a backup zip back into Saved/. Caller is responsible for
-    stopping the server first and restarting it after -- this function
-    only touches files. A safety copy of the current state is taken
-    first so a bad restore isn't unrecoverable."""
+    """Extracts a backup into Saved/, after taking a safety backup of the current
+    state. The caller must stop the server first and restart it after."""
     saved = _saved_dir(install_dir)
     os.makedirs(saved, exist_ok=True)
 
-    # Safety copy of current state before overwriting anything.
     safety_dest = os.path.dirname(backup.path)
     create_backup(install_dir, safety_dest, trigger="pre-restore-safety")
 
-    # Delete any existing -wal/-shm sidecar files before extracting.
-    # SQLite replays a WAL onto whatever .db file is sitting next to
-    # it on next open -- if the backup's .db is restored but a leftover
-    # -wal from the CURRENT (pre-restore) database is left in place,
-    # SQLite will apply those old, unrelated writes on top of the
-    # restored database and corrupt it. The backup zip carries its own
-    # -wal/-shm (if the source had any) which get written back out by
-    # extractall() right after this, so this only removes ones that
-    # aren't about to be replaced.
+    # A leftover -wal from the current DB would be replayed onto the restored
+    # .db and corrupt it; the backup brings its own -wal/-shm if it had any.
     for stale in glob.glob(os.path.join(saved, "*.db-wal")) + glob.glob(os.path.join(saved, "*.db-shm")):
         try:
             os.remove(stale)
@@ -296,24 +225,9 @@ def restore_backup(install_dir: str, backup: BackupEntry) -> None:
 
 
 def prune_backups(destination: str, daily_keep: int, weekly_keep: int) -> List[str]:
-    """Simple retention: keep the newest `daily_keep` backups outright,
-    then from what's older, keep one per week for `weekly_keep` weeks,
-    deleting the rest. Returns the list of deleted paths.
-
-    Two safety rules on top of that, both fixes for ways this used to
-    be able to wipe out every backup a server had:
-
-    1. Only SCHEDULED backups are ever pruned. Manual backups,
-       imports, pre-update/pre-restore safety copies, and anything
-       else with a non-"scheduled" trigger are never touched here --
-       someone who explicitly backed up (or imported an external save)
-       didn't ask for it to be silently deleted just because the daily/
-       weekly retention counters ran out.
-    2. At least one backup (of ANY trigger) is always kept, even if
-       `daily_keep` and `weekly_keep` are both 0 -- otherwise setting
-       both to 0 would prune away the backup that was just taken in
-       the same run, leaving nothing to restore from at all.
-    """
+    """Keeps the newest `daily_keep` scheduled backups plus one per week for
+    `weekly_keep` weeks; deletes the rest. Returns deleted paths.
+    Only "scheduled" backups are ever pruned, and at least one backup always remains."""
     entries = list_backups(destination)
     if not entries:
         return []
@@ -350,19 +264,12 @@ TRIGGER_IMPORTED = "imported"
 
 
 class ImportValidationError(Exception):
-    """Raised when a file the person picked doesn't look like a Conan
-    Exiles save at all -- e.g. they selected an unrelated zip, or a
-    plain (non-zip) file."""
+    """The chosen file doesn't look like a Conan Exiles save."""
 
 
 def validate_backup_zip(source_path: str) -> None:
-    """Best-effort sanity check that a zip actually looks like a Conan
-    Exiles save before we let anyone restore from it: does it contain at
-    least one thing that looks like a world database or server config?
-    This is not a guarantee the save is valid or from a compatible game
-    version -- just a check against the obvious mistake of importing the
-    wrong file entirely. Raises ImportValidationError with a clear
-    message if the check fails; does nothing if it passes."""
+    """Raises ImportValidationError unless the zip contains something that looks
+    like a world DB or server config. Catches wrong files, not bad saves."""
     if not zipfile.is_zipfile(source_path):
         raise ImportValidationError(f"{os.path.basename(source_path)} isn't a zip file.")
 
@@ -383,22 +290,9 @@ def validate_backup_zip(source_path: str) -> None:
 
 
 def import_external_backup(source_path: str, destination: str, label: str = "") -> BackupEntry:
-    """Validates and copies an outside backup zip into this server's own
-    backup folder, renamed to ConanOps' own naming convention so it
-    shows up in the normal Backups list and can be restored the same way
-    as any backup ConanOps made itself. Raises ImportValidationError if
-    the file doesn't pass validate_backup_zip(); raises OSError if the
-    copy itself fails (disk full, permissions, etc.) -- callers should
-    catch both and show the person a clear message rather than letting
-    either propagate as a generic crash.
-
-    Note this only imports the world/config data. It does NOT copy over
-    the source server's ConanOps *settings* (rates, mods, schedules,
-    etc.) -- those live in that other server's own config entirely
-    separately, and nothing about a world-save zip carries them. If the
-    two servers were meant to match, that's a separate manual step on
-    the Settings pages.
-    """
+    """Validates an outside zip and copies it into `destination` under ConanOps'
+    naming so it lists and restores like any backup. Imports world/config data
+    only, not ConanOps settings. Raises ImportValidationError or OSError."""
     validate_backup_zip(source_path)
 
     os.makedirs(destination, exist_ok=True)

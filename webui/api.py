@@ -1,22 +1,10 @@
 """
-The web version's JSON API: one small function per thing you can do in
-the app.
+The web version's JSON API, one method per action.
 
-  * Anything that touches ConanOps' state runs on the GUI thread through
-    the bridge, using the same building blocks as the app's own buttons
-    (ui/web_actions.py) -- but for the server the request names. The
-    web never switches which server the app on the PC is showing, and
-    never touches settings someone is still editing there.
-  * Slow network/disk work (RCON commands and kicks, diagnostics,
-    Workshop lookups, process stats) runs on the request's own thread.
-    Bans also update the ban list file, so they run on the GUI thread
-    like the app's own Ban button.
-  * Results are real: a refused action says why.
-
-Deliberately not available from the web: deleting ConanOps or servers,
-adding a server (the setup wizard needs the PC), the app lock PIN,
-changing the web password, turning the remote link on or off, and the
-"Run with admin rights" switch.
+State changes run on the GUI thread via the bridge (ui/web_actions.py), for
+the server the request names; slow network/disk work runs on the request
+thread. Deliberately not exposed: deleting ConanOps or servers, adding a
+server, the app lock PIN, the web password, the remote link and admin mode.
 """
 from __future__ import annotations
 
@@ -103,8 +91,8 @@ class WebApi:
 
     # ------------------------------------------------------------ helpers --
     def gui(self, fn: Callable[[], Any], timeout: float = 60.0) -> Tuple[Any, List[str]]:
-        """Runs fn on the GUI thread. Anything it queued for someone at
-        the PC (a change needing Windows' permission) is reported too."""
+        """Runs fn on the GUI thread; also returns notes about changes left
+        waiting for someone at the PC."""
         from webui.bridge import QUEUED_NOTE
         box: Dict[str, Any] = {}
 
@@ -128,9 +116,8 @@ class WebApi:
         return server
 
     def _result(self, messages: List[str], ok_message: str = "Done.") -> dict:
-        """An action's outcome: a dialog the app would have shown becomes
-        the message (and counts as a failure); changes waiting for the PC
-        are reported as pending."""
+        """A dialog the app would have shown becomes a failure message;
+        changes waiting for the PC are reported as pending."""
         from webui.bridge import QUEUED_NOTE
         waiting = [m for m in messages if m.startswith(QUEUED_NOTE.split("{")[0])]
         problems = [m for m in messages if m not in waiting]
@@ -141,8 +128,7 @@ class WebApi:
         return {"ok": True, "message": ok_message}
 
     def _do(self, req: Request, action: Callable[[Any], str], ok_message: str, timeout: float = 120.0) -> dict:
-        """Runs a WebActionsMixin action (returns "" or why not) for the
-        request's server."""
+        """Runs a WebActionsMixin action (returns "" or why not) for the request's server."""
         def act():
             return action(self._server(req.params["sid"]))
         problem, msgs = self.gui(act, timeout=timeout)
@@ -315,8 +301,7 @@ class WebApi:
         return self.gui(read)[0]
 
     def kick(self, req: Request) -> dict:
-        """The RCON round trip runs on this request's thread; the result
-        goes to the server's alerts like a kick from the app."""
+        """RCON runs on this thread; the result goes to the server's alerts."""
         import banlist_manager
         name = str(req.body.get("name", "")).strip()
         if not name:
@@ -451,8 +436,7 @@ class WebApi:
                                   "backup goes back in, and it starts again if it was running.")
 
     def import_backup(self, sid: str, temp_path: str, filename: str) -> dict:
-        """Called by the HTTP server after streaming an uploaded zip to
-        `temp_path` (deleted by the caller afterwards)."""
+        """`temp_path` is the streamed upload; the caller deletes it."""
         import backup_manager
         dest = self.gui(lambda: self._server(sid).backup_destination)[0]
         if not dest:
@@ -534,9 +518,7 @@ class WebApi:
                     self.win.config.workshop_update_cutoff, set(rec.get("culprits", [])), self.win.server_busy(s),
                     dict(page._mod_status.get(s.id) or {}), set(page._mod_status_ids.get(s.id, set())))
         mods, steamcmd_dir, api_key, cutoff, culprits, busy, known, checked_ids = self.gui(read)[0]
-        # Mods the app hasn't checked yet (added since) -- or everything,
-        # when asked to check again -- are looked up now, and the result
-        # is shared with the app's Mods page.
+        # Look up unchecked mods (or all, on re-check); results are shared with the Mods page.
         want = [m["id"] for m in mods if fresh or m["id"] not in checked_ids]
         check_error = ""
         if want:
@@ -685,8 +667,7 @@ class WebApi:
         return {"ok": True, "page": self.gui(act)[0]}
 
     def alerts_test(self, req: Request) -> dict:
-        """Sends a test alert to the link the person typed (or, if they
-        didn't type one, the saved one)."""
+        """Tests the typed link, or the saved one if none was typed."""
         import webhooks
         kind = str(req.body.get("kind", ""))
         if kind not in ("discord", "ntfy"):
@@ -739,8 +720,7 @@ class WebApi:
         return {"intro": intro, "steps": [{"number": n, "title": t, "body": b} for n, t, b in steps]}
 
     def install_vc_runtime(self, req: Request) -> dict:
-        """With admin rights, installs right here and says how it went;
-        without, waits for someone at the PC (it needs Windows' OK)."""
+        """Installs now if admin; otherwise waits for someone at the PC to approve."""
         import proc_utils
         if not proc_utils.is_admin():
             def queue():
@@ -904,7 +884,7 @@ class WebApi:
     def _set_keep_alive(self, value) -> dict:
         import keep_alive
         on = bool(value)
-        ok = keep_alive.enable() if on else keep_alive.disable()  # no permission prompt needed
+        ok = keep_alive.enable() if on else keep_alive.disable()
         if not ok:
             return {"ok": False, "message": "Windows didn't accept the change -- see conanops.log on the PC."}
         return self._set_config("keep_alive_enabled", on, "keep_alive_checkbox")
@@ -919,8 +899,7 @@ class WebApi:
         return self._result(self.gui(act)[1], "Saved.")
 
     def _windows_hours_direct(self) -> bool:
-        """Windows' active hours are machine-wide: changing them needs a
-        permission prompt unless ConanOps already has admin rights."""
+        """Active hours are machine-wide, so changing them needs admin or a prompt."""
         import proc_utils
         return proc_utils.is_admin()
 

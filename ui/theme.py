@@ -1,20 +1,16 @@
 """
-QSS stylesheet for ConanOps: charcoal surfaces, one ember accent, a
-grouped sidebar and rounded tiles (the 9router-inspired redesign).
-Every color and font comes from a ThemePalette (theme_config.py,
-loaded from ~/ConanOps/theme.json), never hardcoded here, so a custom
-theme still restyles everything.
+QSS stylesheet for ConanOps. All colors and fonts come from a ThemePalette
+(theme_config.py), so custom themes restyle everything.
 
-Shared object names other modules use -- keep these stable:
+Object names other modules rely on -- keep these stable:
   Sidebar, AppTitle, AppVersion, SectionLabel, NavButton, ServerRow,
   ServerRemoveButton, ContentHeader, HeaderTitle, HeaderSubtitle,
   Card, InfoBox, WarnBox, PageTitle, SectionTitle, Muted, Dim,
   StatValue, StatLabel, ErrorText, PrimaryButton, DangerButton,
   PillOn / PillOff / PillWarn / PillBad, TransparentRow, ColorSwatch.
 
-Checkboxes render as switches. Qt stylesheets can't draw a switch
-knob, so the two indicator images are generated as small SVG files
-(colored from the palette) in a temp folder and referenced by url().
+Checkboxes render as switches using generated indicator images, since QSS
+can't draw a switch knob.
 """
 from __future__ import annotations
 
@@ -60,9 +56,7 @@ def _mix(a: str, b: str, t: float) -> str:
     return "#%02x%02x%02x" % tuple(int(x + (y - x) * t) for x, y in ((ra, rb), (ga, gb), (ba, bb)))
 
 
-# The design mockup's exact button colors, used when the theme's accent
-# and red are still the defaults. A custom accent or red gets colors
-# derived the same way instead (see button_colors()).
+# The mockup's exact button colors, used while accent and red are defaults.
 _MOCKUP_ACCENT = "#c9752f"
 _MOCKUP_RED = "#f28b80"
 _MOCKUP_BUTTONS = {
@@ -91,9 +85,7 @@ def button_colors(accent: str, red: str, bg: str) -> dict:
 
 
 def primary_fill(accent: str) -> str:
-    """The accent, darkened just enough that white button text on it
-    meets a 4.5:1 contrast ratio -- any accent a theme picks stays
-    readable on the primary button."""
+    """The accent, darkened until white text on it reaches 4.5:1 contrast."""
     fill = accent
     for _ in range(20):
         if (1.05) / (_luminance(fill) + 0.05) >= 4.5:
@@ -103,10 +95,8 @@ def primary_fill(accent: str) -> str:
 
 
 def _switch_images(palette: ThemePalette) -> dict:
-    """PNG switch images (1x and @2x, which Qt picks automatically on
-    high-DPI screens). PNG rather than SVG: Qt re-renders an SVG
-    indicator image on every paint, and the settings pages have dozens
-    of switches -- that was a constant source of stutter."""
+    """PNG switch images (1x and @2x). PNG, not SVG: Qt re-renders SVG
+    indicators on every paint, which stuttered on pages with many switches."""
     folder = os.path.join(tempfile.gettempdir(), "conanops-ui")
     os.makedirs(folder, exist_ok=True)
     on_fill = button_colors(palette.accent, palette.red, palette.bg)["fill"]
@@ -124,9 +114,7 @@ def _switch_images(palette: ThemePalette) -> dict:
             if not os.path.exists(path):
                 _draw_switch(path, track, knob, right, scale)
         paths[key] = f"{base}.png".replace("\\", "/")
-    # Radio buttons: Windows' native radio is near-invisible on a dark
-    # background (the checked one vanished entirely in the setup
-    # wizard), so draw our own ring/dot the same way.
+    # Windows' native radio is near-invisible on dark backgrounds.
     for key, (ring, dot) in {
         "radio_on": (on_fill, on_fill), "radio_off": ("#6a6a6a", None),
         "radio_on_disabled": (_shade(on_fill, 0.6), _shade(on_fill, 0.6)), "radio_off_disabled": ("#3a3a3a", None),

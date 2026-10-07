@@ -1,42 +1,12 @@
-"""
-Networking setup: opening the ports a Conan server needs so it's actually
-reachable from the internet, not just bound locally.
+"""Opens the ports a Conan server needs: Windows Firewall rules and best-effort
+UPnP router forwarding (a UPnP failure means "show manual steps", not an error).
 
-Two independent pieces:
-  - Windows Firewall rules -- reliable, always attempted.
-  - UPnP port forwarding on the router -- best-effort. Not every router
-    has UPnP enabled, so this can legitimately fail; callers should treat
-    a UPnP failure as "show the manual forwarding instructions", not as
-    an error to alarm the person with.
-
-Firewall rules
---------------
-Rules are created through PowerShell's NetSecurity cmdlets (see
-powershell.py for how scripts are passed), never through a .bat file or
-cmd.exe:
-
-  * The old path wrote `netsh` lines into a batch file. subprocess's
-    list2cmdline() escapes for C programs, not cmd.exe, so a server
-    named  Bob"s & Co  closed the quote early and ran the rest as its
-    own command -- elevated. A `%` in the name was eaten by batch
-    variable expansion, and non-ASCII names were mangled because cmd
-    reads .bat files in the OEM codepage, not UTF-8.
-  * Each rule's unique Name is built ONLY from the server's id (hex),
-    the port label and the port number -- never from anything the
-    person typed. The friendly name only goes into DisplayName (what the
-    Windows Firewall UI shows), as an escaped PowerShell literal.
-  * Every rule is in the "ConanOps" group, so "remove everything for
-    this server" is a group query, not a parse of localized `netsh`
-    output (which only worked on English Windows).
-  * Results are read back from cmdlet objects / exit codes, so they
-    don't depend on the Windows display language.
-
-All rule changes for one operation go into ONE script -> at most ONE
-UAC prompt, and the elevated process is waited on via its real process
-handle (proc_utils.run_elevated_and_wait), not a marker file.
-
-Nothing here can log into someone's router for them if UPnP isn't
-available -- that's a hard limit.
+Firewall rules use PowerShell NetSecurity cmdlets, never cmd.exe/.bat, which
+can't safely quote user text (and an elevated injection is a security hole).
+Rule Names use only the server id, label and port; the typed server name goes
+only into DisplayName. All rules sit in the "ConanOps" group, results are read
+from cmdlet objects (language-independent), and each operation is one script,
+so at most one UAC prompt.
 """
 from __future__ import annotations
 
@@ -73,10 +43,6 @@ class FirewallResult:
     checked: bool = True  # False when the status couldn't be determined at all
 
 
-# --------------------------------------------------------------------- #
-# Rule naming
-# --------------------------------------------------------------------- #
-
 _LABEL_SLUGS = {"Game": "Game", "Game+1": "GamePlus1", "Query": "Query"}
 
 
@@ -85,17 +51,12 @@ def _safe_id(server_id: str) -> str:
 
 
 def _port_labels(game_port: int, query_port: int) -> List[tuple]:
-    # "Game+1" isn't a port ConanOps' own UI shows or lets you edit --
-    # Conan's dedicated server binds it itself, right above the game
-    # port, for its own networking. It needs the same inbound allow
-    # rule as the game port itself or connections can silently fail.
+    # The server also binds game_port+1 itself; it needs a rule too or connections fail.
     return [("Game", game_port), ("Game+1", game_port + 1), ("Query", query_port)]
 
 
 def rule_name(server_id: str, label: str, port: int) -> str:
-    """The rule's unique Name (not its DisplayName). Built only from the
-    server id, label and port, so it can never contain anything that
-    needs escaping and never changes when the server is renamed."""
+    """Unique rule Name; needs no escaping and survives server renames."""
     return f"{RULE_PREFIX}{_safe_id(server_id)}-{_LABEL_SLUGS.get(label, 'Port')}-{int(port)}"
 
 
@@ -112,16 +73,11 @@ def display_name(server_name: str, label: str, port: int) -> str:
 
 
 def legacy_rule_prefix(server_name: str) -> str:
-    """DisplayName prefix of rules made by older versions (via netsh,
-    named after the server's display name)."""
+    """DisplayName prefix of legacy netsh-created rules."""
     return f"ConanOps - {server_name} - "
 
 
-# --------------------------------------------------------------------- #
-# PowerShell plumbing (shared module; aliases kept so tests and callers
-# can keep patching these names on this module)
-# --------------------------------------------------------------------- #
-
+# Aliases so tests and callers can patch these names on this module.
 _ps_str = powershell.ps_str
 _ps_array = powershell.ps_array
 RUN_OK = powershell.RUN_OK
@@ -149,12 +105,9 @@ def _remove_script(server_ids: Iterable[str], legacy_names: Iterable[str]) -> st
             "Remove-NetFirewallRule -ErrorAction SilentlyContinue"
         )
     if names:
-        # Legacy rules (created by netsh in older versions) have GUID
-        # Names, never our "ConanOps-" scheme -- that check keeps this
-        # from touching a CURRENT rule of another server that has since
-        # taken this display name. The display-name match is exact
-        # (name + one of the three labels + port), so "Chud" never
-        # sweeps up "Chud - PvP"'s rules.
+        # Legacy rules have GUID Names, so skipping "ConanOps-" Names spares
+        # current rules; the exact DisplayName match keeps "Chud" from
+        # matching "Chud - PvP".
         lines.append(
             f"$legacy = {_ps_array(names)}\n"
             "$res = $legacy | ForEach-Object { '^ConanOps - ' + [regex]::Escape($_) + ' - (Game|Game\\+1|Query) \\(\\d+/UDP\\)$' }\n"
@@ -168,14 +121,11 @@ def _remove_script(server_ids: Iterable[str], legacy_names: Iterable[str]) -> st
 
 
 # --------------------------------------------------------------------- #
-# Firewall: read-only status
+# Firewall: read-only status (no admin needed)
 # --------------------------------------------------------------------- #
 
 def present_rule_names(server_id: str) -> Optional[set]:
-    """Names of this server's ConanOps rules that currently exist AND are
-    enabled, inbound, allow. None if the check itself couldn't run
-    (as opposed to "ran and found nothing"). Reading rules doesn't need
-    Administrator rights."""
+    """Names of this server's enabled inbound allow rules, or None if the check couldn't run."""
     sid = _safe_id(server_id)
     script = (
         f"Get-NetFirewallRule -Group {_ps_str(RULE_GROUP)} -ErrorAction SilentlyContinue | "
@@ -191,7 +141,6 @@ def present_rule_names(server_id: str) -> Optional[set]:
 
 
 def rule_exists(name: str) -> bool:
-    """Whether a rule with this exact Name exists (any state)."""
     script = (
         f"$r = Get-NetFirewallRule -Name {_ps_str(name)} -ErrorAction SilentlyContinue\n"
         "if ($r) { exit 0 } else { exit 1 }\n"
@@ -201,9 +150,7 @@ def rule_exists(name: str) -> bool:
 
 
 def firewall_status(server_id: str, game_port: int, query_port: int) -> List[FirewallResult]:
-    """Read-only: whether each of the 3 rules add_firewall_rules()
-    creates for this server is currently present and active. Used by
-    diagnostics.py. One PowerShell call for all three."""
+    """Whether each of this server's three rules is present and active."""
     present = present_rule_names(server_id)
     results = []
     for label, port in _port_labels(game_port, query_port):
@@ -215,11 +162,8 @@ def firewall_status(server_id: str, game_port: int, query_port: int) -> List[Fir
 
 
 def _exe_block_rules_ps(exe_path: str) -> str:
-    """PowerShell pipeline yielding the ENABLED inbound BLOCK rules tied
-    to this program. Windows creates these when someone clicks Cancel
-    (or unticks every box) on the "allow this app?" popup the first time
-    the server starts -- and a block rule beats any allow rule, so the
-    port rules alone can't fix it."""
+    """PowerShell setting $blockRules to enabled inbound block rules for this program.
+    Windows makes these when its "allow this app?" popup is dismissed; block beats allow."""
     return (
         f"$exe = {_ps_str(exe_path)}\n"
         "$blockRules = @(Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | "
@@ -231,17 +175,9 @@ def _exe_block_rules_ps(exe_path: str) -> str:
 
 
 def firewall_environment(exe_path: str = "") -> dict:
-    """Read-only look at things outside ConanOps' own rules that still
-    decide whether the server is reachable:
-
-      block_rules  -- display names of enabled inbound block rules for
-                      the server program (see _exe_block_rules_ps)
-      third_party  -- names of third-party firewall products registered
-                      with Windows Security Center (Norton, Bitdefender,
-                      ...). When one is in charge, Windows Firewall rules
-                      may simply not apply.
-      checked      -- False if the check itself couldn't run.
-    """
+    """Other things that affect reachability: {"block_rules": block rules for the
+    server exe, "third_party": firewall products in Security Center (they may
+    ignore Windows Firewall), "checked": False if the check couldn't run}."""
     import json
     script = "$out = @{ block = @(); third = @() }\n"
     if exe_path:
@@ -278,19 +214,9 @@ def add_firewall_rules(
     server_id: str, game_port: int, query_port: int,
     display: str = "", legacy_names: Iterable[str] = (), exe_path: str = "",
 ) -> List[FirewallResult]:
-    """Makes this server's inbound UDP allow rules exactly match
-    game_port / game_port+1 / query_port: removes ANY existing ConanOps
-    rule for this server id (whatever ports it was for -- so re-running
-    setup or changing ports never leaves stale rules behind), removes
-    legacy netsh-era rules named after `legacy_names`, then adds the
-    three rules. With `exe_path`, also DISABLES (doesn't delete) any
-    enabled inbound block rule Windows created for the server program
-    when someone dismissed its "allow access?" popup -- block beats
-    allow, so otherwise the new rules wouldn't help. All in one script
-    -> at most one UAC prompt.
-
-    Returns each rule's OBSERVED status afterward (read back from the
-    firewall), not whether the add command claimed success."""
+    """Replaces all of this server's rules (and legacy ones) with the three
+    current ports, and with `exe_path` disables block rules for the server exe.
+    One UAC prompt. Returns each rule's status as read back afterward."""
     ports = _port_labels(game_port, query_port)
     script = _remove_script([server_id], legacy_names)
     if exe_path:
@@ -337,27 +263,22 @@ def remove_firewall_rules(
     query_port: Optional[int] = None, legacy_names: Iterable[str] = (),
     program_dirs: Iterable[str] = (),
 ) -> bool:
-    """Removes every ConanOps rule for the given server id(s), whatever
-    ports they were for, plus legacy netsh-era rules for `legacy_names`.
-    Accepts a list so removing several servers is still ONE prompt.
-    game_port/query_port are accepted for call compatibility and ignored
-    -- rules are found by id, not by rebuilding their exact names."""
+    """Removes all rules for the server id(s) plus legacy ones, in one prompt.
+    game_port/query_port are ignored (rules are found by id)."""
     ids = [server_ids] if isinstance(server_ids, str) else list(server_ids)
     legacy = [n for n in legacy_names if n]
     dirs = [d for d in program_dirs if d]
     if not ids and not legacy and not dirs:
         return True
     if dirs:
-        # Also the allow/block rules Windows itself created for server
-        # programs inside these folders (see cleanup.cleanup_script).
+        # Also removes rules Windows created for programs in these folders.
         import cleanup
         return _run_ps_privileged(cleanup.cleanup_script(ids, legacy, dirs)) == RUN_OK
     return _run_ps_privileged(_remove_script(ids, legacy) + "exit 0\n") == RUN_OK
 
 
 # --------------------------------------------------------------------- #
-# Minimal UPnP IGD client: SSDP discovery + SOAP.
-# No third-party dependency -- just sockets and stdlib XML/HTTP.
+# Minimal stdlib-only UPnP IGD client: SSDP discovery + SOAP.
 # --------------------------------------------------------------------- #
 
 _SSDP_ADDR = "239.255.255.250"
@@ -379,7 +300,7 @@ def _msearch(st: str) -> bytes:
     ).encode("ascii")
 
 
-_SSDP_MSEARCH = _msearch(_SEARCH_TARGETS[0])  # kept for anything importing it
+_SSDP_MSEARCH = _msearch(_SEARCH_TARGETS[0])
 
 
 @dataclass
@@ -389,17 +310,14 @@ class UpnpDevice:
     location: str = ""
 
 
-# UPnP error codes worth naming
 UPNP_CONFLICT = 718            # ConflictInMappingEntry
 UPNP_NO_SUCH_ENTRY = 714       # NoSuchEntryInArray
 UPNP_ARRAY_INDEX_INVALID = 713  # SpecifiedArrayIndexInvalid
 
 
 def _ssdp_locations(timeout: float, local_ip: Optional[str]) -> List[str]:
-    """Every distinct LOCATION that answers an IGD search within
-    `timeout` -- not just the first responder (a smart TV or NAS can
-    answer first). The multicast goes out the LAN adapter explicitly,
-    so a VPN owning the default route doesn't swallow it."""
+    """Every LOCATION answering an IGD search (a TV or NAS may answer first).
+    Sent from the LAN adapter so a VPN default route doesn't swallow it."""
     locations: List[str] = []
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
@@ -463,16 +381,14 @@ def _services_at(location: str, timeout: float) -> List[UpnpDevice]:
             ctrl = fields.get("controlURL", "")
             if ctrl:
                 found.append(UpnpDevice(urllib.parse.urljoin(base, ctrl), stype, location))
-    # IP connection before PPP: on combo modems the PPP service is often
-    # present but not the one actually connected.
+    # Prefer IP over PPP: combo modems often list an unused PPP service.
     found.sort(key=lambda d: 0 if "WANIPConnection" in d.service_type else 1)
     return found
 
 
 def _soap(device: UpnpDevice, action: str, args: List[Tuple[str, object]],
           timeout: float = 5.0) -> Tuple[Optional[Dict[str, str]], Optional[int]]:
-    """Calls one SOAP action. Returns (response fields, None) on success
-    or (None, upnp_error_code_or_None) on failure. Never raises."""
+    """Returns (fields, None) on success or (None, upnp_error_code or None). Never raises."""
     arg_xml = "".join(f"<{k}>{xml_escape(str(v))}</{k}>" for k, v in args)
     body = (
         '<?xml version="1.0"?>\n'
@@ -512,10 +428,8 @@ def _soap(device: UpnpDevice, action: str, args: List[Tuple[str, object]],
 
 
 def discover_igd(timeout: float = 3.0, local_ip: Optional[str] = None) -> Optional[UpnpDevice]:
-    """Finds the router's UPnP WAN connection service, if UPnP is on.
-    Considers every responder, and prefers a service that reports
-    itself Connected. Returns None (not an exception) if nothing
-    usable responds -- a completely normal outcome."""
+    """The router's WAN connection service, preferring one reporting Connected.
+    None if nothing usable responds (normal when UPnP is off)."""
     candidates: List[UpnpDevice] = []
     for loc in _ssdp_locations(timeout, local_ip):
         candidates.extend(_services_at(loc, timeout))
@@ -572,9 +486,7 @@ def _is_ours(entry: Dict[str, str], server_id: str, internal_ip: Optional[str]) 
     desc = entry.get("NewPortMappingDescription", "")
     if server_id and desc.startswith(upnp_tag(server_id)):
         return True
-    # Pre-id mappings ("ConanOps Game Port", ...) count as ours only when
-    # they point at THIS machine -- another PC on the LAN might be
-    # running its own ConanOps.
+    # Legacy untagged mappings count only if they point here; another PC may run ConanOps.
     return _legacy_upnp_description(desc) and bool(internal_ip) and entry.get("NewInternalClient") == internal_ip
 
 
@@ -605,8 +517,7 @@ def map_port(device: UpnpDevice, port: int, internal_ip: str, description: str,
             _log.info(f"UPnP: port {port}/{protocol} is already forwarded to {existing.get('NewInternalClient', 'another device')}.")
             return MAP_CONFLICT
     if fields is None and code != UPNP_CONFLICT:
-        # Some IGDv2 routers refuse permanent (0) leases; a long lease is
-        # renewed every time the server starts (see refresh_upnp_async).
+        # Some IGDv2 routers refuse permanent leases; refresh_upnp_async renews this one.
         fields, code = add(7 * 24 * 3600)
     if fields is None:
         return MAP_CONFLICT if code == UPNP_CONFLICT else MAP_FAILED
@@ -620,17 +531,13 @@ def map_port(device: UpnpDevice, port: int, internal_ip: str, description: str,
 
 def add_port_mapping(device: UpnpDevice, external_port: int, internal_port: int, internal_ip: str,
                      protocol: str = "UDP", description: str = "ConanOps", timeout: float = 5.0) -> bool:
-    """Back-compat wrapper (external == internal port is all ConanOps uses)."""
     return map_port(device, external_port, internal_ip, description, protocol=protocol, timeout=timeout) == MAP_OK
 
 
 def remove_upnp_mappings(server_id: str, ports: Iterable[int] = (), local_ip: Optional[str] = None,
                          device: Optional[UpnpDevice] = None, keep: Iterable[int] = ()) -> int:
-    """Removes this server's router mappings. Lists the router's mapping
-    table and deletes every entry tagged with this server's id (so stale
-    ports from before a port change are caught too); for routers that
-    don't support listing, falls back to checking `ports` one by one.
-    Ports in `keep` are left alone. Returns how many were removed."""
+    """Deletes this server's router mappings (found by tag in the table, or by
+    checking `ports` if listing isn't supported), except `keep`. Returns the count."""
     local_ip = local_ip or network_utils.get_local_ip()
     device = device or discover_igd(local_ip=local_ip)
     if device is None:
@@ -662,11 +569,8 @@ def remove_upnp_mappings(server_id: str, ports: Iterable[int] = (), local_ip: Op
 
 def reconcile_upnp(server_id: str, internal_ip: str, game_port: int, query_port: int,
                    old_ports: Iterable[int] = ()) -> dict:
-    """Makes the router's forwards for this server exactly
-    game/game+1/query -> internal_ip: removes this server's mappings for
-    any other port (or pointing at an old IP), adds/refreshes the
-    wanted ones, verifies them, and reads the router's own WAN address
-    to detect double NAT / carrier-grade NAT."""
+    """Makes this server's forwards exactly game/game+1/query -> internal_ip,
+    removing stale ones, and checks the router's WAN IP for double NAT."""
     result = {
         "upnp_available": False, "game_port_forwarded": False,
         "game_port_plus_one_forwarded": False, "query_port_forwarded": False,
@@ -694,15 +598,11 @@ def reconcile_upnp(server_id: str, internal_ip: str, game_port: int, query_port:
 
 
 def try_upnp_forward(internal_ip: str, game_port: int, query_port: int, server_id: str = "") -> dict:
-    """Best-effort attempt to forward all three ports via UPnP. Returns a
-    dict describing what succeeded so the UI can show manual fallback
-    instructions for whatever didn't."""
     return reconcile_upnp(server_id, internal_ip, game_port, query_port)
 
 
-# Background refresh before each launch: re-points forwards after a DHCP
-# change (preflight may have just re-detected bind_ip) and renews leases
-# on routers that refused a permanent one. Throttled per configuration.
+# Refresh before each launch re-points forwards after a DHCP change and renews
+# leases. Throttled per configuration.
 _refresh_lock = threading.Lock()
 _had_router: Dict[str, bool] = {}
 _last_refresh: Dict[str, Tuple[tuple, float]] = {}
@@ -737,8 +637,7 @@ def refresh_upnp_async(server) -> None:
 
 
 def get_public_ip(timeout: float = 4.0) -> Optional[str]:
-    """Used only for manual port-forwarding instructions and the
-    double-NAT check -- never for -MULTIHOME."""
+    """For forwarding instructions and the double-NAT check only, never -MULTIHOME."""
     try:
         with urllib.request.urlopen("https://api.ipify.org", timeout=timeout) as resp:
             ip = resp.read().decode("utf-8", errors="replace").strip()
@@ -748,9 +647,7 @@ def get_public_ip(timeout: float = 4.0) -> Optional[str]:
     return ip if network_utils.is_valid_ipv4(ip) else None
 
 
-# --------------------------------------------------------------------- #
-# The web version's own port (TCP), for phones on the home network.
-# --------------------------------------------------------------------- #
+# ------------------------------- Web UI port (TCP) for home-network devices --
 
 WEB_RULE_PREFIX = "ConanOps-web-"
 
@@ -764,10 +661,8 @@ def web_rule_remove_script() -> str:
 
 
 def allow_web_port(port: int) -> str:
-    """Lets other devices on PRIVATE (home) networks reach the web version
-    on `port` (TCP). Public networks -- cafes, dorm Wi-Fi marked public --
-    stay blocked; the remote link doesn't need this rule at all. One
-    permission prompt. Returns powershell.RUN_OK / RUN_DECLINED / RUN_FAILED."""
+    """Allows the web UI on `port` from Private/Domain networks only (public stays
+    blocked). One UAC prompt. Returns powershell.RUN_OK / RUN_DECLINED / RUN_FAILED."""
     port = int(port)
     script = web_rule_remove_script() + (
         f"New-NetFirewallRule -Name {_ps_str(WEB_RULE_PREFIX + str(port))} "

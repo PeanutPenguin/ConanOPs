@@ -1,11 +1,6 @@
 """
-Outgoing alert webhooks. Both are simple POST requests, no dependency
-beyond urllib. A failure to send is logged (via applog, to
-~/ConanOps/conanops.log) rather than raised, since a broken webhook
-URL should never crash the app or block whatever real action
-triggered the alert -- but it's no longer silently lost either: the
-caller (MainWindow._notify) checks notify()'s return value and shows
-a tray warning when delivery actually failed.
+Outgoing alert webhooks (Discord, ntfy) via urllib. Send failures are logged
+and returned, never raised, so a broken URL can't block the triggering action.
 """
 from __future__ import annotations
 
@@ -22,9 +17,7 @@ import applog
 
 _log = applog.get_logger(__name__)
 
-# Discord sits behind Cloudflare, which refuses requests carrying
-# Python's default "Python-urllib/3.x" User-Agent (HTTP 403, error 1010)
-# -- so every request says who it is.
+# Cloudflare (in front of Discord) blocks urllib's default User-Agent (403, error 1010).
 try:
     import version as _version
     USER_AGENT = f"ConanOps/{_version.VERSION} (+https://github.com/PeanutPenguin/ConanOPs)"
@@ -44,14 +37,12 @@ def _headers(extra: Optional[dict] = None) -> dict:
 def _discord_payload(content: str) -> bytes:
     if len(content) > DISCORD_MAX_CHARS:
         content = content[:DISCORD_MAX_CHARS - 1] + "…"
-    # Never ping anyone: a player named "@everyone" must not notify the
-    # whole Discord server.
+    # Never ping: a player named "@everyone" must not notify the whole server.
     return json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
 
 
 def _with_url_parts(url: str, extra_path: str = "", extra_query: Optional[dict] = None) -> str:
-    """Adds a path suffix and query values to a webhook URL that may
-    already have a query (Discord's ?thread_id=...)."""
+    """Adds a path suffix and query values, keeping any existing query (?thread_id=...)."""
     parts = urlsplit(url.strip())
     query = dict(parse_qsl(parts.query))
     query.update(extra_query or {})
@@ -81,13 +72,7 @@ def ntfy_url_problem(url: str) -> str:
 
 
 def _redact_url(url: str) -> str:
-    """Discord/ntfy webhook URLs carry a bearer-token-equivalent secret
-    in the path itself (e.g. .../webhooks/<id>/<token>), so logging the
-    full URL on a failed send would leak that secret into
-    conanops.log, which is far more widely shared/read than the config
-    file the secret is otherwise encrypted in. Logs just the scheme and
-    host, which is enough to tell webhooks apart in the log without
-    exposing the token."""
+    """Scheme and host only: webhook URLs contain a secret token that must not reach the log."""
     try:
         parts = urlsplit(url)
         return f"{parts.scheme}://{parts.netloc}/…"
@@ -96,8 +81,7 @@ def _redact_url(url: str) -> str:
 
 
 def _send(req_factory, timeout: float) -> Tuple[bool, str]:
-    """Sends a request (retrying once if Discord says to slow down).
-    Returns (ok, why-not)."""
+    """Sends, retrying once if rate-limited. Returns (ok, why-not)."""
     for attempt in range(2):
         try:
             with urllib.request.urlopen(req_factory(), timeout=timeout) as resp:
@@ -136,11 +120,7 @@ def _post_json(url: str, payload: dict, timeout: float = 5.0) -> bool:
             _log.warning(f"Failed to POST webhook to {_redact_url(url)}: {why}")
         return ok
     except (OSError, ValueError) as e:
-        # ValueError covers a malformed URL (urllib raises it from the
-        # Request constructor or urlopen for things like a missing
-        # scheme) -- previously only OSError was caught here, so a
-        # bad/typo'd webhook URL would crash the caller instead of just
-        # failing this one webhook.
+        # ValueError: malformed URL (e.g. missing scheme).
         _log.warning(f"Failed to POST webhook to {_redact_url(url)}: {e}")
         return False
 
@@ -152,30 +132,9 @@ def send_discord(webhook_url: str, message: str) -> bool:
 
 
 def update_discord_status(webhook_url: str, message_id: str, content: str, timeout: float = 5.0) -> Optional[str]:
-    """Posts (if message_id is empty) or edits (if it isn't) a live
-    status message in Discord -- used for a server's always-current
-    presence (see MainWindow._check_discord_status), as opposed to
-    send_discord()'s one-shot event alerts, which always post a new
-    message and never touch an old one.
-
-    A normal webhook POST discards Discord's response; getting a
-    message back to edit later requires the `?wait=true` query
-    parameter, which makes Discord return the created message object
-    (including its id) instead of an empty 204. Editing an existing
-    message is a PATCH to .../messages/{message_id} with the same
-    webhook URL as its base.
-
-    Returns the message id to persist for next time (the same one
-    passed in in the "and now it's edited" case, or a new one) if
-    it worked. None if it didn't -- e.g. Discord returned an error, or
-    the given message_id no longer exists (someone deleted it in
-    Discord, or the channel/webhook changed) -- in which case the
-    caller should try again with an EMPTY message_id, which posts a
-    fresh message instead of continuing to edit one that no longer
-    exists. This function itself doesn't retry that automatically,
-    since doing so from inside the "edit" branch would need it to know
-    whether a failure means "not found" specifically versus some other
-    error worth surfacing as-is."""
+    """Posts (empty message_id, using ?wait=true to get the id back) or edits
+    (PATCH .../messages/<id>) a live status message. Returns the id to keep,
+    or None on failure; the caller should then retry with an empty id."""
     if not webhook_url:
         return None
     try:
@@ -208,8 +167,7 @@ def update_discord_status(webhook_url: str, message_id: str, content: str, timeo
 
 
 def send_ntfy(ntfy_url: str, message: str, title: str = "ConanOps") -> bool:
-    """ntfy.sh takes the message as a raw POST body, not JSON, with the
-    title in a header."""
+    """ntfy takes a raw POST body (not JSON) with the title in a header."""
     if not ntfy_url:
         return False
     ok, why = _send_ntfy(ntfy_url, message, title)
@@ -219,15 +177,12 @@ def send_ntfy(ntfy_url: str, message: str, title: str = "ConanOps") -> bool:
 
 
 def _header_value(text: str) -> str:
-    """HTTP headers only carry plain ASCII; anything else (the "—" in
-    every ConanOps alert title, a server name with accents) is encoded
-    the RFC 2047 way, which ntfy decodes."""
+    """Headers are ASCII-only, so other text is RFC 2047 encoded (ntfy decodes it)."""
     try:
         text.encode("ascii")
         return text
     except UnicodeEncodeError:
-        # One unwrapped encoded word: a folded header would put a line
-        # break inside it.
+        # One unwrapped encoded word: folding would break it.
         return Header(text, "utf-8").encode(maxlinelen=0)
 
 
@@ -258,12 +213,8 @@ def test_ntfy(ntfy_url: str, server_name: str) -> Tuple[bool, str]:
 
 
 def notify(discord_url: Optional[str], ntfy_url: Optional[str], message: str, title: str = "ConanOps") -> bool:
-    """Fire-and-forget to whichever webhooks are configured. Returns
-    True if every *configured* webhook succeeded (no webhooks
-    configured at all also counts as success -- there was nothing to
-    fail). Callers should check this and surface a failure somewhere
-    the person will actually see it, since a silently-dropped crash
-    alert defeats the point of having alerts."""
+    """Sends to configured webhooks. True if all configured ones succeeded
+    (or none are set); callers should show failures to the person."""
     ok = True
     if discord_url:
         ok = send_discord(discord_url, f"**{title}**: {message}") and ok

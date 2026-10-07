@@ -1,6 +1,4 @@
-"""Background QThread worker for dynamic_dns.update() -- a real HTTP
-round trip, so this can't run directly on the UI thread (same
-reasoning as every other *_runner.py module in this app)."""
+"""QThread worker for dynamic_dns.update(), keeping the HTTP call off the GUI thread."""
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal

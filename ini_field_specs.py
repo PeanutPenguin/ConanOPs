@@ -1,30 +1,10 @@
-"""
-Every Conan Exiles server setting that Funcom exposes in their own
-in-game/ServerSettings.ini admin UI, organized into the same categories
-their own settings screen uses (General, Progression, Day/Night,
-Survival, Combat, Harvesting, Crafting, Building/Decay, Chat, Purge,
-Pets & Hunger).
+"""Every server setting Funcom exposes in its own admin UI, grouped like Funcom's
+settings screen (source: the Conan Exiles wiki's Server Configuration page).
 
-Source: the community-maintained Conan Exiles wiki's Server
-Configuration page, cross-checked against a current hosting provider's
-config generator. Key names, defaults, and sections reflect what those
-sources documented at the time this was written.
-
-DELIBERATELY EXCLUDED: Funcom's own wiki lists a further ~80 "unexposed
-server settings" (accessible via the in-game console's
-`GetAllServerSettings`) with an explicit caution: "These settings remain
-hidden for a reason. These can have an extremely negative impact on your
-gameplay experience. Use with caution." ConanOps does not surface those,
-on the same reasoning Funcom didn't put them in their own UI. If you
-need one of them anyway, it can still be hand-edited in the real `.ini`
-file -- `ini_utils.apply_known_keys()` will never touch or remove a line
-it doesn't recognize, so a hand-added unexposed setting sits there
-untouched by anything ConanOps does.
-
-Every value lives in `ServerConfig.gameplay`, a flat dict keyed by the
-real ini key name (e.g. `server.gameplay["PVPEnabled"]`). Keys starting
-with `__` (currently just `__description`) are ConanOps-only bookkeeping
-that is never written to any `.ini` file.
+Funcom's ~80 hidden "unexposed" settings are deliberately left out; hand-added
+ones survive because ini_utils.apply_known_keys() never touches unknown lines.
+Values live in ServerConfig.gameplay keyed by ini key; "__"-prefixed keys are
+ConanOps-only and never written to an .ini.
 """
 from __future__ import annotations
 
@@ -49,12 +29,7 @@ class FieldSpec:
     choices: Optional[List[Tuple[str, Any]]] = None  # [(label, value), ...] for kind="choice"
 
 
-# --------------------------------------------------------------------- #
-# Server Identity (Funcom's "General" section, minus ServerName/
-# ServerPassword which live on the Network & Ports page since they're
-# connection info, not gameplay rules -- and minus MaxPlayers, which
-# ConanOps treats as a network setting rather than a gameplay one)
-# --------------------------------------------------------------------- #
+# Funcom's "General" section, minus ServerName/ServerPassword/MaxPlayers (on Network & Ports)
 IDENTITY_FIELDS: List[FieldSpec] = [
     FieldSpec("__description", "Description (ConanOps note -- not written to any .ini)", "text", ""),
     FieldSpec("ServerMessageOfTheDay", "Message of the Day", "text", "",
@@ -96,9 +71,6 @@ IDENTITY_FIELDS: List[FieldSpec] = [
               "Enables the built-in voice chat."),
 ]
 
-# --------------------------------------------------------------------- #
-# Progression
-# --------------------------------------------------------------------- #
 PROGRESSION_FIELDS: List[FieldSpec] = [
     FieldSpec("PlayerXPRateMultiplier", "Player XP Rate Multiplier", "float", 1.0,
               "Multiplies all XP players receive, from every source.", min=0.0, max=20.0, step=0.1, decimals=1),
@@ -112,9 +84,6 @@ PROGRESSION_FIELDS: List[FieldSpec] = [
               "Multiplies XP earned from crafting.", min=0.0, max=20.0, step=0.1, decimals=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Day / Night cycle
-# --------------------------------------------------------------------- #
 DAYNIGHT_FIELDS: List[FieldSpec] = [
     FieldSpec("DayCycleSpeedScale", "Day Cycle Speed", "float", 1.0,
               "Multiplies the entire 24-hour cycle's speed, on top of the individual settings below.", min=0.1, max=10.0, step=0.1, decimals=1),
@@ -130,9 +99,6 @@ DAYNIGHT_FIELDS: List[FieldSpec] = [
               "The time of day new players start at, if Catch-Up Time is on. Avoid setting this to the darkest night hours.", min=0, max=2359, step=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Survival
-# --------------------------------------------------------------------- #
 SURVIVAL_FIELDS: List[FieldSpec] = [
     FieldSpec("StaminaCostMultiplier", "Stamina Cost Multiplier", "float", 1.0,
               "Scales how much stamina every action costs.", min=0.0, max=10.0, step=0.1, decimals=1),
@@ -156,9 +122,6 @@ SURVIVAL_FIELDS: List[FieldSpec] = [
               "Scales how much corruption players gain.", min=0.0, max=10.0, step=0.1, decimals=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Combat
-# --------------------------------------------------------------------- #
 COMBAT_FIELDS: List[FieldSpec] = [
     FieldSpec("PlayerDamageMultiplier", "Player Damage Dealt Multiplier", "float", 1.0,
               "Scales damage a player deals.", min=0.0, max=10.0, step=0.1, decimals=1),
@@ -188,9 +151,6 @@ COMBAT_FIELDS: List[FieldSpec] = [
               "Suppresses the on-screen notifications for land claim events."),
 ]
 
-# --------------------------------------------------------------------- #
-# Harvesting
-# --------------------------------------------------------------------- #
 HARVESTING_FIELDS: List[FieldSpec] = [
     FieldSpec("ItemSpoilRateScale", "Item Spoil Rate", "float", 1.0,
               "Smaller values make food last longer before spoiling.", min=0.0, max=10.0, step=0.1, decimals=1),
@@ -202,9 +162,6 @@ HARVESTING_FIELDS: List[FieldSpec] = [
               "Scales the radius of land claim around buildings, affecting resource/NPC respawn and others' ability to build nearby.", min=0.0, max=10.0, step=0.1, decimals=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Crafting
-# --------------------------------------------------------------------- #
 CRAFTING_FIELDS: List[FieldSpec] = [
     FieldSpec("ItemConvertionMultiplier", "Crafting Time Multiplier", "float", 1.0,
               "Scales time to craft items. (Yes, 'Convertion' is Funcom's own misspelling in the actual ini key.)", min=0.0, max=10.0, step=0.1, decimals=1),
@@ -216,9 +173,6 @@ CRAFTING_FIELDS: List[FieldSpec] = [
               "Scales the amount of resources required to craft an item.", min=0.0, max=10.0, step=0.1, decimals=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Building & Decay
-# --------------------------------------------------------------------- #
 BUILDING_FIELDS: List[FieldSpec] = [
     FieldSpec("DisableBuildingAbandonment", "Disable Building Decay (buildings never decay)", "bool", False,
               "This is the real 'never decay' switch -- turning it on stops abandoned buildings from decaying entirely, regardless of the multiplier below."),
@@ -226,9 +180,6 @@ BUILDING_FIELDS: List[FieldSpec] = [
               "Scales how long an abandoned building takes to decay. Has no effect if decay is disabled above.", min=0.0, max=10.0, step=0.1, decimals=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Chat
-# --------------------------------------------------------------------- #
 CHAT_FIELDS: List[FieldSpec] = [
     FieldSpec("ChatLocalRadius", "Local Chat Radius (cm)", "int", 5000,
               "How far local chat broadcasts, in centimeters.", min=100, max=100000, step=100),
@@ -238,9 +189,6 @@ CHAT_FIELDS: List[FieldSpec] = [
               "Turns the server-wide global chat channel on or off."),
 ]
 
-# --------------------------------------------------------------------- #
-# Purge
-# --------------------------------------------------------------------- #
 PURGE_FIELDS: List[FieldSpec] = [
     FieldSpec("EnablePurge", "Enable Purge", "bool", True,
               "Turning this off disables purge events completely."),
@@ -274,9 +222,6 @@ PURGE_FIELDS: List[FieldSpec] = [
               "Scales damage purge NPCs deal to buildings.", min=0.0, max=50.0, step=1.0, decimals=1),
 ]
 
-# --------------------------------------------------------------------- #
-# Pets & Hunger
-# --------------------------------------------------------------------- #
 PETS_FIELDS: List[FieldSpec] = [
     FieldSpec("ToggleHungerSystemThralls", "Hunger System: Thralls", "bool", True,
               "Whether thralls need feeding."),
@@ -296,9 +241,7 @@ PETS_FIELDS: List[FieldSpec] = [
               "If on, companions will only eat items on their specific diet list instead of any food."),
 ]
 
-# --------------------------------------------------------------------- #
-# All categories, in the order they appear in the Settings sub-nav.
-# --------------------------------------------------------------------- #
+# In Settings sub-nav order.
 CATEGORIES: List[Tuple[str, str, List[FieldSpec]]] = [
     ("progression", "Progression", PROGRESSION_FIELDS),
     ("daynight", "Day / Night Cycle", DAYNIGHT_FIELDS),
@@ -314,8 +257,7 @@ CATEGORIES: List[Tuple[str, str, List[FieldSpec]]] = [
 
 
 def default_gameplay_dict() -> dict:
-    """The full set of defaults for every field above, used to backfill
-    any ServerConfig (old or new) that's missing some or all of them."""
+    """Defaults for every field, used to backfill ServerConfigs missing some."""
     all_fields = IDENTITY_FIELDS + [f for _, _, fields in CATEGORIES for f in fields]
     return {f.key: f.default for f in all_fields}
 

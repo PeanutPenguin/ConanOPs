@@ -13,18 +13,12 @@ from PySide6.QtWidgets import (
 import network_utils
 import process_manager
 from models import ServerConfig
+from ui.workers import keep_until_finished
 
 
 class _DashboardPollWorker(QThread):
-    """Does one dashboard poll pass -- find the running pid (a full
-    psutil.process_iter() scan), read its CPU/memory/uptime, and an A2S
-    query for the confirmed max-player count -- off the GUI thread.
-
-    This used to run directly on a 2-second QTimer tick on the GUI
-    thread: the process scan alone isn't free on a busy machine, and
-    the A2S query has its own (short, but real) socket timeout, so a
-    server that's slow to answer or unreachable meant a visible stutter
-    every couple of seconds while it was displayed."""
+    """One dashboard poll (process scan, CPU/memory/uptime, A2S query) off the
+    GUI thread, since the scan and query can stall the UI."""
     finished_poll = Signal(object)  # dict -- see run()'s local `result`
 
     def __init__(self, install_dir: str, bind_ip: str, query_port: int,
@@ -47,18 +41,9 @@ class _DashboardPollWorker(QThread):
                         proc = self.cached_proc
                         result["cpu"] = proc.cpu_percent(interval=None)
                     else:
-                        # A fresh psutil.Process: cpu_percent(interval=None)
-                        # measures CPU time used SINCE THE LAST CALL, divided
-                        # by wall-clock time elapsed since then. Calling it
-                        # twice back-to-back here (as a previous version did,
-                        # to "prime" it and then immediately read it) measures
-                        # against a wall-clock gap of microseconds -- dividing
-                        # by a near-zero elapsed time produces a wildly
-                        # inflated, essentially random percentage. This just
-                        # primes the baseline and leaves cpu as None for this
-                        # one poll; the NEXT poll (2s later, via the cached_proc
-                        # branch above) measures against a real ~2s gap and
-                        # gets an accurate reading.
+                        # cpu_percent() measures since the last call, so a new
+                        # Process only primes the baseline; cpu stays None
+                        # until the next poll.
                         proc = psutil.Process(pid)
                         proc.cpu_percent(interval=None)
                         result["cpu"] = None
@@ -119,9 +104,7 @@ def _repolish(widget) -> None:
 
 
 class AutomationTile(QFrame):
-    """One Automation tile: a lettered badge, the feature name, an
-    On/Off pill with a short detail, and a Change button that opens
-    the settings page that controls it."""
+    """One Automation tile: badge, name, On/Off pill, and a Change button."""
 
     def __init__(self, key: str, name: str, mark: str, tint: str, parent=None):
         super().__init__(parent)
@@ -170,8 +153,7 @@ AUTOMATION_TILES = [
 
 
 class NoticeBar(QFrame):
-    """An amber warning strip with one action button, hidden until
-    set_notice() is given text."""
+    """An amber warning strip with one action button, hidden until set_notice()."""
 
     def __init__(self, button_text: str, parent=None):
         super().__init__(parent)
@@ -196,11 +178,8 @@ class NoticeBar(QFrame):
 
 
 class DashboardPage(QWidget):
-    """Purely a display + control surface. It does NOT own a LogMonitor
-    itself -- MainWindow runs one monitor per server for the app's whole
-    lifetime (so scheduling/online-checks work for servers that aren't
-    currently being viewed), and pushes updates in here via the on_*
-    methods below when the displayed server matches."""
+    """Display and control surface. MainWindow owns the per-server LogMonitors
+    and pushes updates here for the displayed server."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -213,12 +192,10 @@ class DashboardPage(QWidget):
         self.on_open_automation = None  # set by main_window: callable(tile_key) -> open that feature's settings
         self.on_start_anyway = None     # set by main_window: callable() -> start a held server anyway
         self.on_enable_rcon = None      # set by main_window: callable() -> turn RCON on for this server
-        self._proc_cache: Optional[tuple[int, psutil.Process]] = None  # (pid, Process) -- reused across
-        # polls so cpu_percent() has a prior-call baseline to compare against instead of always
-        # reporting the meaningless 0.0% a fresh psutil.Process instance returns on its first call.
+        self._proc_cache: Optional[tuple[int, psutil.Process]] = None  # reused so cpu_percent() has a baseline
         self._poll_worker: Optional[_DashboardPollWorker] = None
         self._poll_worker_server: Optional[ServerConfig] = None
-        # See AccessPage._retiring_workers' comment for why this exists.
+        # Keeps finished workers referenced until QThread.finished fires.
         self._retiring_workers: list = []
 
         root = QVBoxLayout(self)
@@ -243,9 +220,7 @@ class DashboardPage(QWidget):
         self.setup_btn = QPushButton("Set Up Server…")
         self.setup_btn.setObjectName("PrimaryButton")
         self.setup_btn.clicked.connect(self._handle_setup)
-        # Start/Stop/Restart clustered together on the right, same as
-        # before -- only the ones that make sense for the current
-        # running state are shown at once (see _apply_running_state).
+        # Visibility set by _apply_running_state().
         self.start_btn = QPushButton("Start")
         self.start_btn.clicked.connect(self._handle_start)
         self.stop_btn = QPushButton("Stop")
@@ -260,10 +235,7 @@ class DashboardPage(QWidget):
         top.addWidget(self.restart_btn)
         root.addLayout(top)
 
-        # Everything below the header hides as one unit when there's no
-        # server to show (see set_empty()) -- wrapped in a real QWidget
-        # rather than left as bare layouts so a single setVisible() call
-        # covers the whole section instead of hiding each child widget.
+        # Hidden as one unit by set_empty().
         self.content = QWidget()
         content_layout = QVBoxLayout(self.content)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -298,9 +270,6 @@ class DashboardPage(QWidget):
             self.automation_tiles[key] = tile
         content_layout.addLayout(auto_grid)
 
-        # Server Log is the main focus of this section now; Online
-        # Players sits below it as a slimmer strip rather than
-        # side-by-side, so the log gets the space it actually needs.
         log_frame = QFrame()
         log_frame.setObjectName("Card")
         log_layout = QVBoxLayout(log_frame)
@@ -324,9 +293,7 @@ class DashboardPage(QWidget):
         players_layout.addWidget(self.players_list)
         content_layout.addWidget(players_frame)
 
-        # Shown instead of `content` when there's no server configured
-        # at all yet (a fresh install starts with zero, rather than an
-        # auto-created placeholder server) -- see MainWindow.__init__.
+        # Shown instead of `content` when no server is configured.
         self.empty_frame = QFrame()
         self.empty_frame.setObjectName("Card")
         empty_layout = QVBoxLayout(self.empty_frame)
@@ -355,7 +322,6 @@ class DashboardPage(QWidget):
         self._poll_timer.timeout.connect(self._poll_process_stats)
         self._poll_timer.start(2000)
 
-    # ------------------------------------------------------ automation --
     def set_automation(self, states: dict) -> None:
         """states: tile key -> (on, detail text)."""
         for key, (on, detail) in states.items():
@@ -374,12 +340,8 @@ class DashboardPage(QWidget):
         self.status_label.setObjectName({"on": "PillOn", "warn": "PillWarn"}.get(kind, "PillOff"))
         _repolish(self.status_label)
 
-    # ---------------------------------------------------------- server --
     def _retire_worker(self, worker: Optional[_DashboardPollWorker]) -> None:
-        if worker is None:
-            return
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)
 
     def set_server(self, server: ServerConfig, online_players: set) -> None:
         self.empty_frame.hide()
@@ -389,19 +351,14 @@ class DashboardPage(QWidget):
         self.connect_label.setText(f"{server.bind_ip or '(no ip)'}:{server.game_port}")
         self.log_view.clear()
         self.setup_btn.setVisible(not bool(server.install_dir))
-        # Start/Stop/Restart's actual shown/hidden state is refined
-        # further by _apply_running_state() once the next poll comes
-        # back (it knows whether the process is ACTUALLY running, not
-        # just configured) -- this is just a safe starting guess so the
-        # buttons aren't visibly flickering into place a moment later.
+        # Starting guess; the next poll sets the real state.
         self._apply_running_state(running=False)
         self._proc_cache = None  # reset so a new server gets its own psutil.Process baseline
         self.set_online_players(online_players)
         self._poll_process_stats()
 
     def set_empty(self) -> None:
-        """Shown instead of the normal dashboard when there are no
-        servers configured at all -- see MainWindow.__init__."""
+        """Empty state when no servers are configured."""
         self.server = None
         self.content.hide()
         self.empty_frame.show()
@@ -436,7 +393,6 @@ class DashboardPage(QWidget):
         if self.on_add_server:
             self.on_add_server()
 
-    # --------------------------------------------------- pushed updates --
     def set_online_players(self, names: set) -> None:
         self.players_list.clear()
         for name in sorted(names):
@@ -486,10 +442,7 @@ class DashboardPage(QWidget):
         self._apply_running_state(running=True)
         if result["proc"] is not None:
             self._proc_cache = (pid, result["proc"])
-            # cpu is None on the very first poll of a newly-seen process
-            # (see _DashboardPollWorker.run()'s comment) -- show the
-            # baseline-priming state rather than a misleading "0%" or
-            # crashing the f-string on None.
+            # cpu is None on a new process's first poll.
             self.cpu_value.setText(f"{result['cpu']:.0f}%" if result["cpu"] is not None else "—")
             self.mem_value.setText(f"{result['mem_mb']:.0f} MB")
             self.uptime_label.setText(_format_uptime(result["uptime_seconds"]))

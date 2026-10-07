@@ -12,13 +12,8 @@ GROUP_HEADINGS = {"diagnostics": "Server", "progression": "Gameplay", "backups":
 
 
 class SettingsContainer(QWidget):
-    """Sub-navigation for the Settings area. Takes an ordered list of
-    (key, label, page_widget) tuples instead of fixed positional
-    arguments, so it scales to however many settings pages exist
-    (currently 15: Identity, Network, Progression, Day/Night, Survival,
-    Combat, Harvesting, Crafting, Building & Decay, Chat, Purge,
-    Pets & Hunger, Backups, Restart Schedule, RCON & Alerts) without a
-    constructor signature that has to grow every time one's added."""
+    """Sub-navigation for the Settings area, built from an ordered list of
+    (key, label, page_widget) tuples."""
 
     def __init__(self, entries: List[Tuple[str, str, QWidget]], parent=None):
         super().__init__(parent)
@@ -47,9 +42,7 @@ class SettingsContainer(QWidget):
                 heading = QLabel(GROUP_HEADINGS[key])
                 heading.setObjectName("SectionLabel")
                 subnav.addWidget(heading)
-            # "&&": a single & in a button label is a keyboard-shortcut
-            # marker to Qt, which rendered "Network & Ports" as
-            # "Network _Ports".
+            # Qt treats a single & as a shortcut marker.
             btn = QPushButton(label.replace("&", "&&"))
             btn.setObjectName("NavButton")
             btn.setCheckable(True)
@@ -59,15 +52,10 @@ class SettingsContainer(QWidget):
             subnav.addWidget(btn)
             self.stack.addWidget(widget)
             self.pages[key] = widget
-            # Every settings page shows the TOTAL pending count across
-            # all tabs (not just its own), so leaving a tab with an
-            # unsaved edit doesn't make it look like that edit vanished
-            # the moment you land on a different, currently-clean tab.
+            # Each page shows the total pending count across all tabs, and
+            # Apply on any tab applies every tab (see apply_all()).
             if hasattr(widget, "dirty_changed"):
                 widget.dirty_changed.connect(self._recompute_total_pending)
-            # And clicking Apply on ANY tab applies every tab's pending
-            # changes at once, not just the one you happen to be on --
-            # see apply_all() and SettingsPageBase._apply_all_hook.
             if hasattr(widget, "set_apply_all_hook"):
                 widget.set_apply_all_hook(self.apply_all)
 
@@ -86,13 +74,8 @@ class SettingsContainer(QWidget):
                 p.set_total_pending(total)
 
     def apply_all(self) -> None:
-        """Applies every settings page's own pending changes, not just
-        whichever page's Apply button was actually clicked -- called
-        via each page's _apply_all_hook (see SettingsPageBase). A page
-        that vetoes its own apply (can_apply() False -- e.g. Network's
-        port-conflict guard) is skipped rather than blocking the rest;
-        its pending changes stay pending, same as if Apply were never
-        clicked for it."""
+        """Applies every page's pending changes. A page whose can_apply() is
+        False is skipped and its changes stay pending."""
         for p in self.pages.values():
             if not hasattr(p, "dirty_count") or not hasattr(p, "apply_own"):
                 continue

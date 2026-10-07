@@ -1,28 +1,14 @@
 """
-Checks ConanOps' Workshop filter against LIVE Steam data, and saves the
-raw responses as test fixtures.
-
-Run this with your own Steam Web API key before trusting the filter,
-and again after any game patch:
+Checks ConanOps' Workshop filter against live Steam data and saves the raw
+responses (API key stripped) as test fixtures. Run after any game patch:
 
     python tools/verify_workshop_filter.py --key YOUR_KEY \
         --updated 1111111111,2222222222 \
         --outdated 3333333333,4444444444
 
---updated   Workshop ids of mods you KNOW were rebuilt for the current patch.
---outdated  Workshop ids of mods you KNOW are broken/outdated on it.
---cutoff    Cutoff date to test (default: the app's default).
-
-It prints:
-  1. Every version-like tag seen on the most popular Conan Exiles
-     Workshop items, so you can confirm the exact spelling of the
-     "Enhanced" / "Legacy" tags the filter relies on.
-  2. For each id you gave: its tags, last-update date, the status the
-     filter assigns it, and whether that matches what you said.
-
-Then it writes the raw responses (API key stripped) plus your
-expectations into tests/fixtures/workshop/real_*.json, so the test
-suite checks the filter against real Steam data from then on.
+--updated / --outdated: Workshop ids you know are current / broken.
+--cutoff: cutoff date to test (default: the app's default).
+Prints every tag seen on popular items, then the filter's verdict per id.
 """
 from __future__ import annotations
 
@@ -64,7 +50,7 @@ def main() -> int:
         return 2
     cutoff_ts = swa.cutoff_timestamp(args.cutoff)
 
-    # 1. Tag survey -- no tag filter at all, so every spelling shows up.
+    # Tag survey with no tag filter, so every spelling shows up.
     params = [
         ("key", args.key), ("appid", str(WORKSHOP_APP_ID)), ("creator_appid", str(WORKSHOP_APP_ID)),
         ("query_type", str(swa._QUERY_TYPE_MOST_SUBSCRIBED)), ("numperpage", "100"),
@@ -83,7 +69,6 @@ def main() -> int:
             print(f"\n!! The tag {needed!r} never appeared. Check the list above for its real spelling and "
                   f"update _ENHANCED_TAG/_LEGACY_TAG in steam_workshop_api.py.")
 
-    # 2. Known mods.
     updated, outdated = _ids(args.updated), _ids(args.outdated)
     details_payload = {}
     failures = 0

@@ -1,13 +1,8 @@
 """
 Background QThread worker for MainWindow's periodic health check.
 
-Used to run directly in the QTimer callback: process_manager.is_running()
-is fast, but the A2S query added for hung-server detection is a real
-UDP round trip with its own timeout -- even querying THIS same
-machine, a genuinely overloaded server can be slow enough that doing
-this for every configured server directly on the UI thread would
-freeze the whole window for however long the slowest of them takes.
-Mirrors diagnostics_runner.py's identical reasoning.
+The A2S query used for hung-server detection is a UDP round trip that an
+overloaded server can answer slowly, so it must not run on the UI thread.
 """
 from __future__ import annotations
 
@@ -22,9 +17,7 @@ from models import ServerConfig
 
 _log = applog.get_logger(__name__)
 
-# Local-machine query -- a healthy server answers almost instantly, so
-# this can be short without risking false "unresponsive" verdicts from
-# a query that just needed a bit longer to reach a remote server.
+# Local query: a healthy server answers almost instantly.
 _QUERY_TIMEOUT_SECONDS = 1.5
 
 

@@ -1,19 +1,10 @@
 """
-ConanOps' web version: an HTTP server (stdlib only) that serves the web
-app (assets/web) and its JSON API (webui/api.py) to browsers on the
-home network -- and, with the remote link on, from anywhere through a
-Cloudflare tunnel (webui/tunnel.py), which provides the HTTPS.
+Stdlib HTTP server for the web version: serves assets/web and the JSON API
+(webui/api.py) on the home network, and remotely via a Cloudflare tunnel.
 
-Security:
-  * Everything except the login itself needs a session (webui/auth.py):
-    a random token in an HttpOnly, SameSite=Strict cookie, Secure when
-    the request arrived over HTTPS.
-  * No password set in App Settings = nothing but the "set a password
-    first" screen works.
-  * Changes (POST) also need a custom header and a matching Origin, so
-    another website open in the same browser can't make them.
-  * Wrong passwords are rate-limited per address and overall.
-  * Strict security headers; the page loads nothing from other sites.
+Security: all but login needs an HttpOnly SameSite=Strict session cookie;
+no password set = only the setup screen works; POSTs need a custom header
+and matching Origin (CSRF); wrong passwords are rate-limited.
 """
 from __future__ import annotations
 
@@ -82,7 +73,6 @@ def _make_handler(owner: "WebControlServer"):
             if not self.path.startswith("/api/servers/") or self.command != "GET":
                 _log.info("web: " + (fmt % args))
 
-        # ------------------------------------------------------- helpers --
         def _client_ip(self) -> str:
             ip = self.client_address[0]
             if ip in ("127.0.0.1", "::1") and self.headers.get("Cf-Connecting-Ip"):
@@ -135,9 +125,8 @@ def _make_handler(owner: "WebControlServer"):
             return "chunked" in (self.headers.get("Transfer-Encoding") or "").lower()
 
         def _read_chunks(self, limit: int, sink) -> int:
-            """Reads a Transfer-Encoding: chunked body (some proxies send
-            those instead of a Content-Length) into sink(bytes). Returns
-            the size, or -1 if it's over `limit` or malformed."""
+            """Reads a chunked body into sink(bytes); returns its size, or -1 if
+            over `limit` or malformed."""
             total = 0
             while True:
                 line = self.rfile.readline(1024)
@@ -193,7 +182,6 @@ def _make_handler(owner: "WebControlServer"):
             host = self.headers.get("Host", "")
             return urlsplit(origin).netloc == host
 
-        # -------------------------------------------------------- routes --
         def do_HEAD(self):  # noqa: N802
             self.do_GET()
 
@@ -225,9 +213,7 @@ def _make_handler(owner: "WebControlServer"):
             self._json({"error": "Not found"}, 404)
 
         def _import_backup(self, sid: str) -> None:
-            """A backup zip uploaded from the browser, streamed to a temp
-            file (it can be large) and then imported like the app's
-            "Import External Backup"."""
+            """Streams an uploaded backup zip to a temp file, then imports it."""
             if not owner.password_hash() or not self._authed():
                 return self._json({"error": "Please sign in.", "needs_login": True}, 401)
             if owner.api is None:
@@ -342,11 +328,8 @@ def _make_handler(owner: "WebControlServer"):
 
 class _ThreadingHTTPServer(ThreadingMixIn, TCPServer):
     daemon_threads = True
-    # SO_REUSEADDR means "reuse a port in TIME_WAIT" on Linux, but on
-    # Windows it lets a second program bind a port that's already in use
-    # (both end up listening, and connections go to either). There,
-    # SO_EXCLUSIVEADDRUSE makes a taken port fail to bind, so the
-    # fallback to the next port actually happens.
+    # On Windows SO_REUSEADDR lets two programs bind the same port;
+    # SO_EXCLUSIVEADDRUSE makes a taken port fail so we fall back to the next.
     allow_reuse_address = sys.platform != "win32"
 
     def server_bind(self):
@@ -357,9 +340,7 @@ class _ThreadingHTTPServer(ThreadingMixIn, TCPServer):
 
 
 class WebControlServer:
-    """The web version's server. `get_password_hash` reads the current
-    password hash from the config; `api` (a webui.api.WebApi) is attached
-    by MainWindow once the window exists."""
+    """`api` (a webui.api.WebApi) is attached by MainWindow later."""
 
     def __init__(self, get_active_server: Callable = None, save_config: Optional[Callable[[], None]] = None,
                  get_password_hash: Optional[Callable[[], str]] = None, sessions_path: Optional[str] = None):
@@ -390,9 +371,7 @@ class WebControlServer:
         return self._httpd is not None
 
     def start(self, preferred_port: int = DEFAULT_PORT) -> Tuple[bool, str]:
-        """Listens on every network adapter (so phones on the Wi-Fi can
-        reach it), trying a few ports past `preferred_port` if it's
-        taken."""
+        """Listens on all adapters, trying a few ports past `preferred_port`."""
         if self.is_running:
             return True, f"Already running on port {self.actual_port}."
         handler_cls = _make_handler(self)

@@ -1,15 +1,8 @@
 """
-Read/write Conan Exiles' .ini config files (ServerSettings.ini, Engine.ini,
-Game.ini) without clobbering keys ConanOps doesn't know about.
-
-Design goal (from the spec): if Funcom adds a new key in an update, or the
-person hand-edits the file, or a mod adds its own section, none of that
-should be lost or corrupted just because ConanOps wrote to the file. So
-this is a line-based merge, not "load into a dict and dump it back out":
-- Known keys get their value updated in place if present.
-- Known keys get appended under the right [Section] if missing entirely.
-- Every other line is left byte-for-byte alone.
-- A backup of the original file is written before any change.
+Read/write Conan Exiles' .ini files without clobbering keys ConanOps doesn't
+know about. This is a line-based merge: known keys are updated in place or
+appended under their [Section], every other line is left untouched, and the
+original file is backed up first.
 """
 from __future__ import annotations
 
@@ -30,15 +23,7 @@ def backup_ini(path: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = f"{path}.{ts}.bak"
     if os.path.exists(backup_path):
-        # Settings can legitimately be applied more than once within
-        # the same second (e.g. the Network & Ports page writes
-        # Engine.ini AND Game.ini back to back, or several gameplay
-        # keys get applied in one batch that touches this file twice).
-        # Without a tiebreaker, the second backup_ini() call in that
-        # window would overwrite the first backup with a copy of the
-        # file taken AFTER the first change -- so the state from just
-        # before that first change, which is exactly what a backup
-        # is supposed to preserve, would be lost for good.
+        # Two writes in the same second must not overwrite the older backup.
         n = 2
         while os.path.exists(f"{path}.{ts}_{n}.bak"):
             n += 1
@@ -49,15 +34,8 @@ def backup_ini(path: str) -> str:
 
 
 def _prune_ini_backups(path: str, keep: int = _MAX_INI_BACKUPS_PER_FILE) -> None:
-    """Keeps only the newest `keep` .bak files for this ini path,
-    deleting older ones. Every apply_known_keys() call makes a fresh
-    timestamped backup and nothing ever cleaned the old ones up --
-    over the life of a server (Settings gets applied a LOT: every
-    gameplay tweak, every RCON toggle, every identity change) these
-    piled up without bound in Config/WindowsServer/, and since
-    backup_manager zips that whole folder into every server backup,
-    every one of those .bak files rode along in every single backup
-    archive too."""
+    """Keeps only the newest `keep` .bak files for this ini path. Unpruned
+    backups would pile up and get zipped into every server backup."""
     folder = os.path.dirname(path) or "."
     base = os.path.basename(path)
     try:
@@ -77,16 +55,10 @@ def _prune_ini_backups(path: str, keep: int = _MAX_INI_BACKUPS_PER_FILE) -> None
 
 def read_known_keys(path: str, wanted: Dict[str, str]) -> Dict[str, str]:
     """wanted: {key_name: section_name}. Returns {key_name: raw_value_str}
-    for whichever of those keys are actually present in the file.
+    for the keys present in the file.
 
-    Section and key names are matched case-insensitively, the same way
-    Unreal's own config parser (and classic Windows .ini semantics)
-    treat them -- ConanOps' own maps consistently use one casing
-    (e.g. "/script/engine.gamesession") while Unreal itself writes
-    "/Script/Engine.GameSession", and Funcom's own published examples
-    use a third casing again. Matching exact-case-only meant a key
-    that already existed in the file, spelled with different casing
-    than ConanOps expected, was never found here."""
+    Names are matched case-insensitively like Unreal's parser, since Unreal,
+    Funcom's docs and ConanOps each use different casing for the same keys."""
     # {casefolded key: (original key name, casefolded section name)}
     wanted_cf = {k.casefold(): (k, section.casefold()) for k, section in wanted.items()}
     found: Dict[str, str] = {}
@@ -111,16 +83,9 @@ def read_known_keys(path: str, wanted: Dict[str, str]) -> Dict[str, str]:
 
 def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
     """updates: {key_name: (section_name, new_value_str)}.
-    Updates existing lines in place; appends any missing key under its
-    section (creating the section at end-of-file if it doesn't exist).
-    Leaves every other line untouched. Backs up the original first.
-
-    Section and key names are matched case-insensitively -- see
-    read_known_keys()'s docstring for why. A key or section that
-    already exists in the file keeps its on-disk casing (only its
-    value line, and nothing else about it, is touched); a section
-    or key that has to be newly appended uses the casing `updates`
-    was given."""
+    Updates existing keys in place, appends missing ones under their section
+    (created at end of file if needed), and backs up the original first.
+    Matching is case-insensitive; existing names keep their on-disk casing."""
     if os.path.exists(path):
         backup_ini(path)
     else:
@@ -154,10 +119,8 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
         if hit and hit[1] == current_section_cf:
             orig_key, _section_cf, value = hit
             del remaining[key_cf]
-            # Keep the key's on-disk spelling -- only the value changes.
             lines[i] = f"{km.group('key').strip()}={value}\n"
 
-    # Anything left in `remaining` needs to be appended under its section.
     by_section_cf: Dict[str, List[Tuple[str, str]]] = {}
     section_cf_to_requested_name: Dict[str, str] = {}
     for key_cf, (orig_key, section_cf, value) in remaining.items():
@@ -172,8 +135,7 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
             insert_at += 1
             new_lines = [f"{k}={v}\n" for k, v in kvs]
             lines[insert_at:insert_at] = new_lines
-            # shift later sections' recorded indices (only matters if we
-            # process multiple sections in one call with overlapping ranges)
+            # Shift later sections' recorded indices past the inserted lines.
             shift = len(new_lines)
             for sec_cf, (idx, orig_section) in list(section_end_index.items()):
                 if idx >= insert_at:
@@ -191,23 +153,8 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
         f.writelines(lines)
 
 
-# --------------------------------------------------------------------- #
-# Conan-specific key/section maps. These are the ones ConanOps' Settings
-# pages actually read and write; everything else in the files is left
-# alone no matter what it is.
-# --------------------------------------------------------------------- #
-
-# --------------------------------------------------------------------- #
-# NOTE: the authoritative list of Conan Exiles gameplay setting keys,
-# their sections, defaults, and UI grouping now lives in
-# ini_field_specs.py (built from the community wiki's Server
-# Configuration page). The two constants below cover only the small,
-# fixed set of connection-identity keys that ConanOps' Network & Ports
-# page writes directly (see ui/main_window.py's _apply_network), which
-# aren't part of that data-driven system since they need custom UI
-# (port-conflict detection, IP auto-detect) rather than a generic field.
-# --------------------------------------------------------------------- #
-
+# Engine.ini connection keys written by the Network & Ports page. Gameplay
+# keys live in ini_field_specs.py.
 ENGINE_INI_MAP = {
     "Port": "URL",
     "GameServerQueryPort": "OnlineSubsystemSteam",

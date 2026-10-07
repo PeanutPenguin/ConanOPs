@@ -1,11 +1,6 @@
 """
-Optional PIN lock, shown at startup when one is set, and manageable
-via the tray menu ('Set App PIN…' / 'Change App PIN…').
-
-Deliberately lightweight: a single PIN, hashed with a random salt
-(models.AppConfig.set_app_lock_pin), not real multi-user account
-management. See models.AppConfig's app_lock_pin_hash docstring for
-what this is and isn't meant to protect against.
+Optional startup PIN lock and the tray dialog to set/change it. A single
+salted PIN hash, not real multi-user auth.
 """
 from __future__ import annotations
 
@@ -16,19 +11,10 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEd
 
 
 class UnlockDialog(QDialog):
-    """Modal PIN prompt shown at startup when a PIN is set. There's no
-    'skip' option -- only 'Unlock' (correct PIN) or 'Quit', since a
-    skippable lock isn't a lock.
+    """Startup PIN prompt with only Unlock or Quit (a skippable lock isn't a
+    lock). Failed attempts get a growing delay to slow brute-forcing."""
 
-    Failed attempts are throttled with a growing delay (see
-    _try_unlock below): previously there was nothing here to stop
-    someone -- or a script driving the UI -- from just hammering the
-    PIN field as fast as it could be typed/submitted, which for a
-    short numeric PIN is a meaningfully fast local brute force even
-    with the hash itself made slower (models.AppConfig's PBKDF2
-    change)."""
-
-    _FREE_ATTEMPTS = 2       # first couple of mistakes get no delay -- typos happen
+    _FREE_ATTEMPTS = 2       # typos happen
     _MAX_DELAY_SECONDS = 30
 
     def __init__(self, verify_fn: Callable[[str], bool], parent=None):
@@ -97,9 +83,8 @@ class UnlockDialog(QDialog):
 
 
 class SetPinDialog(QDialog):
-    """Reachable from the tray menu. Setting a brand-new PIN needs it
-    entered twice; changing an existing one needs the current PIN
-    first. Leaving both new-PIN fields blank removes the lock."""
+    """New PIN entered twice; changing needs the current PIN first.
+    Blank new-PIN fields remove the lock."""
 
     def __init__(self, current_pin_set: bool, verify_fn: Callable[[str], bool], parent=None):
         super().__init__(parent)

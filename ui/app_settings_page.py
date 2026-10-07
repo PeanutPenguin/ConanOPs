@@ -1,9 +1,5 @@
-"""
-App-level settings (not per-server): the color theme, and the optional
-startup PIN lock. Lives at its own "App Settings" nav entry rather than
-under the per-server Settings sub-nav, since neither of these belongs
-to any one server.
-"""
+"""App Settings page: settings for ConanOps itself rather than one server (theme,
+startup, unattended mode, Workshop key, DuckDNS, lock, web UI, alerts, updates, delete)."""
 from __future__ import annotations
 
 import os
@@ -35,6 +31,7 @@ import update_runner
 import version
 import applog
 import web_control
+from ui.workers import keep_until_finished
 
 _log = applog.get_logger(__name__)
 
@@ -142,10 +139,8 @@ class AppSettingsPage(QWidget):
         self._font_edits: dict = {}
         self._update_zip_path: Optional[str] = None
         self._self_update_worker: Optional[SelfUpdateWorker] = None
-        # Keeps a finished-but-not-yet-wound-down worker referenced
-        # until Qt's own QThread.finished fires, same pattern (and same
-        # reason -- "QThread: Destroyed while thread is still running")
-        # as MainWindow._retiring_workers.
+        # Holds finished workers until QThread.finished fires, avoiding
+        # "QThread: Destroyed while thread is still running".
         self._retiring_workers: list = []
 
         root = QVBoxLayout(self)
@@ -160,8 +155,7 @@ class AppSettingsPage(QWidget):
         header.addStretch(1)
         root.addLayout(header)
 
-        # Each card below is collected and then shown as its own section
-        # (side list + one panel at a time) -- see _build_sections().
+        # Cards are collected and shown one section at a time (see _build_sections).
         form = _CardCollector()
         self._root_layout = root
 
@@ -682,8 +676,7 @@ class AppSettingsPage(QWidget):
         self.update_now_btn.clicked.connect(self._confirm_and_update)
         update_layout.addWidget(self.update_now_btn)
 
-        # Hooks MainWindow sets: tell the person (tray toast) an update is
-        # out, and whether it's safe to restart ConanOps right now.
+        # Set by MainWindow: update notification, and whether restarting is safe now.
         self.on_app_update_available = None
         self.is_busy_for_app_update = None
         self._available_release = None
@@ -744,8 +737,7 @@ class AppSettingsPage(QWidget):
 
     # ------------------------------------------------------------ alerts --
     def _build_alerts_card(self) -> QFrame:
-        """Discord and ntfy alerts -- one set for every server (each alert
-        names its server)."""
+        """Discord and ntfy alerts, shared by all servers."""
         import alert_guides
         import webhooks
         from ui.fold_out_guide import FoldOutGuide
@@ -863,9 +855,7 @@ class AppSettingsPage(QWidget):
         self._on_alert_links_changed()
 
     # ---------------------------------------------------------- sections --
-    # (key, label, group heading or "") in display order; the cards are
-    # built above in this order: theme, startup, unattended, workshop,
-    # duckdns, lock, web, update, delete. Shared with the web version.
+    # (key, label, group heading or "") in the order the cards are built. Shared with the web UI.
     SECTIONS = [
         ("startup", "Startup", "Running"),
         ("keep", "Keep Running", ""),
@@ -950,18 +940,7 @@ class AppSettingsPage(QWidget):
             if not QColor(values[name]).isValid():
                 QMessageBox.warning(self, "Invalid color", f"'{values[name]}' isn't a valid color (use #rrggbb).")
                 return
-            # Normalize whatever QColor accepted (a color NAME like
-            # "red", 3-digit shorthand like "#fff", etc.) down to the
-            # strict #rrggbb form theme_config.load_theme() requires.
-            # QColor is intentionally more permissive than the loader's
-            # own validation -- that's what lets someone type "red" or
-            # pick a color from the picker at all -- but saving it
-            # un-normalized used to mean Apply visibly worked for the
-            # rest of THIS session (on_theme_changed applies the
-            # in-memory ThemePalette either way) while silently
-            # reverting to the default on the next app restart, once
-            # load_theme() re-read the same value from theme.json and
-            # rejected it.
+            # Save as strict #rrggbb: load_theme() rejects names like "red" that QColor accepts.
             values[name] = QColor(values[name]).name()
 
         palette = ThemePalette(**values)
@@ -1022,7 +1001,7 @@ class AppSettingsPage(QWidget):
                 return
             self._set_checked_quietly(self.background_checkbox, self.config.background_mode_enabled)
             if outcome == powershell.RUN_DECLINED:
-                return  # a declined prompt is a normal choice -- nothing to explain
+                return  # declined prompt: nothing to explain
             QMessageBox.warning(
                 self, "Couldn't Change Background Mode",
                 "Windows didn't accept the change -- see conanops.log for details.",
@@ -1032,7 +1011,7 @@ class AppSettingsPage(QWidget):
 
     def _on_background_status(self, status) -> None:
         if status is None or not self.config.background_mode_enabled:
-            return  # couldn't check (the task may not be readable by this account) -- stay quiet
+            return  # couldn't check; stay quiet
         if not status.get("exists"):
             msg = "The background task is missing (it may have been removed) -- servers won't come back by themselves."
         elif not status.get("matches"):
@@ -1111,8 +1090,7 @@ class AppSettingsPage(QWidget):
         self._run_call(admin_mode.enable if checked else admin_mode.disable, done)
 
     def refresh_sign_in_status(self) -> None:
-        """Checks (off the UI thread) whether Windows signs back in after
-        update restarts, and shows a warning + shortcut when it doesn't."""
+        """Checks off the GUI thread whether Windows signs back in after update restarts."""
         self._run_call(windows_update.auto_sign_in_status, self._on_sign_in_status)
 
     def _on_sign_in_status(self, status) -> None:
@@ -1133,8 +1111,7 @@ class AppSettingsPage(QWidget):
         self.sign_in_settings_btn.setVisible(bool(text) and status != windows_update.AUTO_SIGN_IN_BLOCKED)
 
     def reload_unattended_from_config(self) -> None:
-        """Re-reads the start/keep-running settings after something other
-        than this page changed them (the setup wizard's last step)."""
+        """Re-reads startup settings after another place (the setup wizard) changed them."""
         for box, value in ((self.start_with_windows_checkbox, self.config.start_with_windows),
                            (self.keep_alive_checkbox, self.config.keep_alive_enabled),
                            (self.keep_awake_checkbox, self.config.keep_pc_awake),
@@ -1219,8 +1196,7 @@ class AppSettingsPage(QWidget):
         try:
             datetime.strptime(text, "%Y-%m-%d")
         except ValueError:
-            # Put the last good value back rather than saving something
-            # the Workshop filter can't use.
+            # Restore the last good value instead of saving an unusable one.
             self.workshop_cutoff_edit.setText(self.config.workshop_update_cutoff)
             return
         self.config.workshop_update_cutoff = text
@@ -1275,11 +1251,9 @@ class AppSettingsPage(QWidget):
         self.on_lock_changed()
 
     # ------------------------------------------------------------- update --
-    # ------------------------------------------------- online updates --
     def check_for_updates(self, automatic: bool = False) -> None:
-        """Asks GitHub for a newer release (off the GUI thread). automatic
-        checks stay quiet on errors and can install by themselves when
-        that's turned on."""
+        """Checks GitHub for a newer release off the GUI thread. Automatic checks
+        stay quiet on errors and may auto-install if enabled."""
         if not app_updates.update_repo() or self._app_update_check_worker is not None \
                 or self._app_update_install_worker is not None:
             return
@@ -1288,8 +1262,7 @@ class AppSettingsPage(QWidget):
             self.app_update_status.setText("Checking for updates…")
         worker = update_runner.AppUpdateCheckWorker(self)
         self._app_update_check_worker = worker
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)
         worker.finished_check.connect(lambda info, err, a=automatic: self._on_update_checked(info, err, a))
         worker.start()
 
@@ -1349,8 +1322,7 @@ class AppSettingsPage(QWidget):
         self.app_update_status.setText(f"Downloading ConanOps {info.version}…")
         worker = update_runner.AppUpdateInstallWorker(info, self.install_dir, parent=self)
         self._app_update_install_worker = worker
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)
         worker.progress.connect(self._on_online_update_progress)
         worker.finished_update.connect(self._on_online_update_finished)
         worker.start()
@@ -1421,16 +1393,11 @@ class AppSettingsPage(QWidget):
         self.update_now_btn.setEnabled(False)
         self.update_now_btn.setText("Updating…")
 
-        # Off the UI thread: a big copy (or a locked-file rename swap
-        # on Windows -- see self_update._copy_file_with_swap) can take
-        # a while, and freezing the window during it just invites a
-        # force-close partway through, which is the one thing the
-        # update process is designed to survive cleanly.
+        # Off the GUI thread: a frozen window invites a force-close mid-copy.
         self._self_update_worker = SelfUpdateWorker(self._update_zip_path, self.install_dir, parent=self)
         self._self_update_worker.finished_update.connect(self._on_self_update_finished)
         worker = self._self_update_worker
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)
         self._self_update_worker.start()
 
     def _on_self_update_finished(self, result) -> None:
@@ -1596,11 +1563,7 @@ class AppSettingsPage(QWidget):
             self.on_delete_app_only()
 
     def _confirm_delete_everything(self) -> None:
-        # A single Yes/No isn't enough friction for something this
-        # destructive (every configured server's actual world save,
-        # gone, with no undo) -- requiring the person to type a literal
-        # word makes it much harder to click through on autopilot the
-        # way a dialog's default button invites.
+        # Typing a word, not just Yes/No, guards this irreversible delete of every world save.
         text, ok = QInputDialog.getText(
             self, "Delete Everything?",
             "This stops and deletes every server, its files and backups (your world saves), "

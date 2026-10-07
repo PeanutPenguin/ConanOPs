@@ -1,14 +1,6 @@
 """
-Confirmation dialog for removing a server from ConanOps (Sidebar's
-per-server remove button). A plain QMessageBox can't hold more than
-one checkbox, and this needs two -- delete the server's files, delete
-its backups, independently -- so it's its own small QDialog instead,
-same pattern as UnlockDialog/SetPinDialog in app_lock_dialog.py.
-
-The base action (forgetting the server) is unconditional and always
-described up front; the checkboxes are purely additive, both default
-CHECKED: removing a server leaves nothing behind unless the person
-deliberately unticks a box to keep its files or backups.
+Confirmation dialog for removing a server, with two independent checkboxes
+(delete files, delete backups), both checked by default.
 """
 from __future__ import annotations
 

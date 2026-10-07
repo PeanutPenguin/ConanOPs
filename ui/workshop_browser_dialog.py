@@ -1,12 +1,5 @@
-"""
-Steam Workshop browser/search dialog, opened from the Mods tab.
-
-Backed by steam_workshop_api.py (needs a personal Steam Web API key --
-see its module docstring and App Settings' Steam Workshop card) and
-run on a background thread (workshop_search_runner.py), since search
-is a real HTTP round trip and this app doesn't block the UI thread on
-those (see every other *_runner.py module for the same reasoning).
-"""
+"""Steam Workshop search dialog for the Mods tab. Uses steam_workshop_api.py (needs a
+Steam Web API key) via a background worker so the GUI thread never blocks on HTTP."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -24,8 +17,7 @@ from ui import assets
 from models import ServerConfig
 from workshop_search_runner import WorkshopSearchWorker
 
-# Wait this long after the last keystroke before searching, so typing
-# a word doesn't fire a request per letter.
+# Debounce so typing doesn't fire a request per letter.
 _TYPING_DEBOUNCE_MS = 600
 
 _SORT_CHOICES = [
@@ -34,7 +26,7 @@ _SORT_CHOICES = [
     ("Recently updated", swa.SORT_RECENTLY_UPDATED),
 ]
 
-# Badge colours per status -- readable on both the light and dark theme.
+# Readable on both light and dark themes.
 _STATUS_COLORS = {
     swa.STATUS_UPDATED: "#3a9a4f",
     swa.STATUS_STALE: "#c9902f",
@@ -62,8 +54,7 @@ class WorkshopBrowserDialog(QDialog):
         self._loading_more = False     # the in-flight search appends instead of replacing
         self._next_cursor = ""
         self._shown_ids: set = set()
-        # Tracked separately from server.mods -- an item just added in
-        # THIS dialog session should show "Added" immediately.
+        # So items added in this dialog show "Added" immediately.
         self._added_this_session: set = set()
 
         self.setWindowTitle("Browse Steam Workshop")
@@ -91,7 +82,7 @@ class WorkshopBrowserDialog(QDialog):
         self.sort_combo = QComboBox()
         for label, value in _SORT_CHOICES:
             self.sort_combo.addItem(label, value)
-        self.sort_combo.setCurrentIndex(1)  # nothing typed yet -- popular is the useful default
+        self.sort_combo.setCurrentIndex(1)  # popular, until something is typed
         self.sort_combo.currentIndexChanged.connect(lambda _i: self._run_search())
         search_row.addWidget(self.sort_combo)
         self.search_btn = QPushButton("Search")
@@ -154,13 +145,11 @@ class WorkshopBrowserDialog(QDialog):
             for w in (self.search_edit, self.search_btn, self.sort_combo, *self.status_checks.values()):
                 w.setEnabled(False)
         else:
-            self._run_search()  # show something right away, before anyone's typed anything
+            self._run_search()
 
     # ------------------------------------------------------------ lifetime --
     def _wait_for_worker_if_running(self) -> None:
-        """Shared by every path that can end this dialog (accept(),
-        reject(), closeEvent()) so none of them can destroy this dialog
-        -- and the QThread it owns -- while a search is still running."""
+        """Called from every close path so the owned QThread is never destroyed while running."""
         self._debounce.stop()
         if self._worker is not None:
             self._worker.wait(2000)
@@ -183,9 +172,7 @@ class WorkshopBrowserDialog(QDialog):
         return chosen or {swa.STATUS_UPDATED}
 
     def _on_text_edited(self, text: str) -> None:
-        # Typing a query makes relevance the useful order; clearing it
-        # goes back to popular. Signals blocked so this doesn't also
-        # fire a search of its own -- the debounce timer does that.
+        # Query -> best match, empty -> popular. Signals blocked; the debounce timer searches.
         want = swa.SORT_BEST_MATCH if text.strip() else swa.SORT_POPULAR
         current = self.sort_combo.currentData()
         if current in (swa.SORT_BEST_MATCH, swa.SORT_POPULAR) and current != want:
@@ -241,7 +228,7 @@ class WorkshopBrowserDialog(QDialog):
         self.search_btn.setEnabled(True)
         self.load_more_btn.setEnabled(True)
         if self._pending_search:
-            # Settings changed mid-search -- this result is stale.
+            # Settings changed mid-search; this result is stale.
             self._pending_search = False
             self._run_search()
             return

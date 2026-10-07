@@ -21,6 +21,7 @@ from update_runner import ModDownloadWorker
 from ui.workshop_browser_dialog import WorkshopBrowserDialog
 from workshop_search_runner import ModStatusWorker
 from ui.auto_bisect_dialog import AutoBisectDialog
+from ui.workers import keep_until_finished
 
 
 class ModsPage(QWidget):
@@ -28,52 +29,36 @@ class ModsPage(QWidget):
         super().__init__(parent)
         self.server: Optional[ServerConfig] = None
         self.on_changed = None  # callable(server) -- persist + rewrite modlist.txt
-        self.get_api_key = None  # callable() -> str -- set by main_window; AppConfig.steam_api_key
-        self.is_server_online = None  # callable() -> bool -- set by main_window; whether anyone's currently connected
-        # Both set by main_window: claims/releases this server for the
-        # DURATION of an auto-bisect run (not just around each
-        # individual stop/restart it does internally) -- what keeps
-        # the health check, watchdog, and scheduled restarts from
-        # fighting a bisect that's mid-test. See _open_auto_bisect().
+        self.get_api_key = None  # callable() -> str
+        self.is_server_online = None  # callable() -> bool
+        # Claim/release the server for a whole auto-bisect run, so the health
+        # check, watchdog and scheduled restarts leave it alone.
         self.lock_server_for_automation = None  # callable(server_id) -> None
         self.unlock_server_for_automation = None  # callable(server_id) -> None
-        self.restart_server = None  # callable(ServerConfig) -> None -- set by main_window; used by AutoBisectDialog's "Re-enable Anyway"
-        self._active_bisect_dialog = None  # set while a Quick Mod Check/Find All dialog is open -- see MainWindow.closeEvent
+        self.restart_server = None  # callable(ServerConfig) -> None; for "Re-enable Anyway"
+        self._active_bisect_dialog = None  # see MainWindow.closeEvent
         self._download_worker: Optional[ModDownloadWorker] = None
-        self._download_worker_server_id: Optional[str] = None  # which server _download_worker belongs to -- see _refresh()
-        # Both set by main_window, sharing its _mod_refresh_workers
-        # registry with the periodic daily mod-refresh check AND an
-        # update-triggered mod refresh -- without this, a manual
-        # download here could run a second SteamCMD process against
-        # the same Workshop content folder at the same time as either
-        # of those.
+        self._download_worker_server_id: Optional[str] = None
+        # Shared with main_window's daily and update-triggered mod refreshes,
+        # so two SteamCMD processes never hit the same Workshop folder.
         self.claim_mod_refresh_slot = None    # callable(server_id, worker) -> bool (False if already claimed)
         self.release_mod_refresh_slot = None  # callable(server_id) -> None
-        # Set by main_window: whether ANY mod download/refresh (manual,
-        # daily, or update-triggered) is in flight for a server. An
-        # auto-bisect must not start while one is: when it finishes it
-        # rewrites modlist.txt from the full mod list (and an update-
-        # triggered one can relaunch the server), right in the middle
-        # of a test round.
+        # Whether any mod download/refresh is in flight for a server. An
+        # auto-bisect must not start then: the refresh rewrites modlist.txt
+        # (and may relaunch the server) mid-test.
         self.is_mod_refresh_busy = None       # callable(server_id) -> bool
-        # Download workers that have reported back but whose QThread
-        # hasn't fully exited yet. finished_download is emitted from
-        # INSIDE run(), so dropping the last reference in its handler
-        # can destroy a QThread that's still running (a hard crash) --
-        # same reason main_window keeps _retiring_workers.
+        # finished_download is emitted inside run(); keep workers referenced
+        # until QThread.finished, or a still-running QThread gets destroyed.
         self._retiring_download_workers: list = []
-        # Workshop update status of each server's mods -- see
-        # _check_mod_status. Set by main_window: the cutoff date from
-        # App Settings, and whether to check automatically the first
-        # time each server's mods are shown this session (off by
-        # default so nothing here touches the network unless wired up).
+        # Set by main_window: the App Settings cutoff date, and whether to
+        # check mod status automatically on first view (off by default).
         self.get_update_cutoff = None  # callable() -> "YYYY-MM-DD"
         self.auto_check_mod_status = False
-        self._palette = load_theme()         # row colors for outdated/broken mods
-        self._downloaded: dict = {}          # mod id -> .pak present, refreshed by _refresh()
+        self._palette = load_theme()
+        self._downloaded: dict = {}          # mod id -> .pak present
         self._mod_status: dict = {}          # server_id -> {workshop_id: swa.WorkshopItem}
-        # server_id -> the mod ids that check asked about. A mod added
-        # since isn't "not on the Workshop" -- it just hasn't been checked.
+        # server_id -> ids the last check asked about; newer mods are unchecked,
+        # not "missing from the Workshop".
         self._mod_status_ids: dict = {}
         self._mod_status_error: dict = {}    # server_id -> error text from the last check
         self._status_worker: Optional[ModStatusWorker] = None
@@ -161,12 +146,7 @@ class ModsPage(QWidget):
         root.addLayout(add_row)
 
         self.list_widget = QListWidget()
-        # InternalMove: reordering only, by dragging a row up or down
-        # within this same list -- no dropping onto other widgets, no
-        # dragging items out. A single-column vertical QListWidget has
-        # no "x axis" to reorder along in the first place, so this is
-        # inherently vertical-only: a row can only ever land above or
-        # below another row, never beside one.
+        # InternalMove: reorder within this list only.
         self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
         self.list_widget.setDefaultDropAction(Qt.MoveAction)
         self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
@@ -220,10 +200,7 @@ class ModsPage(QWidget):
         self.status_spinner.show()
         ids = [m["id"] for m in server.mods]
         worker.finished_status.connect(lambda result, sid=server.id, i=ids: self._on_mod_status(sid, result, i))
-        self._retiring_download_workers.append(worker)  # same keep-alive as the download worker
-        worker.finished.connect(
-            lambda w=worker: self._retiring_download_workers.remove(w) if w in self._retiring_download_workers else None
-        )
+        keep_until_finished(self._retiring_download_workers, worker)
         worker.start()
 
     def _on_mod_status(self, server_id: str, result, ids=None) -> None:
@@ -234,7 +211,7 @@ class ModsPage(QWidget):
         self.status_spinner.hide()
         if result.ok:
             self._mod_status[server_id] = dict(result.items)
-            if ids is None:  # older callers: everything it returned, plus what's on the server now
+            if ids is None:  # older callers
                 srv = next((x for x in [self.server] if x is not None and x.id == server_id), None)
                 ids = set(result.items) | ({m["id"] for m in srv.mods} if srv else set())
             self._mod_status_ids[server_id] = set(ids)
@@ -244,9 +221,8 @@ class ModsPage(QWidget):
         self._refresh()
 
     def _row_color(self, mod: dict, known, server_ids: set) -> str:
-        """Theme color for a mod row: dim when disabled, red for a
-        Legacy / missing / needs-a-mod problem, amber when it's only
-        out of date, default otherwise."""
+        """Row color: dim when disabled, red for Legacy/missing/needs-a-mod,
+        amber when only out of date."""
         pal = self._palette
         if not mod.get("enabled", True):
             return pal.dim
@@ -314,27 +290,16 @@ class ModsPage(QWidget):
         return "⚠ Enabled mods: " + ", ".join(bits) + ". Outdated mods are a common cause of a server that won't start."
 
     def _refresh(self) -> None:
-        # Remember which mod was selected so it's still selected after
-        # the rebuild -- otherwise every Move Up / Move Down / toggle
-        # dropped the selection and the next click did nothing.
+        # Keep the selection across the rebuild.
         selected_id = self._selected_id()
         self.list_widget.clear()
-        # Sync the Download button to whether THIS server actually has
-        # a download in flight -- without this, switching away from a
-        # server mid-download and back again left the button stuck on
-        # "Downloading…" forever, since the finished-download handler
-        # only touched the button when the page was still showing that
-        # same server at the moment it fired.
+        # Sync the Download button with this server's own download state.
         downloading_this_server = (
             self._download_worker is not None and self._download_worker_server_id == (self.server.id if self.server else None)
         )
         downloading_other_server = self._download_worker is not None and not downloading_this_server
-        # Only one manual download runs at a time (see _download_mods).
-        # While another server's is in flight, say so and disable the
-        # button, rather than leaving it clickable and silently doing
-        # nothing when clicked.
-        # A download started elsewhere (the web version, the daily check,
-        # an update) for this server counts too.
+        # One manual download at a time; also count downloads started
+        # elsewhere (web version, daily check, update) for this server.
         busy_elsewhere = (not downloading_this_server and self.server is not None
                           and bool(self.is_mod_refresh_busy and self.is_mod_refresh_busy(self.server.id)))
         self.download_btn.setEnabled(self._download_worker is None and not busy_elsewhere)
@@ -357,8 +322,6 @@ class ModsPage(QWidget):
             self._set_status_note(summary, "ok" if summary.startswith("✓") else "warn")
         else:
             self._set_status_note("", "")
-        # One disk check per mod per refresh (the label, the row's pills
-        # and the in-place toggle all reuse it).
         self._downloaded = {
             m["id"]: (mod_manager.find_workshop_pak(self.server.steamcmd_dir, m["id"]) is not None)
             for m in self.server.mods
@@ -368,10 +331,8 @@ class ModsPage(QWidget):
             label = self._row_label(m, known, server_ids)
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, m["id"])
-            # The row widget below draws the row; the item's own text is
-            # kept for screen readers and search, but never painted (see
-            # the ModList rules in theme.py) -- no tooltip either, since
-            # that popped this raw text up over the row on hover.
+            # The row widget paints the row; item text stays for screen
+            # readers and search (hidden by theme.py, no tooltip).
             item.setForeground(QColor(0, 0, 0, 0))
             self.list_widget.addItem(item)
             row = self._make_row(index, m, known, server_ids)
@@ -431,7 +392,7 @@ class ModsPage(QWidget):
         name = QLabel(mod.get("name") or mod["id"])
         name.setObjectName("ModName")
         name.setProperty("tone", self._row_tone(mod, known, server_ids))
-        row.name_label = name  # for _set_enabled_in_place
+        row.name_label = name
         text.addWidget(name)
         sub = mod["id"]
         info = known.get(mod["id"]) if known else None
@@ -457,23 +418,20 @@ class ModsPage(QWidget):
         return row
 
     def _row_tone(self, mod: dict, known, server_ids: set) -> str:
-        """Name color for a row, as a style property the theme maps to
-        a color -- NOT a per-widget stylesheet, which made Qt recompute
-        styles for the whole list on every rebuild (the lag spike)."""
+        """Name color as a style property, not a per-widget stylesheet
+        (which restyled the whole list on every rebuild)."""
         color = self._row_color(mod, known, server_ids)
         pal = self._palette
         return {pal.dim: "dim", pal.red: "bad", pal.yellow: "warn"}.get(color, "normal") if color else "normal"
 
     def _set_enabled_in_place(self, mod_id: str, on: bool) -> None:
-        """A row's on/off switch: saves the change and updates only that
-        row and the summary note -- no full list rebuild, no selection
-        change, so nothing flickers or lags."""
+        """Save one row's on/off switch and update only that row and the
+        summary, without a full rebuild."""
         if not self.server:
             return
         self.server.mods = mod_manager.set_enabled(self.server.mods, mod_id, on)
         if self.on_changed:
-            # Saving (config + modlist.txt) is disk work -- let the switch
-            # and row repaint first, then save on the next event-loop pass.
+            # Let the switch repaint before the disk work.
             QTimer.singleShot(0, lambda srv=self.server: self.on_changed(srv))
         known = self._mod_status.get(self.server.id)
         server_ids = {m["id"] for m in self.server.mods}
@@ -495,15 +453,12 @@ class ModsPage(QWidget):
             self._set_status_note(summary, "ok" if summary.startswith("✓") else "warn")
 
     def _row_action(self, mod_id: str, action) -> None:
-        """Selects the row for `mod_id`, then runs one of the existing
-        selection-based actions (toggle, move, remove) -- so the row
-        buttons share exactly the same code paths as before."""
+        """Select the row for `mod_id`, then run a selection-based action."""
         for i in range(self.list_widget.count()):
             if self.list_widget.item(i).data(Qt.UserRole) == mod_id:
                 self.list_widget.setCurrentRow(i)
                 break
-        # Deferred: the action rebuilds the list, which deletes the very
-        # widget whose signal is being handled right now.
+        # Deferred: the action rebuilds the list, deleting the sender widget.
         QTimer.singleShot(0, action)
 
     def _selected_id(self) -> Optional[str]:
@@ -536,17 +491,13 @@ class ModsPage(QWidget):
         self.mods_added(self.server)
 
     def mods_added(self, server) -> None:
-        """New mods get their Workshop status checked right away (if
-        automatic checks are on), rather than showing as unknown."""
+        """Check new mods' Workshop status right away (if automatic checks are on)."""
         if self.auto_check_mod_status and server is not None:
             QTimer.singleShot(0, lambda srv=server: self._check_mod_status(srv))
 
     @staticmethod
     def _extract_workshop_id(raw: str) -> Optional[str]:
-        """Accepts a bare numeric Workshop ID, or a full Workshop URL
-        with one -- anything else (a mod's display name, a garbled
-        paste) is rejected outright rather than silently saved as an
-        ID that will never actually resolve to a real download."""
+        """Return a numeric Workshop ID from an ID or Workshop URL, else None."""
         raw = raw.strip()
         if raw.isdigit():
             return raw
@@ -589,25 +540,17 @@ class ModsPage(QWidget):
         self._persist()
 
     def _on_rows_moved(self, *args) -> None:
-        """Fires after a drag-to-reorder finishes (QListWidget's
-        InternalMove already rearranged the widget's own rows by the
-        time this signal fires -- this just syncs server.mods to match
-        that new visual order and persists it, same as the Up/Down
-        buttons already do for a button-driven reorder)."""
+        """After a drag-reorder, sync server.mods to the new order and save."""
         if not self.server:
             return
         id_order = [self.list_widget.item(i).data(Qt.UserRole) for i in range(self.list_widget.count())]
         by_id = {m["id"]: m for m in self.server.mods}
         reordered = [by_id[i] for i in id_order if i in by_id]
         if reordered == self.server.mods:
-            return  # nothing actually changed order -- avoid a redundant save+refresh
+            return
         self.server.mods = reordered
-        # Deferred: rowsMoved fires from inside QListView's own drop
-        # handling, which keeps using the model's indexes after this
-        # returns. _persist() -> _refresh() clears and rebuilds the
-        # whole list, so doing that synchronously here pulls the rows
-        # out from under Qt mid-drop. server.mods is already updated
-        # above, so nothing reads a stale order in the meantime.
+        # Deferred: rowsMoved fires mid-drop and Qt still uses the model's
+        # indexes; rebuilding now would pull rows out from under it.
         QTimer.singleShot(0, self._persist)
 
     def _open_workshop_browser(self) -> None:
@@ -625,11 +568,8 @@ class ModsPage(QWidget):
 
     @staticmethod
     def _dispose_dialog(dlg, worker=None) -> None:
-        """Deletes a finished dialog instead of leaving it parented to
-        this page forever (one leaked dialog per open). If `worker` --
-        a QThread the dialog owns -- is still running, waits for it to
-        finish first, since deleting the dialog would delete the
-        running thread with it."""
+        """Delete a finished dialog, first waiting for any QThread it owns,
+        since deleting the dialog would delete a running thread."""
         if not hasattr(dlg, "deleteLater"):
             return  # test doubles
         if worker is None:
@@ -687,11 +627,8 @@ class ModsPage(QWidget):
         self._refresh()
 
     def _release_after_bisect(self, dlg, server_id: str) -> None:
-        """Releases the automation lock -- but only once the bisect
-        worker has ACTUALLY finished. If closing the dialog outlasted
-        its wait for the worker's cancel-and-restore sequence, the
-        worker is still stopping/relaunching the server; unlocking now
-        would let the watchdog and scheduler act on it mid-sequence."""
+        """Release the automation lock only once the bisect worker has really
+        finished; it may still be stopping/relaunching the server."""
         worker = getattr(dlg, "_worker", None) if dlg is not None else None
         still_running = worker is not None and worker.isRunning()
 
@@ -718,10 +655,8 @@ class ModsPage(QWidget):
             )
             return
         server = self.server
-        # Locked for the dialog's whole lifetime, same as auto-bisect:
-        # otherwise the watchdog would "rescue" a test configuration
-        # that doesn't start, and a scheduled restart could fire
-        # between the person's own test restarts.
+        # Locked for the dialog's lifetime so the watchdog and scheduler don't
+        # act on test configurations.
         if self.lock_server_for_automation:
             self.lock_server_for_automation(server.id)
         dlg = None
@@ -741,10 +676,7 @@ class ModsPage(QWidget):
         if not self.server.steamcmd_dir:
             QMessageBox.warning(self, "SteamCMD not configured", "Set the SteamCMD folder for this server first (Updates page).")
             return
-        # Every mod, not just currently-enabled ones -- a disabled mod
-        # re-enabled later should already be sitting there ready to
-        # go, not silently missing because it was off the one time
-        # anyone clicked Download.
+        # Every mod, not just enabled ones, so re-enabling later just works.
         ids = [m["id"] for m in self.server.mods]
         if not ids:
             QMessageBox.information(self, "No mods", "There are no mods to download.")
@@ -763,12 +695,7 @@ class ModsPage(QWidget):
         self.download_btn.setEnabled(False)
         self.download_btn.setText("Downloading…")
         self._download_worker.finished_download.connect(lambda result, srv=server: self._on_download_finished(srv, result))
-        # Keep a reference until the QThread itself has exited -- see
-        # _retiring_download_workers in __init__.
-        self._retiring_download_workers.append(worker)
-        worker.finished.connect(
-            lambda w=worker: self._retiring_download_workers.remove(w) if w in self._retiring_download_workers else None
-        )
+        keep_until_finished(self._retiring_download_workers, worker)
         self._download_worker.start()
 
     def _on_download_finished(self, server: ServerConfig, result) -> None:
@@ -776,21 +703,12 @@ class ModsPage(QWidget):
         self._download_worker_server_id = None
         if self.release_mod_refresh_slot:
             self.release_mod_refresh_slot(server.id)
-        # Rewrite modlist.txt now that the real .pak files exist (or may
-        # have been renamed by an update). Until a mod is downloaded,
-        # write_modlist can only guess its path, and that guess is
-        # always wrong -- without this, a freshly added mod stayed
-        # pointed at a file that doesn't exist until some unrelated mod
-        # edit happened to rewrite the file. Done for whichever server
-        # this download was for, even if another one is showing now.
+        # Rewrite modlist.txt now that real .pak paths are known (the path is
+        # only a guess before download). Done for the download's own server.
         if self.on_changed:
             self.on_changed(server)
-        # Refresh for whatever's showing: this server's per-mod status
-        # may have changed, and the Download button is free again either way.
         self._refresh()
-        # Report the result even if the person has switched to another
-        # server in the meantime -- a failed download used to go
-        # completely unreported in that case.
+        # Report the result even if another server is showing now.
         which = "" if self.server is server else f" for {server.name or 'another server'}"
         if result.success:
             QMessageBox.information(self, "Mods downloaded", f"All mods{which} were downloaded/updated successfully.")
@@ -803,44 +721,20 @@ class ModsPage(QWidget):
 
 
 class BisectDialog(QDialog):
-    """Walks the person through disabling half the remaining candidate
-    mods, restarting to test, and reporting back -- narrowing down to
-    the one broken mod in log2(n) rounds instead of testing one at a
-    time.
+    """Manual bisect: disable half the remaining candidates, the person
+    restarts and reports, repeat (log2(n) rounds).
 
-    Unlike auto_bisect_runner.py's automated version, this dialog
-    never restarts the server itself -- the PERSON does, by hand,
-    between rounds -- so it can't reset the world save before every
-    individual test the way the automated one does. What it CAN do,
-    and does: snapshot the world save once when the dialog opens, and
-    restore that snapshot once the dialog is dismissed (Restore, or
-    closing before reaching a conclusion), so the real world ends up
-    exactly as it was before this bisect ever started rather than
-    reflecting whatever state the person's own manual restarts left it
-    in. A concluded bisect (a culprit found, or ruled out) is treated
-    as a real result and left as-is, same as the mod list already was
-    -- the world-save reset only ever discards an ABANDONED run's
-    test-related changes, never a completed one's."""
+    The person restarts by hand, so the world can't be reset per round.
+    Instead it's snapshotted on open and restored if the run is abandoned;
+    a concluded run's result is kept as-is."""
 
     def __init__(self, server: ServerConfig, on_changed=None, parent=None, restart_server=None):
         super().__init__(parent)
         self.server = server
-        # callable(ServerConfig) -> None, MainWindow's normal restart.
-        # This dialog is modal, so the Dashboard's own Restart button
-        # can't be reached while it's open -- the person needs a way
-        # to do the restart each round asks for from right here.
+        # Dialog is modal, so it offers its own restart button.
         self.restart_server = restart_server
-        # Taken as a constructor argument (not set on the instance after
-        # the fact) specifically so it's in place BEFORE
-        # _apply_current_test() runs at the end of __init__ below.
-        # Previously it was assigned by the caller right after
-        # construction (dlg = BisectDialog(...); dlg.on_changed = ...),
-        # which is too late: __init__ had already run its first
-        # _apply_current_test() against on_changed=None, so round 1's
-        # disables were computed and shown in the UI but never actually
-        # written to modlist.txt -- the whole bisect was silently
-        # testing against the wrong (previous) mod list until the
-        # second round.
+        # Must be set before __init__ calls _apply_current_test(), or round 1
+        # would never be written to modlist.txt.
         self.on_changed = on_changed
         self.setWindowTitle("Bisect: Find the Broken Mod")
         self.resize(480, 340)
@@ -848,10 +742,7 @@ class BisectDialog(QDialog):
         enabled_ids = [m["id"] for m in server.mods if m.get("enabled", True)]
         self.state = mod_manager.start_bisect(enabled_ids)
         self._original = {m["id"]: m.get("enabled", True) for m in server.mods}
-        # Only meaningful if the server happens to be stopped right
-        # when this dialog opens -- see the class docstring for why
-        # this can't be taken at the "ideal" moment (just before each
-        # restart) the way the automated bisect's own snapshot is.
+        # Only taken if the server is stopped when the dialog opens.
         self._saved_snapshot_dir = None
         snapshot_problem = ""
         server_running = bool(server.install_dir) and process_manager.is_running(server.install_dir)
@@ -908,21 +799,14 @@ class BisectDialog(QDialog):
         self.restore_btn.clicked.connect(self._restore_and_close)
         layout.addWidget(self.restore_btn)
 
-        self._keep_snapshot = False  # True if a world-save restore failed -- see _restore_world_if_wanted
-        self._resolved = False  # set True once the person explicitly restores or the bisect finishes
+        self._keep_snapshot = False  # True if a world-save restore failed
+        self._resolved = False  # restored or finished
         self._apply_current_test()
 
     def _handle_dismiss(self) -> None:
-        """Shared by every way this dialog can close without the
-        Restore button: the window's X (closeEvent) AND Escape
-        (reject()). Escape used to skip this entirely -- QDialog's
-        default reject() just hides the dialog -- leaving half the
-        mods disabled and the world-save snapshot orphaned in %TEMP%.
-        If the bisect never reached a conclusion, treat it the same
-        as the explicit restore button; if it DID conclude (culprit
-        found, or ruled out), that's a real result, so leave it as-is.
-        Safe to call more than once (Qt's closeEvent itself calls
-        reject(), so the X button reaches this twice)."""
+        """Handles every close except Restore (X and Escape). An unfinished
+        run is restored; a concluded one is kept. Safe to call twice (Qt's
+        closeEvent also calls reject())."""
         if not self._resolved and not self.state.done:
             self._restore_and_close(already_closing=True)
         elif self._saved_snapshot_dir and not self._keep_snapshot:
@@ -969,10 +853,7 @@ class BisectDialog(QDialog):
     def _report(self, still_broken: bool) -> None:
         self.state = mod_manager.report_result(self.state, still_broken)
         if self.state.done:
-            # Settle the mod list on the actual RESULT, not whatever the
-            # last test round left it at: every cleared mod back on, only
-            # the culprit (if any) off. Without this, a "ruled out" finish
-            # left the final, now-cleared candidate disabled for good.
+            # Settle on the result: cleared mods back on, only the culprit off.
             self.server.mods = mod_manager.apply_bisect_result(self.server.mods, self.state)
             if self.on_changed:
                 self.on_changed(self.server)
@@ -989,10 +870,7 @@ class BisectDialog(QDialog):
             self.still_broken_btn.setEnabled(False)
             self.fixed_btn.setEnabled(False)
             self.restart_btn.setText("Restart Server Now (apply result)")
-            # Concluded -- a real result, not an abandoned run. Leave
-            # the world save as it currently is (whatever the person's
-            # own manual restarts left it at) rather than resetting it
-            # out from under a result they just reached.
+            # Concluded: keep the world as is rather than resetting it.
             mod_manager.cleanup_world_save_snapshot(self._saved_snapshot_dir)
             self._saved_snapshot_dir = None
         else:
@@ -1000,7 +878,7 @@ class BisectDialog(QDialog):
 
     def _restore_and_close(self, already_closing: bool = False) -> None:
         if self._resolved:
-            return  # already handled (e.g. X then Qt's own reject() right after)
+            return  # already handled (e.g. X then reject())
         self._resolved = True
         for m in self.server.mods:
             if m["id"] in self._original:
@@ -1013,14 +891,9 @@ class BisectDialog(QDialog):
             self.accept()
 
     def _restore_world_if_wanted(self) -> None:
-        """Puts the world save back to the snapshot, but only after
-        asking -- this also undoes anything real players did since the
-        bisect started, since manual bisect doesn't keep people off --
-        and only with the server actually stopped. Between rounds the
-        PERSON restarts the server by hand, so it's usually running by
-        the time they close this; on Windows the live .db can't even be
-        removed then, and the restore used to fail with nothing but a
-        log line after the dialog had already promised a reset."""
+        """Restore the world snapshot, after asking (it also undoes real
+        players' progress) and only with the server stopped (Windows can't
+        remove a live .db)."""
         reply = QMessageBox.question(
             self, "Reset World Save?",
             "Put the world save back to exactly how it was when this bisect started?\n\n"

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 import rcon
 from models import ServerConfig
+from ui.workers import keep_until_finished
 
 
 class _RconWorker(QThread):
@@ -34,9 +35,7 @@ class ConsolePage(QWidget):
         super().__init__(parent)
         self.server: Optional[ServerConfig] = None
         self._worker: Optional[_RconWorker] = None
-        # See AccessPage._retiring_workers' comment -- same reasoning:
-        # keep a reference alive until QThread.finished, not just until
-        # our own result signal handler runs.
+        # Keep a reference until QThread.finished (see AccessPage._retiring_workers).
         self._retiring_workers: list = []
 
         root = QVBoxLayout(self)
@@ -77,13 +76,7 @@ class ConsolePage(QWidget):
             self.status_label.setText("RCON is disabled for this server (enable it on the RCON & Alerts settings page).")
             self.command_edit.setEnabled(False)
         else:
-            # This is just the configured target, not a verified live
-            # connection -- rcon.send_command() only actually connects
-            # once a command is sent (see _RconWorker above), so
-            # claiming "Connected" here would be true only by
-            # coincidence. If the server's down or the port/password is
-            # wrong, this label used to say "Connected" right up until
-            # the first command failed.
+            # Only the configured target; RCON connects when a command is sent.
             self.status_label.setText(f"RCON target: 127.0.0.1:{server.rcon_port} (connects when you send a command)")
             self.command_edit.setEnabled(True)
 
@@ -104,7 +97,4 @@ class ConsolePage(QWidget):
         self._worker = None
 
     def _retire_worker(self, worker: Optional[_RconWorker]) -> None:
-        if worker is None:
-            return
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)

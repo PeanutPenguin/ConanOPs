@@ -20,14 +20,8 @@ def _fmt_duration(seconds: float) -> str:
 
 
 class PlayersPage(QWidget):
-    """Session history (join/leave tracking, from the server's own log --
-    see session_tracker.py) PLUS live moderation actions for whoever's
-    currently online. Kick only needs a display name, which the log
-    already gives us, so it's a direct one-click action. Ban needs a
-    SteamID64 -- Conan's own log never includes one, only the display
-    name -- so Ban here prompts for it rather than pretending ConanOps
-    has it on hand; the Access settings tab is still where the actual
-    ban LIST is reviewed and managed."""
+    """Player session history plus Kick/Ban actions. Ban asks for a SteamID64
+    because Conan's log only gives display names."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,11 +64,7 @@ class PlayersPage(QWidget):
         self._refresh_table()
 
     def set_online_players(self, names: set) -> None:
-        """Called by main_window whenever the log monitor reports a
-        join/leave, same as dashboard_page.set_online_players() -- kept
-        as a separate call (not read straight from the tracker) since
-        "currently online" isn't something SessionTracker itself
-        tracks, only join/leave history."""
+        """Set by main_window on join/leave; SessionTracker doesn't track who's online now."""
         self._online_names = set(names)
         self._refresh_table()
 
@@ -127,12 +117,6 @@ class PlayersPage(QWidget):
     def _handle_ban(self, name: str) -> None:
         if not self.server or not self.on_ban:
             return
-        # Conan's own server log never includes a player's SteamID64,
-        # only their display name -- so unlike Kick, this can't just
-        # act on `name` directly. Pre-filling the prompt with the name
-        # is still a real convenience over the Access tab's blank
-        # "add a ban" field: no need to separately remember and retype
-        # who this ban is actually for.
         steam_id, ok = QInputDialog.getText(
             self, "Ban Player",
             f"Ban \"{name}\" -- enter their SteamID64 (Conan's own server log doesn't include this, "

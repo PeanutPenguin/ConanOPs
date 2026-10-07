@@ -1,21 +1,8 @@
-"""
-The Microsoft Visual C++ 2015-2022 (x64) runtime the Conan Exiles
-dedicated server needs.
+"""Detects and installs the MSVC 2015-2022 x64 runtime the server needs.
 
-Since the Unreal Engine 5 "Enhanced" update, the server is strict about
-this runtime. Installing through the Steam client runs Microsoft's
-installer automatically; SteamCMD -- which ConanOps uses -- doesn't run
-those extra installers, so a fresh PC can end up with a server that
-won't start ("Microsoft Visual C++ ... is required" / missing
-VCRUNTIME140_1.dll or MSVCP140.dll).
-
-  status()   -- installed / outdated / missing, from the registry entry
-                Microsoft's installer writes, falling back to whether
-                the DLLs themselves exist.
-  install()  -- downloads Microsoft's official installer, and in ONE
-                elevated script copies it to an admin-only folder,
-                checks it is validly signed by Microsoft, and runs it
-                silently. One Windows permission prompt.
+Since the UE5 update the server won't start without it, and SteamCMD (unlike the
+Steam client) doesn't run Microsoft's installer. install() verifies the Microsoft
+signature from an admin-only folder before running it (one UAC prompt).
 """
 from __future__ import annotations
 
@@ -38,10 +25,8 @@ DOWNLOAD_URLS = (
     "https://aka.ms/vs/17/release/vc_redist.x64.exe",
 )
 
-# Oldest runtime treated as current. UE5 builds use the VS 2022 toolset;
-# older 14.x runtimes are where "missing the right minor version"
-# failures come from. Installing a newer runtime over an older one is
-# always safe -- every 2015-2022 release is backward compatible.
+# Oldest runtime treated as current (UE5 uses the VS 2022 toolset). Newer
+# 2015-2022 runtimes are backward compatible, so upgrading is always safe.
 MIN_VERSION: Tuple[int, int] = (14, 40)
 
 _REG_PATHS = (
@@ -105,9 +90,7 @@ def status() -> RuntimeStatus:
         if tuple(version[:2]) < MIN_VERSION:
             return RuntimeStatus(STATUS_OUTDATED, version)
         return RuntimeStatus(STATUS_OK, version)
-    # No registry entry. The DLLs can still be present (installed by
-    # another program's own copy of the redistributable); trust them --
-    # a false "missing" would block launches for nothing.
+    # No registry entry, but another program may have installed the DLLs; trust them.
     if _dlls_present():
         return RuntimeStatus(STATUS_OK, None)
     return RuntimeStatus(STATUS_MISSING, None)
@@ -117,7 +100,6 @@ def needs_install() -> bool:
     return status().state in (STATUS_MISSING, STATUS_OUTDATED)
 
 
-# Results of install()
 INSTALL_OK = "ok"
 INSTALL_OK_RESTART = "ok_restart"     # installed; Windows wants a restart for it to fully apply
 INSTALL_DECLINED = "declined"
@@ -142,12 +124,9 @@ def _download(progress: Callable[[str], None]) -> Optional[str]:
 
 
 def _install_script(downloaded: str) -> str:
-    """Runs elevated. The downloaded file sits in a folder any program
-    the person runs could overwrite, so it's copied into a folder only
-    administrators can write to, its Microsoft signature is checked
-    THERE, and only that checked copy runs. Exit codes: 0 / 3010 (needs
-    restart) / 1638 (a newer version is already installed) are success;
-    95 = signature check failed."""
+    """Elevated script. Copies the installer to an admin-only folder before checking
+    its signature, so nothing unprivileged can swap it after the check.
+    Installer codes 3010 (restart) and 1638 (newer present) map to 0; 95 = bad signature."""
     q = powershell.ps_str
     return (
         f"$src = {q(downloaded)}\n"
@@ -170,8 +149,7 @@ def _install_script(downloaded: str) -> str:
 
 
 def install(progress: Optional[Callable[[str], None]] = None) -> str:
-    """Downloads and installs the runtime (one permission prompt).
-    Blocking -- call it from a worker thread."""
+    """Downloads and installs the runtime. Blocking; call from a worker thread."""
     progress = progress or (lambda _m: None)
     if sys.platform != "win32":
         return INSTALL_FAILED
@@ -195,18 +173,15 @@ def install(progress: Optional[Callable[[str], None]] = None) -> str:
         progress(f"Visual C++ runtime installed ({after.version_text}).")
         return INSTALL_OK
     if outcome == powershell.RUN_OK:
-        # Installer reported success but the new version isn't visible
-        # yet -- typically pending a restart.
+        # Success, but the new version isn't visible yet (usually pending a restart).
         progress("Visual C++ runtime installed; Windows may need a restart before it's fully in place.")
         return INSTALL_OK_RESTART
     progress("Installing the Visual C++ runtime failed -- see conanops.log.")
     return INSTALL_FAILED
 
 
-# ConanOps installed the runtime on a PC that didn't have it -> recorded
-# here, so a full "Delete Everything" can offer to take it back off.
-# (Upgrading an existing, older runtime isn't recorded: something else
-# put the runtime there first.)
+# Marker for "ConanOps installed the runtime where none existed" (not upgrades),
+# so Delete Everything can offer to remove it.
 def _marker_path() -> str:
     return os.path.join(os.path.expanduser("~"), "ConanOps", "vcredist-installed-by-conanops")
 
@@ -225,8 +200,7 @@ def _record_installed_by_conanops() -> None:
 
 
 def uninstall_script() -> str:
-    """PowerShell (elevated) that silently uninstalls the Visual C++
-    2015-2022 / v14 x64 runtime via its own registered uninstaller."""
+    """Elevated PowerShell that silently uninstalls the x64 v14 runtime."""
     return (
         "try {\n"
         "$roots = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall', "

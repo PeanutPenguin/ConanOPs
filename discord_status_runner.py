@@ -1,6 +1,4 @@
-"""Background QThread worker for webhooks.update_discord_status() -- a
-real HTTP round trip, so this can't run directly on the UI thread
-(same reasoning as every other *_runner.py module in this app)."""
+"""QThread worker for webhooks.update_discord_status(), kept off the UI thread."""
 from __future__ import annotations
 
 from typing import Optional

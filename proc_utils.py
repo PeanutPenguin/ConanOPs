@@ -1,5 +1,5 @@
-"""Shared helper for shelling out to external console-subsystem tools
-(steamcmd.exe, netsh.exe) from ConanOps' own windowed GUI process."""
+"""Helpers for launching external programs (steamcmd, netsh, the game
+server) from ConanOps' windowed process, plus elevation helpers."""
 from __future__ import annotations
 
 import os
@@ -9,35 +9,18 @@ from typing import Optional
 
 
 def hidden_window_kwargs() -> dict:
-    """Extra kwargs for subprocess.run()/Popen() that stop Windows from
-    flashing a visible console window for a console-subsystem child
-    process launched from a windowed (GUI) parent process.
-
-    Piping stdout/stderr (capture_output=True, or explicit PIPE args)
-    does NOT by itself suppress this window on Windows -- the console
-    still gets created and shown for an instant before the child even
-    has a chance to write anything to those pipes. CREATE_NO_WINDOW is
-    the actual fix. It's a Windows-only subprocess flag (referencing
-    subprocess.CREATE_NO_WINDOW on another platform raises
-    AttributeError), so this is a no-op everywhere else."""
+    """subprocess kwargs that stop a console child from flashing a window.
+    Piping output alone doesn't prevent it; CREATE_NO_WINDOW does.
+    No-op off Windows."""
     if sys.platform == "win32":
         return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {}
 
 
 def hidden_console_kwargs() -> dict:
-    """Like hidden_window_kwargs(), but gives the child a REAL console
-    that's simply never shown, instead of no console at all.
-
-    CREATE_NO_WINDOW runs a console program with no console attached
-    whatsoever. That's fine for netsh, but SteamCMD behaved differently
-    under it than when run from a normal console: the same
-    `+app_update 443030` command that failed with "Missing
-    configuration" when launched by ConanOps succeeded from a .bat.
-    CREATE_NEW_CONSOLE + SW_HIDE hands SteamCMD a genuine console (so
-    it runs exactly as it would from Command Prompt) while still never
-    showing a window. stdout/stderr are still piped by the caller, so
-    ConanOps keeps reading output live. No-op off Windows."""
+    """Give the child a real but hidden console (CREATE_NEW_CONSOLE +
+    SW_HIDE). SteamCMD's app_update failed with "Missing configuration"
+    under CREATE_NO_WINDOW but works this way. No-op off Windows."""
     if sys.platform != "win32":
         return {}
     startupinfo = subprocess.STARTUPINFO()
@@ -47,14 +30,8 @@ def hidden_console_kwargs() -> dict:
 
 
 def open_in_explorer(path: str) -> None:
-    """Opens `path` in Windows Explorer. Raises FileNotFoundError if
-    path doesn't exist and OSError for anything else that goes wrong --
-    deliberately doesn't swallow these itself, since what to tell the
-    person differs by call site (e.g. "server not installed yet" reads
-    better than a generic error on some pages). No-op off Windows,
-    since os.startfile() only exists there at all; every other part
-    of this app is Windows-only too (see this module's own docstring),
-    so that's expected, not silently degraded functionality."""
+    """Open `path` in Explorer. Raises FileNotFoundError/OSError so callers
+    can word the error. No-op off Windows."""
     if not os.path.isdir(path):
         raise FileNotFoundError(path)
     if sys.platform == "win32":
@@ -62,22 +39,9 @@ def open_in_explorer(path: str) -> None:
 
 
 def hidden_gui_window_kwargs() -> dict:
-    """Best-effort suppression of a child GUI process's own window --
-    for a process that isn't a console app at all, unlike the two
-    helpers above. The Conan Exiles dedicated server
-    (ConanSandboxServer-Win64-Shipping.exe) opens a real render window
-    on Windows by default; every Linux/Wine setup guide for it needs a
-    virtual framebuffer (xvfb) specifically because the "dedicated
-    server" build still tries to create one.
-
-    This sets STARTF_USESHOWWINDOW + SW_HIDE, which Windows passes to
-    the child as its requested initial window state. Whether that
-    actually keeps the window hidden depends on the child respecting
-    it: a well-behaved app that calls ShowWindow(hwnd, nCmdShow) with
-    the value Windows gave it will start hidden, but some apps ignore
-    that and show their window regardless. It's the safe, standard
-    thing to try -- there's no downside if the app ignores it, only
-    upside if it doesn't. No-op off Windows."""
+    """Ask a GUI child (the Conan server opens a render window) to start
+    hidden via SW_HIDE. Only works if the child honors nCmdShow.
+    No-op off Windows."""
     if sys.platform != "win32":
         return {}
     startupinfo = subprocess.STARTUPINFO()
@@ -87,16 +51,8 @@ def hidden_gui_window_kwargs() -> dict:
 
 
 def is_admin() -> bool:
-    """Whether this process is currently running elevated
-    (Administrator). Windows Firewall rule changes (netsh advfirewall
-    firewall add/delete) require this -- checking it proactively is
-    what lets network_setup.py offer a real UAC prompt up front
-    instead of quietly failing every netsh call and only explaining
-    why afterward. Always False off Windows, where ctypes.windll
-    doesn't exist at all; also False (rather than raising) if the
-    Win32 call itself fails for any reason, since "assume not
-    elevated" is the safe default either way -- worst case, this
-    triggers an elevation prompt that wasn't strictly needed."""
+    """Whether this process is elevated. False off Windows or if the check
+    fails ("not elevated" is the safe default)."""
     if sys.platform != "win32":
         return False
     try:
@@ -107,51 +63,30 @@ def is_admin() -> bool:
 
 
 def shell_execute_runas(exe: str, params: str, cwd: Optional[str] = None) -> bool:
-    """Launches `exe params` elevated -- triggers a real Windows UAC
-    consent prompt -- via ShellExecuteW's "runas" verb. Returns
-    whether the launch itself succeeded: per the Win32 docs,
-    ShellExecuteW returns a value > 32 on success and a small error
-    code otherwise (this covers both a declined UAC prompt and a
-    launch failure -- Windows doesn't distinguish the two at this
-    API). That return value is explicitly NOT a process handle, so it
-    can't be waited on here; a caller that needs to know when the
-    elevated command actually finishes has to have it signal
-    completion some other way (e.g. writing a marker file once done --
-    see network_setup.py's elevated firewall-rule helper). No-op
-    (returns False) off Windows."""
+    """Launch `exe params` elevated via ShellExecuteW "runas" (UAC prompt).
+    Returns whether the launch succeeded (declined prompts also return
+    False). Gives no process handle, so it can't be waited on."""
     if sys.platform != "win32":
         return False
     try:
         import ctypes
-        # SW_HIDE: no visible window for the elevated process, matching
-        # every other subprocess this app launches (see the *_kwargs
-        # helpers above) -- consistency, not a security measure (the UAC
-        # consent prompt itself is what Windows shows regardless).
+        # SW_HIDE for consistency; the UAC prompt still shows.
         result = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, cwd, 0)
         return result > 32
     except Exception:  # noqa: BLE001 - this module's whole contract is "best-effort, never raises"
         return False
 
 
-# Sentinel exit code run_elevated_and_wait() returns when the UAC prompt
-# was declined -- distinct from any real exit code a script would use.
+# Returned when the UAC prompt is declined; not a real exit code.
 ELEVATION_DECLINED = -1223
 ELEVATION_FAILED = -1
 
 
 def run_elevated_and_wait(exe: str, params: str, timeout: float = 60.0) -> int:
-    """Runs `exe params` elevated (one UAC consent prompt) via
-    ShellExecuteExW with SEE_MASK_NOCLOSEPROCESS, which -- unlike plain
-    ShellExecuteW -- hands back a real process handle. That lets this
-    wait for the elevated process to actually finish and read its exit
-    code, instead of polling for a marker file in a user-writable temp
-    folder (which also meant the script itself sat in a folder any
-    unelevated process could rewrite before the elevated run picked it
-    up).
-
-    Returns the process exit code, ELEVATION_DECLINED if the person
-    declined the UAC prompt, or ELEVATION_FAILED for any other launch
-    failure or a timeout. Never raises. Off Windows: ELEVATION_FAILED."""
+    """Run `exe params` elevated and wait, via ShellExecuteExW (which gives
+    a process handle, so no marker file in a user-writable folder).
+    Returns the exit code, ELEVATION_DECLINED, or ELEVATION_FAILED (also on
+    timeout or off Windows). Never raises."""
     if sys.platform != "win32":
         return ELEVATION_FAILED
     try:
@@ -221,18 +156,10 @@ def run_elevated_and_wait(exe: str, params: str, timeout: float = 60.0) -> int:
 
 
 def child_env() -> dict:
-    """Environment for every program ConanOps starts (game servers,
-    SteamCMD, its own relaunch after an update, helper scripts).
-
-    A PyInstaller one-file build unpacks itself into a temp folder
-    (_MEIxxxxx) and deletes it on exit. Without this, a ConanOps that
-    relaunches itself (after an update) is told by the inherited
-    environment to REUSE the old instance's temp folder -- so the new
-    window would run old code, and the old process can't delete the
-    folder on exit ("Failed to remove temporary directory").
-    PYINSTALLER_RESET_ENVIRONMENT=1 makes the new copy unpack its own.
-    PyInstaller's private variables, and any PATH entry pointing into
-    the temp folder, are dropped so nothing else inherits them either."""
+    """Environment for every program ConanOps starts. Strips PyInstaller's
+    private variables and _MEI temp PATH entries, and sets
+    PYINSTALLER_RESET_ENVIRONMENT=1 so a relaunched ConanOps unpacks its own
+    temp folder instead of reusing (and blocking deletion of) the old one."""
     env = dict(os.environ)
     meipass = getattr(sys, "_MEIPASS", None)
     for key in list(env):

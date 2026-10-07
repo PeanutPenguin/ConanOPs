@@ -27,28 +27,19 @@ class SettingsNetworkPage(SettingsPageBase):
         self._has_conflict = False
         self._bind_error = False
         self._name_error = False
-        # Set by MainWindow: called with no args to re-create this
-        # server's firewall rules and router forwards on demand.
+        # Set by MainWindow: re-creates firewall rules and router forwards.
         self.on_repair_network = None
         self._build_form()
 
     def can_apply(self) -> bool:
-        # A conflicting port configuration used to be purely a visual
-        # warning -- Apply still went through and could hand two
-        # servers the same port (or a port ConanOps itself had just
-        # said was taken), which then fails or misbehaves at launch
-        # time instead of at the point someone could still fix it.
+        # Block Apply on conflicts so they're fixed now, not at launch.
         return not (self._has_conflict or self._bind_error or self._name_error)
 
     def load_committed(self, values: dict) -> None:
         super().load_committed(values)
         self._check_bind_ip()
         self._check_name()
-        # Re-check on load, not just on the next edit: switching to a
-        # server whose saved ports already conflict with another
-        # server's (e.g. two configs hand-edited to the same port)
-        # should show that immediately, not only once the person
-        # touches a port field.
+        # Re-check on load so saved conflicts show immediately.
         self._check_port_conflict()
 
     def _build_form(self) -> None:
@@ -208,10 +199,8 @@ class SettingsNetworkPage(SettingsPageBase):
         query = self.query_port_spin.value()
         reserved = self.get_reserved_ports()
 
-        # If this server is currently running, its own already-assigned
-        # ports are legitimately bound by itself, so a live bind test on
-        # them would always fail. Skip the live test only for ports this
-        # server already had committed (game, game+1, query).
+        # A running server binds its own committed ports, so skip the live
+        # bind test for those (game, game+1, query).
         committed_game = self._committed.get("game_port")
         committed_query = self._committed.get("query_port")
         own_ports = set()
@@ -273,7 +262,5 @@ class SettingsNetworkPage(SettingsPageBase):
         self.query_port_spin.setValue(query)
 
     def on_apply(self, values: dict) -> None:
-        # The owning page (main_window) is responsible for writing `values`
-        # into the ServerConfig and the real .ini files; this callback is
-        # wired up there via `page.on_apply = ...`.
+        # Set by main_window via `page.on_apply = ...`.
         pass

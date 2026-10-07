@@ -1,11 +1,7 @@
 """
-Fetches the most recent patch notes for the Conan Exiles app from Steam's
-public news API (no key required) and applies a keyword/version heuristic
-to flag "major" (engine-level) updates distinctly from routine patches.
-
-If the API call fails or returns nothing, callers get back a result with
-no changelog text -- ConanOps should show "Build X available" rather than
-inventing a summary.
+Fetches the latest Conan Exiles patch notes from Steam's public news API
+and flags "major" (engine-level) updates with a keyword/version heuristic.
+On failure the result has no text; callers should not invent a summary.
 """
 from __future__ import annotations
 
@@ -57,15 +53,10 @@ def fetch_latest_news(timeout: float = 5.0) -> ChangelogInfo:
 
 
 def is_major_update(old_version: str, new_version: str, changelog_text: str) -> bool:
-    """Heuristic only -- pattern matching on version numbers and keywords
-    in the fetched patch notes, not real comprehension of the update.
+    """Heuristic check on keywords and "major.minor" version strings.
 
-    Expects a dotted "major.minor" style version string, e.g. from the
-    game's own in-game version display -- NOT a bare Steam build id
-    (build ids have no dots, so comparing two of them here would always
-    register as a major-version change). Callers that only have build
-    ids on hand should pass "" for both and rely on the keyword check
-    alone."""
+    Do not pass bare Steam build ids (no dots, so they'd always look like a
+    major change); pass "" for both versions to use the keyword check alone."""
     text = (changelog_text or "").lower()
     if any(kw in text for kw in MAJOR_KEYWORDS):
         return True

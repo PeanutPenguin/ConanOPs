@@ -21,11 +21,7 @@ class BackupsPage(QWidget):
         self.on_restore_confirmed = None  # set by main_window: callable(server, backup_entry)
 
         root = QVBoxLayout(self)
-        # `embedded=True` is for use as a section INSIDE another page
-        # (the Settings > Backups page, which already has its own big
-        # title and its own outer margins from SettingsPageBase's
-        # scroll container) -- skip this widget's own title and outer
-        # margins so it doesn't look like two stacked pages.
+        # embedded: shown inside another page, so skip our own title and margins.
         root.setContentsMargins(0, 0, 0, 0) if embedded else root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(16)
 
@@ -50,16 +46,13 @@ class BackupsPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         table_cells.fit_button_column(self.table, 3)
-        for col in (1, 2):  # "before update" no longer wraps onto two lines
+        for col in (1, 2):  # keep "before update" on one line
             self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self.table.setWordWrap(False)
         self.table.setMinimumHeight(220)
         root.addWidget(self.table, 1)
 
-        # Backups also appear from elsewhere -- the schedule, before
-        # updates, safety copies before a restore, the web version, old
-        # ones being pruned -- so while this list is on screen it
-        # re-reads the folder when its contents change.
+        # Backups are added/pruned from elsewhere too, so re-read the folder when it changes.
         self._signature = None
         self._watch = QTimer(self)
         self._watch.setInterval(4000)

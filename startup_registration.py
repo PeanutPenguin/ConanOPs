@@ -1,18 +1,6 @@
-"""
-"Start with Windows": registers ConanOps to launch automatically when
-the person logs into Windows, via a HKEY_CURRENT_USER Run-key entry --
-NOT the Startup folder, and NOT a Scheduled Task, both of which do the
-same thing but need either a file to manage or elevated rights to set
-up. A per-user Run key needs neither: no admin rights, and it's a
-single registry value, so there's nothing else to clean up if it's
-ever unregistered.
+"""Start with Windows: registers ConanOps via an HKCU Run-key value (no admin rights, nothing else to clean up).
 
-This only affects whether Windows launches ConanOps automatically at
-LOGIN -- it does NOT make Windows skip the login screen or launch
-ConanOps before anyone's signed in. A PC that reboots and sits at the
-login screen with nobody there to sign in won't start ConanOps at all
-via this mechanism; that's a separate, bigger problem (auto sign-in,
-or running as a background Windows service) this module doesn't solve.
+Only launches at sign-in; it does nothing while the PC sits at the sign-in screen.
 """
 from __future__ import annotations
 
@@ -28,13 +16,7 @@ _VALUE_NAME = "ConanOps"
 
 
 def _command_line() -> str:
-    """What the registry value actually launches. For a packaged
-    build, sys.executable IS ConanOps.exe -- no arguments needed, same
-    reasoning as self_update.py's relaunch logic. For a source
-    install, this has to invoke the same interpreter against main.py,
-    quoted the way Windows' registry Run-key launcher expects (each
-    path individually quoted, not the whole line -- an unquoted space
-    in either path would otherwise split it into two arguments)."""
+    """The Run-key command; each path is quoted separately so spaces don't split it."""
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
     import os
@@ -43,13 +25,7 @@ def _command_line() -> str:
 
 
 def is_registered() -> bool:
-    """Whether the Run-key entry currently exists AND points at this
-    same install -- not just whether SOME "ConanOps" entry exists.
-    Checking the target, not just presence, matters if ConanOps was
-    ever reinstalled to a different folder: a stale entry pointing at
-    a now-deleted old location wouldn't actually start anything, so it
-    shouldn't read as "registered" here (see register()'s docstring
-    for how that stale entry gets cleaned up rather than left behind)."""
+    """True only if the entry exists and points at this install (not a stale old folder)."""
     if sys.platform != "win32":
         return False
     try:
@@ -62,15 +38,8 @@ def is_registered() -> bool:
 
 
 def register() -> None:
-    """Adds (or updates, if it already exists but pointed somewhere
-    else -- e.g. ConanOps was moved or reinstalled to a new folder)
-    the Run-key entry. No admin rights needed: HKEY_CURRENT_USER is
-    writable by the signed-in user account itself. Raises OSError if
-    the registry write itself fails for some other reason (permissions
-    lockdown via Group Policy, say) -- the caller (App Settings' Start-
-    with-Windows checkbox) is responsible for showing that to the
-    person rather than silently leaving the checkbox in a state that
-    doesn't match reality."""
+    """Adds or updates the Run-key entry. Raises OSError if the write fails
+    (e.g. Group Policy); the caller must show that to the person."""
     if sys.platform != "win32":
         return
     import winreg
@@ -80,10 +49,7 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Removes the Run-key entry. Safe to call even if it was never
-    registered, or was already removed -- both are treated as success,
-    not an error, since the end state (\"not registered\") is exactly
-    what the caller wants either way."""
+    """Removes the Run-key entry; fine if it doesn't exist."""
     if sys.platform != "win32":
         return
     import winreg
@@ -92,4 +58,4 @@ def unregister() -> None:
             winreg.DeleteValue(key, _VALUE_NAME)
         _log.info("Unregistered from Windows startup.")
     except FileNotFoundError:
-        pass  # already not registered -- nothing to do
+        pass

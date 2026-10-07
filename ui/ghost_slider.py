@@ -1,10 +1,5 @@
-"""
-GhostSlider: a QSlider that also draws a small ring at the last-applied
-("committed") value. While the live value matches the committed one, the
-ghost sits exactly under the handle and is invisible; drag away from it
-and the ghost stays put while a highlighted strip shows the span between
-old and new value.
-"""
+"""QSlider that marks the last-applied ("committed") value with a ghost ring and
+highlights the span to the live value while they differ."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRect
@@ -45,19 +40,12 @@ class GhostSlider(QSlider):
         y_center = self.height() // 2
         ghost_x = self._value_to_x(self._committed_value)
         live_x = self._value_to_x(self.value())
-        # Must match the handle's rendered size in ui/theme.py's QSS
-        # (`QSlider::handle:horizontal { width: 14px; height: 14px; }`)
-        # -- used to keep our custom overlay from drawing into the
-        # handle's circle rather than stopping cleanly at its edge.
+        # Must match the 14px handle size in ui/theme.py's QSS.
         handle_radius = 7
 
         if ghost_x != live_x:
             lo, hi = sorted((ghost_x, live_x))
-            # Inset whichever edge sits at the live handle so the flat
-            # rectangle stops at the edge of its circle instead of
-            # cutting across the middle of it -- the ghost-side edge
-            # doesn't need this since the ghost ring below is drawn on
-            # top of it and caps that end on its own.
+            # Stop the strip at the live handle's edge; the ghost ring caps the other end.
             if live_x == hi:
                 hi = max(lo, hi - handle_radius)
             else:
@@ -65,14 +53,7 @@ class GhostSlider(QSlider):
             if hi > lo:
                 painter.fillRect(QRect(lo, y_center - 3, hi - lo, 6), SPAN_COLOR)
 
-            # Ghost ring -- only drawn when there's an actual pending
-            # change to show. When the live value matches the committed
-            # one, this is skipped entirely so the real handle (already
-            # painted by super().paintEvent() above) shows through
-            # untouched, rather than being covered by an opaque "ghost"
-            # that isn't actually a ghost -- it was previously drawn
-            # every time, including when it exactly overlapped the real
-            # handle, replacing its ivory circle with a dark one.
+            # Only drawn when values differ, so it never covers the real handle.
             painter.setPen(QPen(GHOST_COLOR, 2))
             painter.setBrush(BG_COLOR)
             painter.drawEllipse(ghost_x - handle_radius, y_center - handle_radius, handle_radius * 2, handle_radius * 2)

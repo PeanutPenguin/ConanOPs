@@ -1,23 +1,8 @@
 """
-Encrypts sensitive ServerConfig fields (RCON password, server join
-password, webhook URLs -- Discord/ntfy webhook URLs are bearer tokens,
-not just addresses) before they're written to config.json, and
-decrypts them on load.
-
-Uses Windows DPAPI (CryptProtectData / CryptUnprotectData) via ctypes
-directly -- no extra dependency (no pywin32) -- since encryption tied
-to the current Windows user account is what actually stops "read
-config.json, get everyone's RCON password", without ConanOps having
-to invent and manage its own key file (which would just move the
-secret from one plaintext file to another one right next to it).
-
-DPAPI isn't available off Windows. Rather than silently falling back
-to plaintext -- which would defeat the whole point without anyone
-noticing -- values are still obfuscated (base64, clearly NOT
-encryption) with an honest prefix so this is visible in the stored
-file, and a warning is logged once per run. This matters mainly for
-running/testing this codebase on non-Windows machines; the packaged
-Windows build (see README) always has real DPAPI available.
+Encrypts sensitive ServerConfig fields (passwords, webhook URLs, which are
+bearer tokens) in config.json using Windows DPAPI via ctypes, tied to the
+current Windows user so no key file is needed. Off Windows, values are only
+base64-obfuscated under an explicit "obfuscated:" prefix, with a warning.
 """
 from __future__ import annotations
 
@@ -35,13 +20,8 @@ _warned_fallback = False
 
 
 class DecryptionError(Exception):
-    """Raised by unprotect() when a stored value can't be recovered --
-    DPAPI unavailable/failed, or corrupted base64 -- as opposed to
-    "no value was ever set" (which returns "", not an error). Callers
-    (see models.py) need this distinction: overwriting a value that
-    merely failed to decrypt THIS run with "" on the next save would
-    destroy it permanently, since every save round-trips through
-    protect() again."""
+    """A stored value exists but can't be recovered. Distinct from "never set"
+    ("") so callers don't save "" over it and destroy it permanently."""
 
 
 def _dpapi_available() -> bool:
@@ -97,8 +77,7 @@ def _dpapi_decrypt(data: bytes) -> bytes:
 
 
 def protect(plaintext: str) -> str:
-    """Returns a string safe to write to config.json. Empty input
-    stays empty -- no point tagging/encrypting "no password set"."""
+    """Returns a string safe to write to config.json. Empty stays empty."""
     global _warned_fallback
     if not plaintext:
         return ""
@@ -116,24 +95,9 @@ def protect(plaintext: str) -> str:
 
 
 def unprotect(stored: str) -> str:
-    """Reverses protect(). Also transparently handles values saved
-    before this feature existed (plain, unprefixed text), so
-    upgrading ConanOps doesn't lock anyone out of their own saved
-    passwords -- those get protected automatically the next time
-    config.json is saved, since every save round-trips through
-    protect() again.
-
-    Raises DecryptionError -- rather than returning "" -- when a
-    value is present but genuinely couldn't be recovered (DPAPI
-    unavailable or failed, or corrupted base64). Returning "" for
-    that case used to look identical to "no secret was ever set,"
-    and since every config.json save re-protects whatever's
-    currently in memory, that "" got written straight back out on
-    the very next save -- permanently erasing an RCON password or
-    webhook URL just because it failed to decrypt once (e.g. the
-    config was copied to a different Windows user account, or a
-    transient DPAPI error). See models.py's from_dict()/to_dict()
-    for how the caller uses this to avoid that."""
+    """Reverses protect(). Unprefixed values are legacy plain text and are
+    returned as-is. Raises DecryptionError (never returns "") when a value
+    can't be recovered, e.g. config copied to another Windows user."""
     if not stored:
         return ""
     if stored.startswith(_DPAPI_PREFIX):
@@ -155,5 +119,4 @@ def unprotect(stored: str) -> str:
         except (ValueError, UnicodeDecodeError) as e:
             _log.error(f"Failed to decode an 'obfuscated:' stored value: {e}")
             raise DecryptionError(str(e)) from e
-    # Legacy: saved before this feature existed -- plain text as-is.
     return stored

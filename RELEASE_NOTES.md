@@ -2,9 +2,7 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 
 ### New in this version
 
-- **Alerts are now in App Settings** – Discord and ntfy alerts are set once for all your servers, in App Settings → Alerts (in the app and the web version). Every alert still says which server it's about, and the Discord live status message keeps one message per server. Links you already had are carried over automatically.
-- The setup guides for Discord and ntfy and the **Send Test** buttons moved with them.
-- Server Settings → RCON now holds just the RCON settings (each server has its own).
+- Behind-the-scenes cleanup: ConanOps' code is simpler and better organized, which makes fixes and new features faster and safer. No changes to what it does.
 
 ### Requirements
 

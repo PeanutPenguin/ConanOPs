@@ -616,3 +616,7 @@ A web action never shows a Windows permission (UAC) prompt: `powershell.no_promp
 ### How the web version saves settings
 
 `webui/settings.py` keeps its own, never-shown copies of the settings pages. A request loads the chosen server's saved values (`MainWindow.settings_values`), runs the page's own validation, and calls the app's save handler for that server (`_apply_network(values, server)` etc.). If that server is open in the app, `settings_saved_elsewhere` gives its pages the new saved values only for fields nobody is editing (`merge_committed`). Secret fields (passwords, webhook URLs, tokens) are never sent to the browser; it only learns whether one is set.
+
+### Code layout (1.0.6)
+
+`ui/main_window.py` builds the window and wires pages together. What it does is split by area into mixins in `ui/window/`: `power.py` (start/stop/restart, health checks, watchdog, resume after reboot), `updates.py` (server updates, mod refreshes), `backups.py` (scheduled backups, restores, disk space), `network.py` (firewall, router forwards, DuckDNS, changes waiting for the PC), `alerts.py` (tray/Discord/ntfy, live status) and `system.py` (app updates, Windows update restarts, admin rights, web link, deleting ConanOps). `ui/mod_recovery.py` and `ui/web_actions.py` are mixins in the same style. `ui/workers.py` keeps background workers alive until they finish.

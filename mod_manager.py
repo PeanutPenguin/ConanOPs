@@ -1,23 +1,10 @@
-"""
-Mod list management.
+"""Mod list management, world-save snapshots for mod testing, and mod bisection.
 
-ConanOps keeps its own ordered bookkeeping of mods (workshop id + display
-name + enabled flag) on the ServerConfig, independent of the game's own
-file format, and writes that out to `modlist.txt` in the server's Saved
-folder whenever it changes.
-
-Each Workshop mod's actual .pak file (inside
-steamapps/workshop/content/440900/<workshop_id>/) is named whatever the
-mod's AUTHOR named it -- never the workshop id itself (confirmed against
-several independent server-hosting guides and real modlist.txt examples,
-e.g. .../content/440900/1369802940/Emberlight.pak, not
-.../1369802940/1369802940.pak). find_workshop_pak() below is what
-actually looks inside that folder to find it; workshop_pak_path() is a
-best-guess fallback for a mod that hasn't been downloaded yet at all (so
-there's nothing real to find), kept only because modlist.txt needs SOME
-line for a not-yet-downloaded enabled mod and a guessed path is no worse
-than an empty one in that specific case -- it's simply wrong, and never
-used once the real file exists.
+ConanOps keeps an ordered mod list (id, name, enabled) on the ServerConfig and
+writes it to modlist.txt. A Workshop mod's .pak is named by its author, not by
+workshop id (e.g. content/440900/1369802940/Emberlight.pak), so
+find_workshop_pak() looks in the folder; workshop_pak_path() is only a guess
+for mods not downloaded yet.
 """
 from __future__ import annotations
 
@@ -47,41 +34,21 @@ def workshop_pak_path(steamcmd_dir: str, workshop_id: str) -> str:
 
 
 def find_workshop_pak(steamcmd_dir: str, workshop_id: str) -> Optional[str]:
-    """Returns the REAL path to a downloaded Workshop mod's .pak file,
-    or None if it hasn't actually been downloaded (or the folder
-    exists but SteamCMD hasn't put a .pak in it yet). Looks at what's
-    actually inside steamapps/workshop/content/440900/<workshop_id>/
-    rather than assuming a filename, since the .pak there is named
-    whatever the mod's author named it -- see this module's own
-    docstring."""
+    """Real path of a downloaded mod's .pak, or None if there isn't one yet."""
     content_dir = os.path.join(steamcmd_dir, "steamapps", "workshop", "content", str(WORKSHOP_APP_ID), str(workshop_id))
     if not os.path.isdir(content_dir):
         return None
-    # glob.escape: a folder name with [ ] in it (e.g. "Steam [backup]")
-    # is otherwise read as a glob character class and matches nothing,
-    # making every downloaded mod look missing.
+    # Escape so "[ ]" in a path isn't read as a glob character class.
     paks = glob.glob(os.path.join(glob.escape(content_dir), "*.pak"))
     if not paks:
         return None
-    # Normally exactly one -- if a mod's folder somehow ever has more
-    # than one .pak, pick deterministically (alphabetically) rather
-    # than relying on the filesystem's unspecified listing order, so
-    # repeated calls always agree with each other and with what
-    # actually gets written to modlist.txt.
+    # Sorted so the pick is stable if a folder ever has more than one .pak.
     return sorted(paks)[0]
 
 
 def write_modlist(install_dir: str, steamcmd_dir: str, mods: List[dict]) -> None:
-    """Writes modlist.txt with one path per *enabled* mod, in order.
-    Disabled mods are simply omitted, not deleted from ConanOps'
-    bookkeeping -- toggling one back on later just rewrites the file.
-
-    Prefers the mod's REAL, actually-downloaded .pak path
-    (find_workshop_pak) when it exists; falls back to the guessed
-    workshop_pak_path() convention only for a mod that hasn't been
-    downloaded yet, since modlist.txt needs some line for it and a
-    guess is no worse than nothing there -- the server won't be able
-    to load that mod either way until it's actually downloaded."""
+    """Writes modlist.txt with one .pak path per enabled mod, in order (real
+    path if downloaded, else the guessed one)."""
     path = modlist_path(install_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = [
@@ -93,21 +60,12 @@ def write_modlist(install_dir: str, steamcmd_dir: str, mods: List[dict]) -> None
 
 
 # ------------------------------------------------------ world save safety --
-# Shared by both bisect tools (auto_bisect_runner.py's automated one and
-# ui/mods_page.py's manual BisectDialog): protects the actual world data
-# from being mutated by whatever mod configuration is loaded WHILE
-# testing, so a mod's verdict depends on the mod itself, not on what an
-# earlier, unrelated test happened to do to the save. Scoped to just the
-# world save DATABASE files (see world_save_files) -- never the whole
-# Saved folder, which also holds Config/ (the server's own .ini
-# settings: bind IP, RCON, network ports, every gameplay setting) --
-# reverting those between tests would silently undo anything that
-# legitimately changed in between (most notably preflight's own auto-
-# repair of a stale bind IP), which could make the server fail to start
-# for a reason that has nothing to do with any mod at all.
+# Used by both bisect tools so mod tests can't change the real world save.
+# Only the .db files are snapshotted, never Config/: reverting the .ini files
+# would undo legitimate changes such as preflight's bind-IP repair.
 
 def world_save_files(saved_dir: str) -> List[str]:
-    base = glob.escape(saved_dir)  # see find_workshop_pak -- [ ] in a path would break the match
+    base = glob.escape(saved_dir)
     return (
         glob.glob(os.path.join(base, "*.db"))
         + glob.glob(os.path.join(base, "*.db-wal"))
@@ -116,22 +74,14 @@ def world_save_files(saved_dir: str) -> List[str]:
 
 
 class WorldSaveError(Exception):
-    """A world-save snapshot or restore couldn't be completed. Distinct
-    from snapshot_world_save() returning None, which only ever means
-    "there's no world save to protect yet" -- a FAILED snapshot must
-    never be mistaken for that, or callers would carry on testing
-    against a world they have no way to put back."""
+    """A snapshot or restore failed. Unlike a None snapshot ("nothing to
+    protect"), callers must not keep testing after this."""
 
 
 def snapshot_world_save(install_dir: str) -> Optional[str]:
-    """Copies ONLY the world save database files to a fresh temp
-    folder. Returns the temp folder's path, or None if there's no
-    Saved folder yet, or no world save files in it yet, to protect.
-    Raises WorldSaveError if there IS a world save but it couldn't be
-    copied (the partial temp folder is removed first).
-    Should only be called once the server is confirmed fully stopped
-    -- copying a live database mid-write can capture a torn,
-    inconsistent copy, which would then get restored later."""
+    """Copies the world .db files to a temp folder and returns its path, or None
+    if there's no save yet. Raises WorldSaveError on copy failure.
+    Call only with the server fully stopped, or the copy may be torn."""
     saved_dir = os.path.join(install_dir, "ConanSandbox", "Saved")
     if not os.path.isdir(saved_dir):
         return None
@@ -155,28 +105,12 @@ _RESTORE_STAGING_SUFFIX = ".conanops-restoring"
 
 
 def restore_world_save(install_dir: str, snapshot_dir: Optional[str]) -> bool:
-    """Resets the world save database files back to `snapshot_dir`
-    (from an earlier snapshot_world_save() call). Never touches
-    Config/ or anything else under Saved/. A no-op if snapshot_dir is
-    None (nothing was ever snapshotted).
+    """Puts the world .db files back from `snapshot_dir` (None = no-op). Returns
+    False on failure (often: server still running); keep the snapshot then.
 
-    Returns True if the restore happened (or there was nothing to
-    restore), False if it failed -- most commonly because the server
-    is still running and Windows won't let the live .db be replaced.
-    Callers must keep the snapshot on False: it's the only good copy.
-
-    Ordered so a failure can't leave the world with NO database, or
-    with one database paired with another one's write-ahead log:
-      1. Stage every snapshot file next to its destination under a
-         temporary name (doesn't touch the live files at all).
-      2. Remove every live -wal/-shm sidecar, plus any live .db the
-         snapshot doesn't have -- SQLite replays a leftover -wal onto
-         whatever .db sits next to it, so the current one must never
-         survive next to the restored .db.
-      3. os.replace() each staged .db over the live one (atomic per
-         file -- the live .db is always either the old one or the
-         restored one, never missing), then the staged sidecars.
-    Staged leftovers are cleaned up if anything fails."""
+    Order keeps a failure from leaving no .db or a .db with a foreign -wal:
+    stage copies beside the targets, delete live -wal/-shm (SQLite would replay
+    them), then os.replace() the .db files first (atomic per file)."""
     if not snapshot_dir:
         return True
     saved_dir = os.path.join(install_dir, "ConanSandbox", "Saved")
@@ -239,10 +173,7 @@ def set_enabled(mods: List[dict], workshop_id: str, enabled: bool) -> List[dict]
     return [dict(m, enabled=enabled) if m["id"] == workshop_id else m for m in mods]
 
 
-# --------------------------------------------------------------------- #
-# Guided bisect: binary-search through enabled mods to isolate the one
-# causing a problem, instead of disabling them one at a time by hand.
-# --------------------------------------------------------------------- #
+# ----------------------------- Guided bisect: binary-search for a bad mod --
 
 @dataclass
 class BisectState:
@@ -253,8 +184,7 @@ class BisectState:
 
     @property
     def current_test_disabled(self) -> List[str]:
-        """The ids to disable for the next test: the first half of the
-        remaining candidates."""
+        """Ids to disable for the next test (first half of remaining)."""
         if len(self.remaining) <= 1:
             return list(self.remaining)
         half = len(self.remaining) // 2
@@ -266,25 +196,9 @@ def start_bisect(enabled_mod_ids: List[str]) -> BisectState:
 
 
 def apply_bisect_test(mods: List[dict], state: BisectState) -> List[dict]:
-    """Returns a NEW mods list with `enabled` set correctly for the
-    CURRENT round of `state`: every mod that's actually part of this
-    bisect (state.remaining or state.known_good) is enabled EXCEPT
-    this round's current_test_disabled set; a mod that was never a
-    candidate (already disabled before the bisect started, or added to
-    the server since) is left exactly as it already is.
-
-    Centralized here -- rather than each caller (the manual bisect
-    dialog, the automatic bisect worker) re-deriving this itself --
-    after an earlier version of that per-caller logic had a real bug:
-    a mod that got disabled for one round's test, then cleared
-    (known_good) because the problem persisted WITHOUT it, never got
-    RE-enabled for the rest of that run. The rule that avoids that:
-    "enabled" for a bisect-candidate mod is always simply "not in the
-    CURRENT round's disable set" -- known_good and the untested half
-    of remaining are the same thing here (both currently enabled,
-    both exonerated of THIS round's suspicion), so there's no separate
-    case to get wrong for either of them.
-    """
+    """New mods list for the current round: every bisect mod (remaining or
+    known_good) is enabled except current_test_disabled; non-candidates are
+    left as they are. Shared by the manual and automatic bisect tools."""
     bisect_ids = set(state.remaining) | set(state.known_good)
     to_disable = set(state.current_test_disabled)
     return [
@@ -294,15 +208,8 @@ def apply_bisect_test(mods: List[dict], state: BisectState) -> List[dict]:
 
 
 def apply_bisect_result(mods: List[dict], state: BisectState) -> List[dict]:
-    """Returns a NEW mods list for a FINISHED bisect: every mod that
-    was part of it is enabled again, except the culprit (if one was
-    found), which stays disabled. Mods that were never candidates are
-    left as they are.
-
-    apply_bisect_test() only describes the state for a round still to
-    be run -- once report_result() marks the state done, the last
-    round's disable set is stale. On a "ruled out" finish that left
-    the final (now cleared) candidate disabled for good."""
+    """New mods list for a finished bisect: all bisect mods enabled except the
+    culprit. Use this, not apply_bisect_test(), once the state is done."""
     bisect_ids = set(state.remaining) | set(state.known_good)
     if state.culprit:
         bisect_ids.add(state.culprit)
@@ -313,52 +220,13 @@ def apply_bisect_result(mods: List[dict], state: BisectState) -> List[dict]:
 
 
 def ddmin(candidates: List[str]):
-    """Delta-debugging (Zeller's ddmin), as a step-by-step coroutine:
-    finds a minimal subset of `candidates` that still reproduces a
-    failure when that subset alone is ENABLED (everything else
-    disabled) -- correctly handling BOTH a single independent culprit
-    AND a combination that only fails when multiple specific mods are
-    enabled TOGETHER, unlike plain bisection above.
+    """Zeller's ddmin as a generator: finds a minimal subset of `candidates` that
+    still fails when only it is enabled. Unlike plain bisection, this also finds
+    culprits that only fail together (bisection's "all but one" tests let a
+    second bad mod hide).
 
-    Why plain bisection isn't enough: apply_bisect_test()'s rule --
-    every candidate is enabled except the current round's target --
-    is exactly right for isolating ONE culprit, but it's also exactly
-    what traps a session whenever TWO OR MORE bad mods are candidates
-    at once: whichever one isn't this round's target stays enabled and
-    keeps the failure signal alive regardless of what else gets
-    toggled, so the round's actual target gets wrongly cleared as
-    innocent -- this isn't an occasional edge case, it happens on
-    EVERY round for the rest of that session once it starts, and the
-    session ends with no culprit found at all despite a real one
-    being right there. ddmin avoids this because every test here
-    directly enables an explicit CANDIDATE SUBSET (never "everything
-    except one thing"), so a still-active second culprit can't hide
-    inside an "everything else stays on" default the way it can with
-    plain bisection.
-
-    Written as a generator rather than a BisectState-style step
-    object (see start_bisect/report_result above) because ddmin's
-    control flow -- try each chunk, then each complement, change
-    granularity, possibly loop back -- doesn't reduce to a single
-    "disable this, check, continue" step the way plain bisection
-    does. Each iteration yields the exact list of ids to ENABLE for
-    the next test; the caller runs that test in the real world (or a
-    mock, in tests) and sends back True if it still fails, False if
-    it doesn't, via generator.send(). Ends by raising StopIteration
-    whose `.value` is the minimal failing subset found -- callers
-    typically drive this via a small helper like:
-
-        gen = ddmin(candidates)
-        to_test = next(gen)
-        while True:
-            try:
-                to_test = gen.send(run_test(to_test))
-            except StopIteration as stop:
-                return stop.value
-
-    Assumes testing the FULL `candidates` set already reproduces the
-    failure -- that's the premise of calling this at all (same
-    assumption start_bisect() already makes for plain bisection)."""
+    Yields the ids to ENABLE for each test; send() back True if it still fails.
+    The minimal subset is StopIteration.value. Assumes the full set fails."""
     c = list(candidates)
     n = 2
     while len(c) >= 2:
@@ -376,10 +244,8 @@ def ddmin(candidates: List[str]):
         if reduced:
             continue
 
-        # With exactly two chunks, each chunk's complement IS the other
-        # chunk -- both were just tested above, and every test here is
-        # a real server restart, so testing them again as complements
-        # would only repeat two restarts for nothing.
+        # With two chunks the complements are the chunks already tested; skip
+        # them, since each test is a real server restart.
         for chunk in (chunks if len(chunks) > 2 else []):
             complement = [x for x in c if x not in chunk]
             if not complement:
@@ -394,24 +260,18 @@ def ddmin(candidates: List[str]):
             continue
 
         if n >= len(c):
-            break  # can't split any finer -- c is as minimal as ddmin can make it
+            break  # can't split any finer
         n = min(n * 2, len(c))
     return c
 
 
 def report_result(state: BisectState, problem_still_happens: bool) -> BisectState:
-    """Call after the person restarts with `current_test_disabled` turned
-    off and reports whether the problem is still happening.
-
-    - Problem gone -> the culprit was among the disabled half.
-    - Problem persists -> the culprit is in the other half (or isn't a
-      mod at all, once we've narrowed to zero candidates)."""
+    """Updates `state` after a test with current_test_disabled turned off.
+    Problem gone: culprit is in the disabled half; else in the other half."""
     if state.done:
         return state
 
     if not state.remaining:
-        # Started with no candidates at all (every mod already
-        # disabled) -- nothing to narrow down.
         state.done = True
         state.culprit = None
         return state
@@ -420,7 +280,6 @@ def report_result(state: BisectState, problem_still_happens: bool) -> BisectStat
     other_half = [m for m in state.remaining if m not in disabled]
 
     if len(state.remaining) <= 1:
-        # We were down to one candidate already.
         if problem_still_happens:
             state.known_good.extend(state.remaining)
             state.remaining = []
@@ -432,25 +291,18 @@ def report_result(state: BisectState, problem_still_happens: bool) -> BisectStat
         return state
 
     if problem_still_happens:
-        # Culprit is in the half that's still enabled.
         state.known_good.extend(disabled)
         state.remaining = other_half
     else:
-        # Culprit was in the disabled half.
         state.known_good.extend(other_half)
         state.remaining = disabled
 
     if len(state.remaining) == 1 and not problem_still_happens:
-        # Narrowed to one because disabling exactly that one mod fixed
-        # it -- that IS the confirming test. Another round would just
-        # repeat the identical configuration (same mod off, everything
-        # else on) for another restart.
+        # Disabling exactly this mod fixed it; that was the confirming test.
         state.culprit = state.remaining[0]
         state.done = True
     elif len(state.remaining) == 1:
-        # Narrowed to one because the problem persisted with the OTHER
-        # half off -- this one hasn't been tested disabled on its own
-        # yet, so one more round is still needed.
+        # Not yet tested disabled on its own; one more round needed.
         pass
     elif len(state.remaining) == 0:
         state.done = True

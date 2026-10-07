@@ -1,15 +1,5 @@
-"""
-Manual port-forwarding guide: shown wherever ConanOps already knows
-UPnP couldn't do this automatically (the setup wizard's Networking
-step, and the Diagnostics tab's "Router UPnP" check) -- since that's
-exactly the moment someone needs this and has no other way to find
-out what to actually do about it.
-
-Deliberately self-contained in the app rather than linking out to a
-third-party site: it needs to work even when ConanOps' own diagnosis
-is "your network is part of the problem," and it can be filled in
-with this server's OWN ports and IPs instead of generic placeholders.
-"""
+"""Manual port-forwarding guide, shown when UPnP can't forward ports.
+Built in (not a web link) so it works offline and uses this server's real ports and IPs."""
 from __future__ import annotations
 
 from typing import Optional
@@ -50,8 +40,7 @@ def _step(number: int, title: str, body: str) -> QFrame:
 
 def guide_content(game_port: int, query_port: int, local_ip: str, router_ip: Optional[str],
                   public_ip: Optional[str]):
-    """The guide's text: (intro, [(number, title, body), ...]) -- shared
-    by this dialog and the web version."""
+    """(intro, [(number, title, body), ...]); shared with the web UI."""
     ports_line = f"UDP {game_port}, {game_port + 1} (Conan's own second port, right above the game port), and {query_port}"
     local_ip_text = local_ip or "(not yet detected -- run the Networking step or Diagnostics first)"
     public_ip_text = public_ip or "(couldn't detect)"

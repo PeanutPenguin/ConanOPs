@@ -1,7 +1,4 @@
-"""Background QThread worker for steam_workshop_api.search() -- a real
-HTTP round trip, so this can't run directly on the UI thread without
-risking a freeze while waiting on Steam's servers (same reasoning as
-every other *_runner.py module in this app)."""
+"""QThread workers for Steam Workshop HTTP calls, kept off the UI thread."""
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal

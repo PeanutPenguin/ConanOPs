@@ -1,8 +1,6 @@
 """
-Tracks per-player sessions (join/leave times) and cumulative playtime for
-one server, persisted to a small JSON file next to the app config. Also
-produces the hourly activity histogram the Restart Schedule page uses to
-suggest a quiet window.
+Per-player sessions and playtime for one server, saved to JSON, plus the
+hourly activity histogram used to suggest a quiet restart window.
 """
 from __future__ import annotations
 
@@ -34,22 +32,9 @@ class SessionTracker:
             raw = json.load(f)
         self.sessions = [Session(**s) for s in raw.get("sessions", [])]
 
-        # Any session still open (end=None) when this file was last
-        # written means ConanOps quit or crashed (or the server itself
-        # crashed) while that player was connected -- we have no
-        # reliable "they left" event for it. Left as-is, that session
-        # would stay open forever: total_playtime_seconds() treats an
-        # open session's end as "now" every time it's called, so its
-        # counted duration would keep growing on every future load,
-        # without bound, even long after the player actually
-        # disconnected. Close it at load time using the file's own
-        # last-modified time as a reasonable stand-in for when it
-        # stopped being updated -- not exact, but bounded, and closer
-        # to the truth than an ever-advancing "now". It's also
-        # deliberately NOT re-added to self._active: if that player is
-        # still genuinely online, the log monitor's own join line (or,
-        # on first attach, its online-snapshot reconciliation) is what
-        # re-establishes that, not stale state from a previous run.
+        # Sessions left open mean ConanOps or the server crashed. Close them
+        # at the file's mtime so playtime doesn't grow forever. They are not
+        # re-added to _active; the log monitor re-establishes who's online.
         try:
             fallback_end = datetime.fromtimestamp(os.path.getmtime(self.storage_path)).isoformat()
         except OSError:
@@ -80,8 +65,7 @@ class SessionTracker:
             self._save()
 
     def close_all_active(self) -> None:
-        """Call when the server stops unexpectedly, so sessions don't
-        stay open forever."""
+        """Call when the server stops unexpectedly."""
         now = datetime.now().isoformat()
         for s in self._active.values():
             s.end = now
@@ -106,11 +90,7 @@ class SessionTracker:
         return sorted({s.name for s in self.sessions})
 
     def hourly_activity_histogram(self) -> List[int]:
-        """24 buckets counting how many sessions were active starting in
-        each hour of day. A simplified approximation (by session start
-        hour, not true overlap-across-hours) -- good enough to suggest a
-        quiet restart window without needing a full interval-overlap
-        calculation."""
+        """24 buckets of session counts by start hour (an approximation)."""
         buckets = [0] * 24
         for s in self.sessions:
             start = datetime.fromisoformat(s.start)

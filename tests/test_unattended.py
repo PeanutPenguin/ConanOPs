@@ -144,7 +144,8 @@ def _patch_restart(monkeypatch, pending=True, uptime_hours=10, now=datetime(2026
         @classmethod
         def now(cls, tz=None):
             return now
-    monkeypatch.setattr(mw, "datetime", FakeDT)
+    import ui.window.system as system_part  # _check_windows_update_restart lives there
+    monkeypatch.setattr(system_part, "datetime", FakeDT)
     return calls
 
 

@@ -1,7 +1,6 @@
 """
-A step-by-step guide that folds out under a "How do I...?" link, with
-numbered steps -- each step's details fold out too, so the list stays
-short until you need it.
+Step-by-step guide that folds out under a "How do I...?" link; each step's
+details fold out too.
 """
 from __future__ import annotations
 

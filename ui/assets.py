@@ -1,15 +1,7 @@
 """
-Bundled assets (assets/ at the project root) and the small widgets that
-draw them: the app icon, the Geist fonts, sidebar/nav line icons, and
-the animated rattlesnake loading spinner.
-
-Everything here degrades gracefully: a missing asset file (a partial
-copy of the app, a broken PyInstaller bundle) falls back to a plain
-drawn placeholder or the system font rather than raising -- nothing
-about how the app WORKS depends on these.
-
-PyInstaller: bundle the folder with  --add-data "assets;assets"  (see
-main.py's docstring). asset_path() looks in sys._MEIPASS first.
+Bundled assets (app icon, Geist fonts, line icons, loading spinner) and the
+widgets that draw them. Missing files fall back to placeholders, never errors.
+PyInstaller: bundle with --add-data "assets;assets"; asset_path() checks sys._MEIPASS first.
 """
 from __future__ import annotations
 
@@ -29,8 +21,6 @@ def asset_path(*parts: str) -> str:
     base = getattr(sys, "_MEIPASS", None) or _PROJECT_ROOT
     return os.path.join(base, "assets", *parts)
 
-
-# ------------------------------------------------------------------ fonts --
 
 _fonts_loaded = False
 
@@ -53,11 +43,8 @@ def load_fonts() -> List[str]:
     return sorted(set(families))
 
 
-# --------------------------------------------------------------- app icon --
-
 def app_icon() -> QIcon:
-    """The ConanOps icon (window, taskbar, tray). Falls back to a plain
-    drawn badge if the asset is missing."""
+    """The ConanOps icon; falls back to a drawn badge if the asset is missing."""
     icon = QIcon()
     for name in ("conanops.ico", "conanops-icon-512.png"):
         path = asset_path(name)
@@ -77,14 +64,11 @@ def app_icon() -> QIcon:
 
 
 def app_icon_pixmap(size: int) -> QPixmap:
-    """The icon at an exact pixel size, scaled smoothly from the large
-    PNG (crisp on high-DPI screens)."""
+    """The icon at an exact pixel size, scaled from the large PNG."""
     path = asset_path("conanops-icon-512.png")
     pm = QPixmap(path) if os.path.exists(path) else app_icon().pixmap(512, 512)
     return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-
-# ------------------------------------------------------------- line icons --
 
 # 24x24 stroke icons, drawn with currentColor (substituted at render time).
 _ICON_PATHS: Dict[str, str] = {
@@ -144,8 +128,6 @@ def line_icon(name: str, color: str, checked_color: str = "", size: int = 18) ->
     return icon
 
 
-# --------------------------------------------------------- loading spinner --
-
 @lru_cache(maxsize=8)
 def _loading_frames(size: int) -> tuple:
     folder = asset_path("loading")
@@ -162,9 +144,7 @@ def _loading_frames(size: int) -> tuple:
 
 
 class LoadingSpinner(QLabel):
-    """The rattlesnake loading animation at any size. Only animates
-    while visible, so a hidden spinner costs nothing. If the frames are
-    missing it simply shows nothing."""
+    """The rattlesnake loading animation. Only animates while visible."""
 
     FRAME_MS = 33  # the source animation's own frame duration
 

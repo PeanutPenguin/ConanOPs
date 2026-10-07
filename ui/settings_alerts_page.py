@@ -17,9 +17,7 @@ def _row(label_text: str, widget) -> QVBoxLayout:
 
 class SettingsAlertsPage(SettingsPageBase):
     def __init__(self, parent=None):
-        # RCON settings live in the server's Game.ini, which it reads at
-        # startup. (Discord/ntfy alerts moved to App Settings → Alerts in
-        # 1.0.4 -- they're for every server.)
+        # RCON settings live in Game.ini, read at server startup.
         super().__init__("RCON", parent, requires_restart=True, card_form=True)
         self._build_form()
 

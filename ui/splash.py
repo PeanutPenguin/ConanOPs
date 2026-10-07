@@ -1,8 +1,6 @@
 """
-Startup screen: the rattlesnake loading animation, the app name and a
-one-line status while ConanOps loads. Frameless, centered, and only
-shown for a normal launch -- a start-minimized-to-tray launch at
-Windows sign-in stays silent.
+Frameless startup screen: loading animation, app name and a status line.
+Not shown for start-minimized launches.
 """
 from __future__ import annotations
 
@@ -18,8 +16,7 @@ class SplashScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.SplashScreen | Qt.FramelessWindowHint)
         self.setObjectName("Splash")
-        # Rounded card on a see-through window, so the corners don't
-        # show square edges.
+        # Transparent window so the rounded corners don't show square edges.
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFixedSize(420, 340)
         self.setWindowIcon(assets.app_icon())
@@ -60,8 +57,7 @@ class SplashScreen(QWidget):
 
     def set_status(self, text: str) -> None:
         self.status_label.setText(text)
-        # Paint the new text now: the next step (building the main
-        # window) blocks the event loop until it's done.
+        # Paint now: building the main window next blocks the event loop.
         self.repaint()
         QGuiApplication.processEvents()
 

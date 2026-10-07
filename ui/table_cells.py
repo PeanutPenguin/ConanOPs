@@ -1,9 +1,6 @@
 """
-Buttons inside table rows, laid out the same way everywhere: centered
-vertically in the row, a fixed gap from the cell edges, never stretched
-to fill the cell. A QPushButton handed straight to setCellWidget()
-fills its whole cell instead, which is why the Restore buttons on the
-Backups page didn't line up with the row text.
+Buttons inside table rows: centered vertically with fixed gaps, never
+stretched (a bare QPushButton in setCellWidget() fills its whole cell).
 """
 from __future__ import annotations
 
@@ -22,8 +19,7 @@ def button_cell(*buttons, align=Qt.AlignRight) -> QWidget:
     if align == Qt.AlignRight:
         layout.addStretch(1)
     for btn in buttons:
-        # Text width + the stylesheet's 14px side padding and border, so
-        # a narrow column can never squeeze the label ("estor").
+        # Text width + the stylesheet's 14px padding and border, so the label never clips.
         btn.ensurePolished()
         btn.setMinimumWidth(btn.fontMetrics().horizontalAdvance(btn.text()) + 2 * 14 + 2 + 6)
         layout.addWidget(btn, 0, Qt.AlignVCenter)
@@ -33,9 +29,8 @@ def button_cell(*buttons, align=Qt.AlignRight) -> QWidget:
 
 
 def fit_button_column(table: QTableWidget, column: int, min_width: int = 110) -> None:
-    """Fixed-width buttons column (Qt's ResizeToContents ignores cell
-    widgets, so it clipped the buttons to "estor"). Call
-    size_button_column() after filling the rows to fit the real buttons."""
+    """Fixed-width button column (ResizeToContents ignores cell widgets).
+    Call size_button_column() after filling the rows."""
     table.horizontalHeader().setSectionResizeMode(column, QHeaderView.Fixed)
     table.setColumnWidth(column, min_width)
 

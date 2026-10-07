@@ -1,18 +1,8 @@
 """
-Centralized logging for ConanOps.
+Shared rotating log at ~/ConanOps/conanops.log. The packaged app has no
+console, so background failures must be logged here to be seen.
 
-Writes a rotating log file to ~/ConanOps/conanops.log so failures that
-happen in background threads or best-effort code paths (SteamCMD,
-webhooks, netsh/UPnP, backup pruning) are visible after the fact.
-Previously most of these were either silently swallowed
-(`except OSError: pass`) or sent to a bare `print()`, which is
-useless once the app is packaged with PyInstaller's `--windowed` flag
-(no visible console at all).
-
-Usage:
-    import applog
-    _log = applog.get_logger(__name__)
-    _log.warning("...")
+Usage: _log = applog.get_logger(__name__)
 """
 from __future__ import annotations
 
@@ -45,10 +35,7 @@ def _configure() -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Returns a logger under the shared 'conanops' hierarchy, writing
-    to ~/ConanOps/conanops.log. `name` is typically __name__ from the
-    calling module, just for the log line prefix -- it doesn't need to
-    be unique."""
+    """Logger under 'conanops'; `name` (usually __name__) is only a prefix."""
     _configure()
     short = name.rsplit(".", 1)[-1]
     return logging.getLogger(f"conanops.{short}")

@@ -1,25 +1,10 @@
 """
-Removes ConanOps' own program -- the last step of App Settings'
-"Uninstall ConanOps (Keep My Data)" and "Delete Everything".
+Removes ConanOps' own program files (last step of uninstall / Delete Everything).
 
-The running ConanOps (and, for a packaged build, its .exe and its
-unpacked temp copy) can't delete itself, so a small detached PowerShell
-helper does it after ConanOps exits:
-
-  1. waits until every ConanOps process involved has exited (a packaged
-     build runs as two: the launcher and the app itself);
-  2. if ConanOps was installed with the installer, runs its uninstaller
-     silently -- so the Start menu entry, desktop shortcut and the
-     "Installed apps" entry go too, exactly as uninstalling from Windows
-     Settings would -- and waits for it to finish;
-  3. deletes the program folder (all of it, or everything except the
-     data subfolder for "keep my data");
-  4. deletes any extra paths it was given -- ConanOps' own data folders
-     and log, which ConanOps itself can't delete while it has them open;
-  5. deletes itself.
-
-PowerShell rather than a .bat: batch files mangle paths with non-English
-characters or a "%" in them, which would leave things behind.
+A running program can't delete itself, so a detached PowerShell helper waits
+for our processes (launcher + app) to exit, runs the installer's uninstaller
+silently if present, deletes the program folder and extra paths, then itself.
+PowerShell, not .bat, because batch mangles non-English and "%" paths.
 """
 from __future__ import annotations
 
@@ -70,14 +55,8 @@ if ($unins) {
 
 
 def own_files_if_shared_folder(install_dir: str) -> Optional[List[str]]:
-    """None if install_dir is ConanOps' own folder (safe to delete whole);
-    otherwise the list of ConanOps' own files in it.
-
-    ConanOps.exe is often just run from wherever it was downloaded --
-    Downloads, the Desktop. Deleting "the program folder" there would
-    take everything else in it, so in that case only ConanOps' own
-    files go: the exe, its update manifest, files the manifest lists,
-    and leftovers from past updates."""
+    """None if install_dir is our own folder (safe to delete whole), else
+    the list of our files in it (e.g. exe run from Downloads)."""
     import cleanup
     import self_update
     folder = os.path.abspath(install_dir)
@@ -117,7 +96,6 @@ def build_uninstall_script(install_dir: str, pids, preserve_name: Optional[str] 
         _RUN_UNINSTALLER,
     ]
     if own_files is not None:
-        # Shared folder (Downloads, Desktop...): only ConanOps' own files.
         for f in own_files:
             lines.append(f"Remove-Hard {q(f)}\n")
     elif preserve_name is None:
@@ -137,9 +115,8 @@ def build_uninstall_script(install_dir: str, pids, preserve_name: Optional[str] 
 
 def spawn_self_delete_helper(install_dir: str, pid: Optional[int] = None, preserve_name: Optional[str] = None,
                              extra_paths: Iterable[str] = ()) -> str:
-    """Writes the helper script to a temp folder (outside everything it
-    deletes) and launches it detached. The caller must exit right after.
-    Returns the script's path."""
+    """Launches the detached helper from a temp folder and returns its path.
+    The caller must exit right after."""
     folder = tempfile.mkdtemp(prefix="conanops-cleanup-")
     script_path = os.path.join(folder, "cleanup.ps1")
     text = build_uninstall_script(install_dir, _pids_to_wait_for(pid), preserve_name, extra_paths, folder,

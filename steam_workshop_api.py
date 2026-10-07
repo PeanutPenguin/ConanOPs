@@ -1,51 +1,16 @@
 """
 Steam Workshop search/browse for Conan Exiles mods.
 
-Unlike changelog.py's news fetch (a public, keyless endpoint),
-Workshop search and browse go through IPublishedFileService/QueryFiles,
-which requires a Steam Web API key. This is a personal, free key any
-Steam account can generate at https://steamcommunity.com/dev/apikey --
-ConanOps can't ship one baked into the app itself -- besides being
-trivially extractable from a distributed .exe, sharing a single key
-across everyone who's ever downloaded ConanOps would blow through
-Steam's per-key rate limit almost immediately, and publishing/exposing
-a personal key like that is against Steam's own Web API Terms of Use.
-So each person pastes their own into App Settings (AppConfig.steam_api_key,
-encrypted at rest -- see models.py), the same pattern the Discord/ntfy
-webhook URLs already use.
+Search uses IPublishedFileService/QueryFiles, which needs a personal Steam Web
+API key (https://steamcommunity.com/dev/apikey). ConanOps can't ship one: it
+would be extractable, shared rate limits would run out, and Steam's terms
+forbid it. Each person enters their own in App Settings (encrypted at rest).
 
-Results are filtered to Enhanced mods that have actually been rebuilt
-for Iris (Conan Exiles Enhanced update 2.2.0, live September 15, 2026
--- the update that moved the game to Unreal Engine 5.8.2 and replaced
-its networking with Epic's Iris system; Funcom's Community Update #7
-says it forced a recook of every mod because of engine serialization
-changes, and that modders were told about this ahead of time). Two checks, both
-confirmed against real Workshop pages before writing this, not
-guessed: a mod's Workshop page shows a "Version: Enhanced" or
-"Version: Legacy" tag (visible in the API as a real, structured
-`tags` entry, filterable server-side via `requiredtags`) -- but that
-tag alone only proves a mod was rebuilt for the ORIGINAL May 2026
-Enhanced/UE5 release, not necessarily for the LATER Iris-specific
-2.2.0 patch, so this also checks `time_updated` against an Iris
-cutoff date client-side (Steam's search API has no "updated since"
-filter to do this server-side). A mod needs to pass BOTH to be
-listed -- some real, live examples of exactly this gap: multiple
-mods' own comment sections show players reporting them "outdated"
-immediately after 2.2.0 shipped, with the Enhanced tag already set
-from months earlier but the actual rebuild still pending.
-
-Every item gets a STATUS (see classify()) instead of a bare pass/fail:
-updated for the current cutoff, Enhanced-but-stale, Legacy, or no
-version tag. The browser shows only "updated" by default but can show
-the others, labelled -- `time_updated` also changes on description-
-only edits, so the date check is a strong hint, not proof, and a hard
-filter would silently hide mods that are actually fine. The cutoff is
-an App Settings value (AppConfig.workshop_update_cutoff), not just the
-constant below, so the next patch doesn't need a code change.
-
-The same classification runs on mods already on a server (get_details,
-used by the Mods tab), which works even without an API key via
-Steam's keyless details endpoint.
+Each item gets a status from its "Enhanced"/"Legacy" Workshop tag plus
+`time_updated` against a cutoff date (the tag alone predates the Iris 2.2.0
+recook, and Steam has no "updated since" filter). The date is a hint, not
+proof, so non-updated mods are labelled rather than hidden. get_details()
+also works without a key via Steam's keyless endpoint.
 """
 from __future__ import annotations
 
@@ -63,11 +28,9 @@ from typing import Dict, Iterable, List, Optional, Set
 from mod_manager import WORKSHOP_APP_ID
 
 QUERY_URL = "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
-# Keyed details lookup -- also returns each item's required items
-# ("children"), which the keyless endpoint below doesn't.
+# Keyed details lookup; also returns required items ("children").
 DETAILS_URL = "https://api.steampowered.com/IPublishedFileService/GetDetails/v1/"
-# Keyless details lookup (POST) -- lets the Mods tab check installed
-# mods' update status even for someone who never set up an API key.
+# Keyless details lookup (POST), so update status works without a key.
 KEYLESS_DETAILS_URL = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
 
 # EPublishedFileQueryType values (Steamworks IPublishedFileService docs).
@@ -75,9 +38,7 @@ _QUERY_TYPE_MOST_SUBSCRIBED = 9    # k_PublishedFileQueryType_RankedByTotalUniqu
 _QUERY_TYPE_TEXT_SEARCH = 12       # k_PublishedFileQueryType_RankedByTextSearch
 _QUERY_TYPE_LAST_UPDATED = 21      # k_PublishedFileQueryType_RankedByLastUpdatedDate
 
-# EPublishedFileInfoMatchingFileType: k_PFI_MatchingFileType_Items --
-# regular Workshop items only, so collections, guides, artwork, etc.
-# never come back from a mod search in the first place.
+# k_PFI_MatchingFileType_Items: regular items only (no collections/guides).
 _FILETYPE_ITEMS = 0
 
 SORT_BEST_MATCH = "best_match"
@@ -85,33 +46,19 @@ SORT_POPULAR = "popular"
 SORT_RECENTLY_UPDATED = "recently_updated"
 SORT_OPTIONS = (SORT_BEST_MATCH, SORT_POPULAR, SORT_RECENTLY_UPDATED)
 
-# Steam's own result code for "this item was returned successfully" --
-# QueryFiles can include entries for items it couldn't actually fetch
-# full details for (removed, banned, whatever), still worth filtering
-# out rather than showing a broken-looking blank row for them.
+# Steam's "returned successfully" result code; others are removed/banned items.
 _RESULT_OK = 1
 
-# The Workshop tags marking a mod's game version. Run
-# tools/verify_workshop_filter.py with your own key to confirm these
-# against live Workshop data -- if Steam ever spells them differently,
-# this is the only place to change.
+# Version tags. tools/verify_workshop_filter.py checks them against live data.
 _ENHANCED_TAG = "Enhanced"
 _LEGACY_TAG = "Legacy"
 
-# Default cutoff for "updated for Iris": September 1, 2026, midnight
-# UTC -- the day the Public Beta Client build with Iris enabled went
-# out (2.2.0 itself went live September 15). Modders had the 5.8 build
-# and advance notice of the required recook before the live release,
-# so a mod recooked and published during the beta window is
-# legitimately Iris-ready. This is only the DEFAULT -- the person can
-# change it in App Settings (AppConfig.workshop_update_cutoff) when the
-# next patch needs a different one.
+# Default cutoff: the Iris public beta (2026-09-01 UTC); 2.2.0 went live
+# 2026-09-15 and modders could recook during the beta. Editable in App Settings.
 DEFAULT_CUTOFF_DATE = "2026-09-01"
 IRIS_CUTOFF_TIMESTAMP = int(datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp())
 
-# Mod statuses -- how a mod's tags and last-update date line up with
-# the current cutoff. Shown as labels rather than used to silently
-# hide results (see search()'s `show` parameter).
+# Shown as labels rather than used to silently hide results.
 STATUS_UPDATED = "updated"          # tagged Enhanced AND updated on/after the cutoff
 STATUS_STALE = "stale"              # tagged Enhanced, but not updated since before the cutoff
 STATUS_LEGACY = "legacy"            # tagged Legacy (the pre-Enhanced game)
@@ -125,25 +72,20 @@ STATUS_LABELS = {
     STATUS_UNKNOWN: "No version tag",
 }
 
-# How many raw results to request per page, as a multiple of how many
-# filtered results are wanted -- and the most pages search() will walk
-# (via Steam's cursor) trying to fill a page after client-side
-# filtering, before returning what it has.
+# Raw results requested per wanted result, and max cursor pages walked to
+# fill a page after client-side filtering.
 _OVERSAMPLE_FACTOR = 3
 MAX_PAGES_PER_SEARCH = 5
 
-# Results are cached briefly (only when a caller opts in -- the UI
-# worker does), so flipping between sort orders or re-opening the
-# browser doesn't re-hit Steam for the same thing.
+# Opt-in short cache so switching sort orders doesn't re-hit Steam.
 CACHE_TTL_SECONDS = 300
 _cache: Dict[str, tuple] = {}
 _cache_lock = threading.Lock()
 
 
 def cutoff_timestamp(date_text: str) -> int:
-    """'YYYY-MM-DD' (midnight UTC) -> unix timestamp. Falls back to the
-    default cutoff for anything unparseable rather than raising -- a
-    typo in App Settings shouldn't break the Mods tab."""
+    """'YYYY-MM-DD' (midnight UTC) -> unix timestamp; falls back to the
+    default cutoff instead of raising on a typo."""
     try:
         d = datetime.strptime((date_text or "").strip(), "%Y-%m-%d")
         return int(d.replace(tzinfo=timezone.utc).timestamp())
@@ -162,8 +104,7 @@ class WorkshopItem:
     time_updated: int = 0
     tags: List[str] = field(default_factory=list)
     status: str = STATUS_UNKNOWN
-    # Workshop "required items" -- ids of other Workshop items this one
-    # declares it needs (only returned by keyed endpoints).
+    # Ids of required Workshop items (keyed endpoints only).
     children: List[str] = field(default_factory=list)
     # id -> title for children, where search() could resolve them.
     child_titles: Dict[str, str] = field(default_factory=dict)
@@ -175,8 +116,7 @@ class SearchResult:
     total: int = 0
     ok: bool = False
     error: str = ""
-    # Pass back to search(cursor=...) to load the next batch; "" when
-    # Steam has nothing more.
+    # Pass to search(cursor=...) for the next batch; "" when done.
     next_cursor: str = ""
 
 
@@ -263,30 +203,17 @@ def search(api_key: str, query: str = "", page: int = 1, count: int = 20, timeou
            sort: str = "", show: Optional[Set[str]] = None, cutoff_ts: int = IRIS_CUTOFF_TIMESTAMP,
            cursor: str = "*", max_pages: int = MAX_PAGES_PER_SEARCH, resolve_children: bool = False,
            use_cache: bool = False, skip_ids: Optional[Set[str]] = None) -> SearchResult:
-    """Searches (or, with an empty query, browses) the Conan Exiles
-    Workshop. Never raises -- anything that goes wrong comes back as
-    ok=False with a human-readable `error`.
+    """Search (or browse, with an empty query) the Conan Exiles Workshop.
+    Never raises; failures return ok=False with a readable `error`.
 
-    show: which statuses to return (default: only STATUS_UPDATED). The
-      server-side tag filters are derived from it -- requiredtags
-      Enhanced when only Enhanced statuses are wanted, excludedtags
-      Legacy when Legacy isn't -- so Steam does as much of the
-      filtering as it can before anything comes back.
-    sort: SORT_BEST_MATCH (text relevance; default with a query),
-      SORT_POPULAR (default with no query), or SORT_RECENTLY_UPDATED.
-    cursor: Steam's paging cursor ("*" for the first batch). Pages are
-      walked until `count` results pass the client-side filter, Steam
-      runs out, or `max_pages` is hit; result.next_cursor continues
-      from there. When `count` fills up partway through a page,
-      next_cursor points back at THAT page (so the rest of it isn't
-      skipped) -- pass the ids already shown as `skip_ids` when
-      continuing, so they aren't returned twice.
-    resolve_children: also look up titles for required items that
-      aren't in the results themselves (one extra request).
-
-    `page` is accepted for backward compatibility but ignored -- the
-    cursor replaces it (Steam's page parameter caps out and is ignored
-    whenever a cursor is sent)."""
+    show: statuses to return (default only STATUS_UPDATED); also drives
+      Steam-side tag filters.
+    sort: SORT_BEST_MATCH, SORT_POPULAR, or SORT_RECENTLY_UPDATED.
+    cursor: walks pages until `count` results pass the filter. If a page
+      fills partway, next_cursor points at that same page; pass the ids
+      already shown as `skip_ids` to avoid duplicates.
+    resolve_children: also fetch titles of required items (one request).
+    `page` is ignored (kept for compatibility); the cursor replaces it."""
     if not api_key:
         return SearchResult(ok=False, error="No Steam Web API key configured -- add one on App Settings.")
 
@@ -336,7 +263,7 @@ def search(api_key: str, query: str = "", page: int = 1, count: int = 20, timeou
             data = _get_json(url, timeout)
         except urllib.error.HTTPError as e:
             if items:
-                break  # keep what earlier pages already found
+                break  # keep what earlier pages found
             return SearchResult(ok=False, error=_http_error_message(e, "Steam Workshop search"))
         except Exception as e:  # noqa: BLE001 - network/JSON errors of every shape land here
             if items:
@@ -358,7 +285,7 @@ def search(api_key: str, query: str = "", page: int = 1, count: int = 20, timeou
             if item.id in seen or item.status not in show:
                 continue
             if len(items) >= count:
-                filled_mid_page = True  # more matches on this page than fit
+                filled_mid_page = True
                 break
             seen.add(item.id)
             items.append(item)
@@ -366,7 +293,7 @@ def search(api_key: str, query: str = "", page: int = 1, count: int = 20, timeou
         new_cursor = str(response.get("next_cursor") or "")
         steam_has_more = bool(new_cursor) and new_cursor != page_cursor
         if filled_mid_page:
-            next_cursor = page_cursor  # continue from THIS page; skip_ids drops what was shown
+            next_cursor = page_cursor  # continue from this page; skip_ids drops what was shown
             break
         next_cursor = new_cursor if steam_has_more else ""
         if not steam_has_more or len(items) >= count:
@@ -394,12 +321,9 @@ def _resolve_child_titles(api_key: str, items: List[WorkshopItem], timeout: floa
 
 def get_details(workshop_ids: Iterable[str], api_key: str = "", cutoff_ts: int = IRIS_CUTOFF_TIMESTAMP,
                 timeout: float = 8.0, use_cache: bool = False) -> DetailsResult:
-    """Looks up specific Workshop items -- e.g. every mod already on a
-    server, to flag the outdated ones. With an API key this uses the
-    keyed endpoint, which also returns each item's required items;
-    without one it falls back to Steam's keyless endpoint (no
-    dependency info, but update status works for everyone). Never
-    raises."""
+    """Look up specific Workshop items (e.g. a server's mods). The keyed
+    endpoint also returns required items; without a key it uses the
+    keyless endpoint. Never raises."""
     ids = [str(i) for i in workshop_ids if str(i).isdigit()]
     if not ids:
         return DetailsResult(ok=True)

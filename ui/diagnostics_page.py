@@ -1,8 +1,7 @@
 """
-Settings > Diagnostics tab. One button, runs diagnostics.run_diagnostics()
-against the active server, and lists what it found in plain language --
-what's wrong, and what to do about it. Not a staged-edit settings page
-(nothing here is ever "applied"), so it doesn't use SettingsPageBase.
+Settings > Diagnostics tab: runs diagnostics.run_diagnostics() on the active
+server and lists problems and fixes in plain language. Not a SettingsPageBase
+since nothing here is applied.
 """
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ import diagnostics_runner
 import network_setup
 import network_utils
 from models import ServerConfig
+from ui.workers import keep_until_finished
 
 # Status -> (pill object name, pill text); colors come from the theme.
 _STATUS_PILL = {
@@ -48,11 +48,7 @@ def _result_row(result: diagnostics.DiagnosticResult, on_guide: Optional[Callabl
     top.addWidget(symbol)
     top.addWidget(title)
     if result.detail:
-        # A small, deliberately unobtrusive "more info on hover" cue --
-        # the tooltip itself is set on the whole row below, so hovering
-        # anywhere on the row works, not just this icon; it's just here
-        # to make it visible at a glance that there's more to see,
-        # since nothing else about the row's appearance changes.
+        # Hover cue; the tooltip is on the whole row.
         info_cue = QLabel("ⓘ")
         info_cue.setObjectName("Muted")
         info_cue.setToolTip(result.detail)
@@ -67,11 +63,7 @@ def _result_row(result: diagnostics.DiagnosticResult, on_guide: Optional[Callabl
     layout.addWidget(message)
 
     if on_guide is not None:
-        # Only ever passed for the "Router UPnP" result when it's not
-        # OK -- this is the one check where "here's what's wrong" on
-        # its own isn't enough; manually forwarding a port has enough
-        # steps that a person genuinely needs a walkthrough, not just
-        # a sentence telling them to go do it.
+        # Only for a failed "Router UPnP" result: port forwarding needs a walkthrough.
         guide_row = QHBoxLayout()
         guide_row.setContentsMargins(28, 4, 0, 0)
         guide_btn = QPushButton(action_label)
@@ -81,14 +73,7 @@ def _result_row(result: diagnostics.DiagnosticResult, on_guide: Optional[Callabl
         layout.addLayout(guide_row)
 
     if result.detail:
-        # Set on the row (and each child, since Qt tooltips don't
-        # automatically inherit from a parent widget to a child that
-        # has none of its own -- a hover over the message label itself
-        # would otherwise show no tooltip at all) so hovering anywhere
-        # on this result reveals the deeper technical detail behind
-        # the check: exact paths, commands, ports, and thresholds --
-        # more than the one-line message needs to show by default, but
-        # there for anyone troubleshooting who wants it.
+        # Set on each child too: Qt children don't inherit a parent's tooltip.
         row.setToolTip(result.detail)
         symbol.setToolTip(result.detail)
         title.setToolTip(result.detail)
@@ -106,10 +91,8 @@ class DiagnosticsPage(QWidget):
         self._result_rows: list = []
         self._worker: Optional[diagnostics_runner.DiagnosticsWorker] = None
         self._last_server: Optional[ServerConfig] = None
-        # Keeps a finished-but-not-yet-wound-down worker referenced
-        # until Qt's own QThread.finished fires, same pattern (and same
-        # reason -- "QThread: Destroyed while thread is still running")
-        # as MainWindow._retiring_workers.
+        # Keeps finished workers referenced until QThread.finished fires
+        # ("QThread: Destroyed while thread is still running").
         self._retiring_workers: list = []
 
         root = QVBoxLayout(self)
@@ -182,8 +165,7 @@ class DiagnosticsPage(QWidget):
         self._worker = diagnostics_runner.DiagnosticsWorker(server, reserved_ports=reserved_ports, parent=self)
         self._worker.finished_diagnostics.connect(self._on_diagnostics_finished)
         worker = self._worker
-        self._retiring_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, worker)
         self._worker.start()
 
     def _on_diagnostics_finished(self, results: list) -> None:
@@ -218,16 +200,13 @@ class DiagnosticsPage(QWidget):
         self.last_run_label.setText(f"Last run at {datetime.now().strftime('%I:%M %p')} -- {summary}")
 
     def on_server_switched(self) -> None:
-        """Called by main_window when the active server changes, so
-        stale results from a different server aren't left showing."""
+        """Clears results from the previous server."""
         self._clear_results()
         self.placeholder.setVisible(True)
         self.last_run_label.setText("")
 
     def _install_vc_runtime(self) -> None:
-        """Downloads and installs Microsoft's Visual C++ runtime in the
-        background (one Windows permission prompt), then re-runs
-        Diagnostics so the result reflects the new state."""
+        """Installs the VC++ runtime in the background, then re-runs Diagnostics."""
         if getattr(self, "_vc_worker", None) is not None:
             return
         import vcredist
@@ -265,9 +244,7 @@ class DiagnosticsPage(QWidget):
             self._run()
 
         self._vc_worker.done.connect(finished)
-        self._retiring_workers.append(self._vc_worker)
-        w = self._vc_worker
-        w.finished.connect(lambda w=w: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
+        keep_until_finished(self._retiring_workers, self._vc_worker)
         self._vc_worker.start()
 
     def _open_port_forwarding_guide(self) -> None:
@@ -276,8 +253,7 @@ class DiagnosticsPage(QWidget):
         if getattr(self, "_guide_worker", None) is not None:
             return  # already looking things up
         server = self._last_server
-        # Router (routing table) and public IP (HTTPS) lookups run off
-        # the GUI thread; the guide opens as soon as they're back.
+        # Router and public-IP lookups run off the GUI thread.
         import network_setup_runner
         self._guide_worker = network_setup_runner.GuideInfoWorker(server.bind_ip or None, parent=self)
 

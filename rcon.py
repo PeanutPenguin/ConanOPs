@@ -1,15 +1,7 @@
-"""
-Minimal Source RCON protocol client (the same protocol Valve-engine and
-many UE-based dedicated servers, including Conan Exiles, use). TCP-based,
-simple binary packet framing:
+"""Minimal Source RCON client (used by Conan Exiles).
 
-  int32 length | int32 request_id | int32 type | body\x00 | \x00
-
-Types: SERVERDATA_AUTH=3, SERVERDATA_AUTH_RESPONSE=2,
-       SERVERDATA_EXECCOMMAND=2, SERVERDATA_RESPONSE_VALUE=0
-
-Conan Exiles must have RCON enabled in its server settings (RCONEnabled,
-RCONPort, AdminPassword used as the RCON password) for this to connect.
+Packet: int32 length | int32 request_id | int32 type | body\x00 | \x00
+The server needs RCONEnabled and RCONPort set; AdminPassword is the RCON password.
 """
 from __future__ import annotations
 
@@ -100,9 +92,7 @@ class RconClient:
 
     def _authenticate(self) -> None:
         self._send_packet(SERVERDATA_AUTH, self.password)
-        # Some servers send an empty SERVERDATA_RESPONSE_VALUE before the
-        # actual auth response -- read until we see AUTH_RESPONSE or the
-        # connection tells us otherwise.
+        # Some servers send an empty RESPONSE_VALUE before the AUTH_RESPONSE.
         for _ in range(2):
             pkt_id, pkt_type, _body = self._recv_packet()
             if pkt_type == SERVERDATA_AUTH_RESPONSE:
@@ -124,6 +114,5 @@ class RconClient:
 
 
 def send_command(host: str, port: int, password: str, cmd: str, timeout: float = 5.0) -> str:
-    """Convenience one-shot: connect, run one command, disconnect."""
     with RconClient(host, port, password, timeout=timeout) as client:
         return client.command(cmd)

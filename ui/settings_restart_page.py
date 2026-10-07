@@ -33,21 +33,13 @@ def _row(label_text: str, widget) -> QVBoxLayout:
 
 class SettingsRestartPage(SettingsPageBase):
     def __init__(self, get_hourly_activity, parent=None):
-        """get_hourly_activity: callable -> list[int] of 24 session-count
-        buckets (index 0 = 12am-1am, etc.), used to suggest a quiet window."""
-        # requires_restart=False: the restart WINDOW (e.g. 4am-5am) is a
-        # ConanOps scheduler setting, read live by ConanOps' own code to
-        # decide when to trigger a restart in the future -- it isn't
-        # itself a Conan Exiles .ini value, so applying a new window
-        # doesn't need the server to restart to take effect (only
-        # actually restarting the server, whenever that next happens,
-        # does). See base_settings_page.py's constructor comment.
+        """get_hourly_activity: callable -> 24 per-hour session counts, used to suggest a window."""
+        # The window is a ConanOps scheduler setting, not an .ini value, so no restart is needed.
         super().__init__("Restart Schedule", parent, requires_restart=False)
         self.get_hourly_activity = get_hourly_activity
         self._build_form()
 
     def _build_form(self) -> None:
-        # Card 1: the schedule itself.
         schedule_card = QFrame()
         schedule_card.setObjectName("Card")
         card_layout = QVBoxLayout(schedule_card)
@@ -101,7 +93,6 @@ class SettingsRestartPage(SettingsPageBase):
         card_layout.addWidget(self.panel)
         self.form_layout.addWidget(schedule_card)
 
-        # Card 2: when people actually play, with the window overlaid.
         activity_card = QFrame()
         activity_card.setObjectName("Card")
         act = QVBoxLayout(activity_card)
@@ -158,12 +149,7 @@ class SettingsRestartPage(SettingsPageBase):
                                        hour(self.end_edit.text()) if on else None)
 
     def can_apply(self) -> bool:
-        # A restart time that doesn't parse as HH:MM used to be silently
-        # treated as 00:00 by the scheduler (_parse_hhmm's fallback) --
-        # someone who mistyped "1800" instead of "18:00" would see no
-        # error anywhere, just a restart window quietly relocated to
-        # midnight. Refuse to apply instead, the same way a port
-        # conflict blocks Apply on the Network page.
+        # The scheduler would silently read a bad time as 00:00, so block Apply.
         return self._times_valid
 
     def _check_times(self) -> None:
@@ -179,12 +165,7 @@ class SettingsRestartPage(SettingsPageBase):
             if not end_ok:
                 bad.append("end")
             self.time_error_label.setText(f"Quiet hours {' and '.join(bad)} time must be in HH:MM (24-hour) format.")
-        # See SettingsNetworkPage._check_port_conflict for why this needs
-        # an explicit re-check: this handler and the base class's own
-        # dirty-tracking handler are both connected to the same
-        # textChanged signal, and the connection order between them
-        # otherwise leaves the Apply button's enabled state one
-        # keystroke stale.
+        # Re-check explicitly: signal connection order would leave Apply one keystroke stale.
         self._update_pending_ui()
 
     def _toggle_panel(self, on: bool) -> None:
@@ -193,9 +174,7 @@ class SettingsRestartPage(SettingsPageBase):
 
     def load_committed(self, values: dict) -> None:
         super().load_committed(values)
-        # Called whenever the active server changes -- re-read ITS
-        # history (this used to be computed once, at startup, for
-        # whichever server happened to be active then).
+        # Runs on server switch, so refresh from the new server's history.
         self._refresh_suggestion()
         self._check_times()
 
