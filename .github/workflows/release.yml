@@ -41,10 +41,9 @@ jobs:
           python -m pip install -r requirements.txt pyinstaller pytest pytest-timeout
 
       # Runs on real Windows -- the one place ConanOps' Windows-only parts get
-      # exercised. Doesn't block the build yet: the results show up in this
-      # run's log so problems can be fixed, without stopping a release.
+      # exercised. A failing test stops the build, so a broken version never
+      # reaches a release; the failures are listed in the run's annotations.
       - name: Run tests
-        continue-on-error: true
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen

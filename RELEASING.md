@@ -22,9 +22,8 @@ offers published, non-pre-release releases that have `ConanOps-update.zip` attac
 ## If a build fails
 
 Open the failed run in the **Actions** tab; the red step shows what went wrong.
-"is already released" means `VERSION` wasn't raised. The **Run tests** step never
-stops a build -- if it shows failures, those are worth a look, since it's the only
-place ConanOps' Windows-only code runs automatically.
+"is already released" means `VERSION` wasn't raised. If **Run tests** fails, a test
+broke on Windows and no release was made -- the run's summary lists which tests failed.
 
 ## Building on your own PC instead
 

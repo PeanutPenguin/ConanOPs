@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import threading
+import sys
+import socket
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn, TCPServer
 from typing import Callable, Optional, Tuple
@@ -256,7 +258,18 @@ def _make_handler(get_active_server: Callable[[], Optional[ServerConfig]],
 
 class _ThreadingHTTPServer(ThreadingMixIn, TCPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # SO_REUSEADDR means "reuse a port in TIME_WAIT" on Linux, but on
+    # Windows it lets a second program bind a port that's already in use
+    # (both end up listening, and connections go to either). There,
+    # SO_EXCLUSIVEADDRUSE makes a taken port fail to bind, so the
+    # fallback to the next port actually happens.
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self):
+        opt = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if sys.platform == "win32" and opt is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, opt, 1)
+        super().server_bind()
 
 
 class WebControlServer:
