@@ -18,7 +18,10 @@ class _Runner(QThread):
 
     def __init__(self, fn):
         super().__init__()
-        self._fn = fn
+        import powershell
+        # A web action's "no permission prompts" block follows the work
+        # onto this thread.
+        self._fn = powershell.carry_gate(fn)
 
     def run(self) -> None:
         try:

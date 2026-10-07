@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QTimer, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QTimer, Qt, QThread, Signal
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QMessageBox,
@@ -55,6 +55,7 @@ from log_monitor import LogMonitor
 from scheduler import Scheduler
 from update_runner import CheckWorker, UpdateWorker, ModDownloadWorker
 from ui.mod_recovery import ModRecoveryMixin
+from ui.web_actions import WebActionsMixin
 
 from ui.theme import build_stylesheet
 from ui.sidebar import Sidebar
@@ -119,7 +120,7 @@ PAGE_HEADERS = {
     "access": ("Access", "Whitelist and bans"),
     "console": ("Console", "Send RCON commands to the running server"),
     "settings": ("Server Settings", "Everything ConanOps writes to {server}'s settings files"),
-    "app": ("App Settings", "ConanOps itself: theme, startup and integrations"),
+    "app": ("App Settings", "ConanOps itself: startup, remote access, integrations and appearance"),
 }
 
 
@@ -170,9 +171,10 @@ class _NotifyWorker(QThread):
         self.finished_notify.emit(ok, self.server_name, self.title, self.message)
 
 
-class MainWindow(QMainWindow, ModRecoveryMixin):
+class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
     # From the Cloudflare tunnel's thread: (link or "", status text).
     web_tunnel_changed = Signal(str, str)
+    admin_mode_problem = Signal(str)
 
     def __init__(self, config: Optional[AppConfig] = None, background: bool = False):
         # background=True: the windowless instance started by the
@@ -206,6 +208,9 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         # (the dashboard only keeps the active server's).
         self._web_logs: Dict[str, deque] = {}
         self._web_status: Dict[str, dict] = {}
+        # Changes made from the web version that need a Windows permission
+        # prompt, waiting for someone to use the PC (see queue_for_pc()).
+        self._needs_pc: List[tuple] = []
         self._known_running: Dict[str, bool] = {}  # server id -> was it running last health check
         # Watchdog crash-restart state -- see _attempt_watchdog_restart().
         # Neither dict is persisted: a fresh app session starts every
@@ -476,6 +481,8 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         # once shortly after start, then whenever 20 h have passed.
         self.app_settings_page.on_app_update_available = self._on_app_update_available
         self.app_settings_page.on_show_tour = self._show_tour_from_settings
+        self.app_settings_page.on_restart_elevated = self._restart_with_admin_rights
+        self.admin_mode_problem.connect(self.app_settings_page.show_admin_mode_problem)
         self.app_settings_page.web_tunnel = self.web_tunnel
         self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel
         self.app_settings_page.on_web_password_changed = self.web_control.sessions.revoke_all
@@ -507,6 +514,13 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             import threading
             threading.Thread(target=keep_alive.ensure, args=(self.config.keep_alive_enabled,),
                              name="keep-alive-ensure", daemon=True).start()
+
+            def check_admin(enabled=self.config.admin_mode_enabled):
+                import admin_mode
+                problem = admin_mode.ensure(enabled)
+                if problem:
+                    self.admin_mode_problem.emit(problem)
+            threading.Thread(target=check_admin, name="admin-mode-ensure", daemon=True).start()
         # Also check shortly after startup, not just after the first
         # 30-minute wait -- a real QTimer parented to self (rather than
         # the bare QTimer.singleShot(msec, callable) form) so Qt's own
@@ -684,38 +698,16 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             self._on_nav_selected("updates")
         elif key == "ddns":
             self._on_nav_selected("app")
+            self.app_settings_page.show_section("ddns")
         elif key in ("restart", "backups", "alerts"):
             self._on_nav_selected("settings")
             self.settings_container._select(key)
 
     def _enable_rcon_for_active(self) -> None:
-        """Dashboard's "Turn On RCON": RCON on with a random password and
-        a port no other server uses. Written to Game.ini now; the server
-        picks it up the next time it starts."""
-        import secrets
+        """Dashboard's "Turn On RCON" (see WebActionsMixin.enable_rcon)."""
         server = self.config.get_active()
-        if not server:
-            return
-        server.rcon_enabled = True
-        if not server.rcon_password:
-            server.rcon_password = secrets.token_urlsafe(12)
-        taken = self.config.used_ports(exclude_id=server.id) | {server.game_port, server.game_port + 1, server.query_port}
-        while server.rcon_port in taken:
-            server.rcon_port += 1
-        self.config.save()
-        if server.install_dir:
-            process_manager.sync_rcon_ini(server)
-        self.console_page.set_server(server)
-        if self.config.active_server_id == server.id:
-            self.settings_alerts_page.load_committed({
-                "rcon_enabled": server.rcon_enabled, "rcon_port": server.rcon_port,
-                "rcon_password": server.rcon_password,
-                "webhook_discord_url": server.webhook_discord_url, "webhook_ntfy_url": server.webhook_ntfy_url,
-            })
-        running = bool(self._known_running.get(server.id))
-        self._notify(server, "RCON turned on." + (" It takes effect the next time the server restarts."
-                                                  if running else ""), title="RCON On")
-        self._refresh_chrome()
+        if server:
+            self.enable_rcon(server)
 
     def _on_sidebar_power(self) -> None:
         server = self.config.get_active()
@@ -920,37 +912,15 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         self.access_page.set_server(server)
         self.console_page.set_server(server)
 
-        self.settings_identity_page.load_committed(server.gameplay)
+        # One source for what each settings page loads (settings_values),
+        # shared with the web version.
+        for key, values in self.settings_values(server).items():
+            page = self.settings_page_for(key)
+            if page is not None:
+                page.load_committed(values)
         self.settings_identity_page.set_install_dir(server.install_dir)
-        self.settings_rates_page.load_committed(server.gameplay)
-        for page in self.gameplay_pages.values():
-            page.load_committed(server.gameplay)
-
-        self.settings_network_page.load_committed({
-            "name": server.name, "password": server.password,
-            "game_port": server.game_port, "query_port": server.query_port,
-            "bind_ip": server.bind_ip, "max_players": server.max_players,
-        })
-        self.settings_backups_page.load_committed({
-            "backup_daily_keep": server.backup_daily_keep,
-            "backup_weekly_keep": server.backup_weekly_keep,
-            "backup_interval_hours": server.backup_interval_hours,
-            "backup_destination": server.backup_destination,
-            "backup_before_update": server.backup_before_update,
-        })
-        self.settings_restart_page.load_committed({
-            "restart_enabled": server.restart_enabled,
-            "restart_start": server.restart_start,
-            "restart_end": server.restart_end,
-        })
         self.settings_restart_page._refresh_suggestion()
-        self.settings_alerts_page.load_committed({
-            "rcon_enabled": server.rcon_enabled,
-            "rcon_port": server.rcon_port,
-            "rcon_password": server.rcon_password,
-            "webhook_discord_url": server.webhook_discord_url,
-            "webhook_ntfy_url": server.webhook_ntfy_url,
-        })
+        self.settings_alerts_page.server_name = server.name
         self.diagnostics_page.on_server_switched()
 
     def _reserved_ports_for_active(self) -> set:
@@ -988,6 +958,53 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
                     QSystemTrayIcon.Warning, 5000,
                 )
 
+    # ------------------------------------------- waiting for the PC --
+    def queue_for_pc(self, label: str, fn) -> None:
+        """A web action needed Windows' permission, which only someone at
+        the PC can give: run `fn` the next time someone uses the window.
+        A newer change with the same label replaces the older one."""
+        self._needs_pc_seq = getattr(self, "_needs_pc_seq", 0) + 1
+        self._needs_pc = [x for x in self._needs_pc if x[0] != label] + [(label, fn, self._needs_pc_seq)]
+        _log.info(f"Waiting for someone at the PC: {label}")
+
+    def needs_pc_labels(self) -> List[str]:
+        return [x[0] for x in self._needs_pc]
+
+    def needs_pc_counter(self) -> int:
+        return getattr(self, "_needs_pc_seq", 0)
+
+    def needs_pc_queued_since(self, counter: int) -> List[str]:
+        """Changes queued (or re-queued) after needs_pc_counter() was `counter`."""
+        return [x[0] for x in self._needs_pc if x[2] > counter]
+
+    def _run_needs_pc(self) -> None:
+        if not self._needs_pc or powershell.prompts_blocked() or getattr(self, "_asking_needs_pc", False):
+            return
+        self._asking_needs_pc = True
+        try:
+            items = list(self._needs_pc)
+            text = ("Changes made from the web version need Windows' permission, which can only be given here:\n\n"
+                    + "\n".join(f"•  {x[0]}" for x in items)
+                    + "\n\nFinish them now? Windows will ask for permission.")
+            answer = QMessageBox.question(self, "Finish Changes From the Web", text,
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            self._needs_pc = [x for x in self._needs_pc if x not in items]
+            if answer != QMessageBox.Yes:
+                _log.info("Changes from the web that needed permission were dismissed at the PC.")
+                return
+            for label, fn, _seq in items:
+                try:
+                    fn()
+                except Exception as e:  # noqa: BLE001
+                    _log.error(f"Couldn't finish \"{label}\": {e}")
+        finally:
+            self._asking_needs_pc = False
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow() and self._needs_pc:
+            QTimer.singleShot(300, self._run_needs_pc)
+
     def _start_network_reconcile(
         self, server: ServerConfig, remove: bool = False, legacy_names=(), old_ports=(),
         do_firewall: bool = True, do_upnp: bool = True, on_done=None,
@@ -996,7 +1013,16 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         server's firewall rules and UPnP router forwards on a background
         thread -- one UAC prompt at most. Keeps a reference to the worker
         until it finishes, since an unreferenced QThread can be garbage
-        collected out from under itself mid-run."""
+        collected out from under itself mid-run.
+
+        From the web version without administrator rights, the firewall
+        part (which needs a permission prompt) waits for someone at the
+        PC; the router part still happens now."""
+        if do_firewall and powershell.prompts_blocked():
+            args = dict(remove=remove, legacy_names=list(legacy_names), old_ports=list(old_ports))
+            self.queue_for_pc(f"Windows Firewall rules for {server.name}",
+                              lambda s=server, a=args: self._start_network_reconcile(s, do_upnp=False, **a))
+            do_firewall = False
         ports = list(old_ports)
         if remove:
             ports += [server.game_port, server.game_port + 1, server.query_port]
@@ -1036,37 +1062,49 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if not server:
             self.settings_network_page.repair_finished()
             return
+        self.prepare_network_repair(server)
+
+        def done(result, srv=server):
+            self.settings_network_page.repair_finished()
+            QMessageBox.information(self, f"Repair Networking — {srv.name}",
+                                    "\n".join(self.network_repair_lines(result)) or "Done.")
+
+        self._start_network_reconcile(server, legacy_names=[server.name], on_done=done)
+
+    def prepare_network_repair(self, server: ServerConfig) -> None:
+        """Before re-creating rules/forwards: fill in this PC's address if
+        the server doesn't have one yet (shared with the web version)."""
         if not server.bind_ip:
             import network_utils
             ip = network_utils.get_local_ip()
             if network_utils.is_usable_lan_ipv4(ip):
                 server.bind_ip = ip
                 self.config.save()
+                self.settings_saved_elsewhere(server, "network")
 
-        def done(result, srv=server):
-            self.settings_network_page.repair_finished()
-            lines = []
-            if result.get("error"):
-                lines.append(f"Something went wrong: {result['error']}")
-            for r in result.get("fw_results") or []:
-                lines.append(("✓ " if r.success else "✗ ") + "Firewall: " + r.message)
-            upnp = result.get("upnp")
-            if upnp is None:
-                pass
-            elif not upnp.get("upnp_available"):
-                lines.append("Router: automatic forwarding (UPnP) isn't available -- forward the ports "
-                             "manually (Diagnostics has a step-by-step guide).")
-            else:
-                ok = all(upnp.get(k) for k in ("game_port_forwarded", "game_port_plus_one_forwarded",
-                                                "query_port_forwarded"))
-                lines.append("✓ Router: all three ports forwarded." if ok
-                             else "✗ Router: some ports couldn't be forwarded automatically.")
-                if upnp.get("double_nat"):
-                    lines.append("⚠ Your router's internet address isn't public (double NAT or carrier-grade "
-                                 "NAT) -- see Diagnostics.")
-            QMessageBox.information(self, f"Repair Networking — {srv.name}", "\n".join(lines) or "Done.")
-
-        self._start_network_reconcile(server, legacy_names=[server.name], on_done=done)
+    @staticmethod
+    def network_repair_lines(result: dict) -> List[str]:
+        """What a Repair Networking run did, line by line."""
+        lines = []
+        if result.get("error"):
+            lines.append(f"✗ Something went wrong: {result['error']}")
+        for r in result.get("fw_results") or []:
+            lines.append(("✓ " if r.success else "✗ ") + "Firewall: " + r.message)
+        upnp = result.get("upnp")
+        if upnp is None:
+            pass
+        elif not upnp.get("upnp_available"):
+            lines.append("✗ Router: automatic forwarding (UPnP) isn't available -- forward the ports "
+                         "manually (Diagnostics has a step-by-step guide).")
+        else:
+            ok = all(upnp.get(k) for k in ("game_port_forwarded", "game_port_plus_one_forwarded",
+                                            "query_port_forwarded"))
+            lines.append("✓ Router: all three ports forwarded." if ok
+                         else "✗ Router: some ports couldn't be forwarded automatically.")
+            if upnp.get("double_nat"):
+                lines.append("⚠ Your router's internet address isn't public (double NAT or carrier-grade "
+                             "NAT) -- see Diagnostics.")
+        return lines
 
     # ------------------------------------------------------- settings io --
     def _retire_worker(self, worker) -> None:
@@ -1083,13 +1121,13 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
     def _handle_config_changed(self, server: ServerConfig) -> None:
         self.config.save()
 
-    def _apply_gameplay(self, values: dict) -> None:
+    def _apply_gameplay(self, values: dict, server: Optional[ServerConfig] = None) -> None:
         """Shared apply handler for every gameplay/identity settings
         page (Server Identity, Progression, and the 9 generic
         categories). `values` keys are real Conan ini key names (or a
         __-prefixed ConanOps-only key like __description, which is
         stored but never written to any .ini file)."""
-        s = self._active()
+        s = server or self._active()
         s.gameplay.update(values)
         self.config.save()
 
@@ -1107,8 +1145,8 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if updates:
             ini_utils.apply_known_keys(settings_ini, updates)
 
-    def _apply_network(self, values: dict) -> None:
-        s = self._active()
+    def _apply_network(self, values: dict, server: Optional[ServerConfig] = None) -> None:
+        s = server or self._active()
         old_name = s.name
         old_game_port = s.game_port
         old_query_port = s.query_port
@@ -1159,24 +1197,31 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
                 "MaxPlayers": ("/script/engine.gamesession", str(s.max_players)),
             })
         self._refresh_sidebar()
-        self.console_page.set_server(s)  # picks up any RCON port/enabled change
+        if self.config.active_server_id == s.id:
+            self.console_page.set_server(s)  # picks up any RCON port/enabled change
 
-    def _apply_backups_settings(self, values: dict) -> None:
-        s = self._active()
+    def _apply_backups_settings(self, values: dict, server: Optional[ServerConfig] = None) -> None:
+        s = server or self._active()
         for k, v in values.items():
             setattr(s, k, v)
         self.config.save()
 
-    def _apply_restart(self, values: dict) -> None:
-        s = self._active()
+    def _apply_restart(self, values: dict, server: Optional[ServerConfig] = None) -> None:
+        s = server or self._active()
         for k, v in values.items():
             setattr(s, k, v)
         self.config.save()
 
-    def _apply_alerts(self, values: dict) -> None:
-        s = self._active()
+    def _apply_alerts(self, values: dict, server: Optional[ServerConfig] = None) -> None:
+        s = server or self._active()
+        old_webhook = s.webhook_discord_url
         for k, v in values.items():
             setattr(s, k, v)
+        if s.webhook_discord_url != old_webhook:
+            # The live status message lives in the old webhook's channel;
+            # post a fresh one in the new channel instead of trying to
+            # edit one that can't be reached through the new link.
+            s.discord_status_message_id = ""
         self.config.save()
         if s.install_dir:
             # RCON's actual home is Game.ini's [RconPlugin] section, per
@@ -1193,7 +1238,8 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
                 "RconPassword": ("RconPlugin", s.rcon_password),
                 "RconPort": ("RconPlugin", str(s.rcon_port)),
             })
-        self.console_page.set_server(s)
+        if self.config.active_server_id == s.id:
+            self.console_page.set_server(s)
 
     def _handle_mods_changed(self, server: ServerConfig) -> None:
         self.config.save()
@@ -1268,10 +1314,14 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         else:
             self._finish_restart(server, manual)
 
-    def _finish_restart(self, server: ServerConfig, manual: bool) -> None:
+    def _finish_restart(self, server: ServerConfig, manual) -> None:
+        """manual: True (a click in the app: show a dialog), "web" (from
+        the web version: alert), False (scheduled: alert)."""
         def report(e):
-            if manual:
+            if manual is True:
                 QMessageBox.critical(self, "Restart failed", str(e))
+            elif manual == "web":
+                self._notify(server, f"Restart failed: {e}", title="Restart Failed")
             else:
                 self._notify(server, f"Scheduled restart failed: {e}", title="Restart Failed")
         self._do_restart(server, on_error=report)
@@ -1283,7 +1333,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         no on_error it's raised (inline/test mode) or logged."""
         self._expected_stop.add(server.id)
         self._tracker_for(server).close_all_active()
-        self._online_by_server[server.id] = set()
+        self._clear_online(server.id)
 
         def done(_result, sid=server.id):
             self._known_running[sid] = True
@@ -1315,22 +1365,11 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if result.repairs:
             self._notify(server, "Auto-repaired before start:\n" + "\n".join(result.repairs), title="Auto-Repair")
         try:
-            process_manager.launch(server)
-            self._known_running[server.id] = True
-            # An explicit Start means "I want this running" -- persisted
-            # so auto-resume (_auto_resume_servers(), called on the next
-            # app/PC startup) knows to bring it back up without being
-            # told again. Not touched by a scheduled/watchdog restart
-            # (_do_restart(), _attempt_watchdog_restart()) -- those only
-            # ever happen for a server this was already true for.
-            server.desired_running = True
-            # Clicking Start is the person overriding a failed-update hold
-            # (see _handle_update_failure) -- run what's installed.
-            server.update_hold = ""
-            server.mod_recovery = {}  # starting by hand ends any wait for a mod fix
-            self._post_update_watch.pop(server.id, None)
-            self.config.save()
-            self._watchdog_attempts.pop(server.id, None)  # fresh start -- any prior crash-streak no longer applies
+            # An explicit Start means "I want this running" (persisted for
+            # auto-resume), overrides a failed-update hold or a wait for
+            # a mod fix, and starts a fresh crash streak -- see
+            # WebActionsMixin._launch_by_request, shared with the web.
+            self._launch_by_request(server)
         except FileNotFoundError as e:
             QMessageBox.critical(self, "Start failed", str(e))
 
@@ -1353,7 +1392,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             return  # Stop button shouldn't even be visible in this case
         self._expected_stop.add(server.id)
         self._tracker_for(server).close_all_active()
-        self._online_by_server[server.id] = set()
+        self._clear_online(server.id)
         # An explicit Stop means "I don't want this running" -- the
         # other half of the desired_running contract described in
         # _handle_start() above. This is what keeps a deliberately-
@@ -1428,7 +1467,8 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         self._notify(server, "Scheduled restart starting -- checking for updates first.", title="Scheduled Restart")
         worker = CheckWorker(server.steamcmd_dir)
         worker.finished_check.connect(
-            lambda latest, info, srv=server: self._on_restart_update_check(srv, latest)
+            lambda latest, info, srv=server: (self.updates_page.record_check(srv, latest, info),
+                                              self._on_restart_update_check(srv, latest))
         )
         self._update_check_workers[server.id] = worker
         self._retire_worker(worker)
@@ -1463,7 +1503,8 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             return
         worker = CheckWorker(server.steamcmd_dir)
         worker.finished_check.connect(
-            lambda latest, info, srv=server: self._on_periodic_update_check(srv, latest)
+            lambda latest, info, srv=server: (self.updates_page.record_check(srv, latest, info),
+                                              self._on_periodic_update_check(srv, latest))
         )
         self._update_check_workers[server.id] = worker
         self._retire_worker(worker)
@@ -1506,7 +1547,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if running:
             self._expected_stop.add(server.id)
             self._tracker_for(server).close_all_active()
-            self._online_by_server[server.id] = set()
+            self._clear_online(server.id)
             self._known_running[server.id] = False
 
         backup = bool(server.backup_before_update and server.backup_destination and server.install_dir)
@@ -1534,11 +1575,11 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             self.config.save()
             self._notify(server, f"Updated to build {server.installed_buildid}.", title="Update Applied")
             self._update_failure_streak.pop(server.id, None)
-            if self.config.active_server_id == server.id:
-                self.updates_page.set_server(server)
+            self.updates_page.record_result(server, True, automatic=True)
             self._update_mods_then_relaunch(server, was_running, watch=True)
             return
 
+        self.updates_page.record_result(server, False, automatic=True)
         streak = self._update_failure_streak.get(server.id, 0) + 1
         self._update_failure_streak[server.id] = streak
         self._handle_update_failure(server, result, was_running)
@@ -1651,6 +1692,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         # Done whether or not the refresh fully succeeded -- whatever
         # did land should be pointed at correctly.
         self._handle_mods_changed(server)
+        self.mods_changed_elsewhere(server)
         if not result.success:
             self._notify(
                 server,
@@ -1825,6 +1867,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         # finished downloading (or got a renamed .pak) needs its real
         # path in the file for the server's next restart to load it.
         self._handle_mods_changed(server)
+        self.mods_changed_elsewhere(server)
         if not result.success:
             self._notify(
                 server,
@@ -1858,7 +1901,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             # thread (see ui/updates_page.py) -- just the bookkeeping here.
             self._expected_stop.add(server.id)
             self._tracker_for(server).close_all_active()
-            self._online_by_server[server.id] = set()
+            self._clear_online(server.id)
             self._known_running[server.id] = False
         return was_running
 
@@ -1878,7 +1921,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             return  # a restore for this server is already in flight
         self._expected_stop.add(server.id)
         self._tracker_for(server).close_all_active()
-        self._online_by_server[server.id] = set()
+        self._clear_online(server.id)
         was_running = process_manager.is_running(server.install_dir) if server.install_dir else False
 
         worker = backup_runner.RestoreWorker(server, entry, was_running)
@@ -1893,6 +1936,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if ok:
             self._known_running[server.id] = process_manager.is_running(server.install_dir) if server.install_dir else False
             self._notify(server, "Backup restored and server relaunched.", title="Restore Complete")
+            self.backups_changed(server)
         else:
             _log.error(f"Restore failed for {server.name}: {err}")
             self._notify(server, f"Restore failed: {err}", title="Restore Failed")
@@ -2013,7 +2057,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
 
             if was_running and not running_now and server.id not in self._expected_stop and server.id not in self._automation_locked:
                 self._tracker_for(server).close_all_active()
-                self._online_by_server[server.id] = set()
+                self._clear_online(server.id)
                 self._notify(server, "The server process stopped unexpectedly (crash or external kill).", title="Server Crashed")
                 self._unresponsive_since.pop(server.id, None)
                 self._known_running[server.id] = False
@@ -2094,7 +2138,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if need_stop_first:
             self._expected_stop.add(server.id)
             self._tracker_for(server).close_all_active()
-            self._online_by_server[server.id] = set()
+            self._clear_online(server.id)
 
         def work():
             if need_stop_first:
@@ -2488,6 +2532,33 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         if hasattr(self, "_lock_action"):
             self._lock_action.setText("Change App PIN…" if self.config.app_lock_enabled else "Set App PIN…")
 
+    def _report_app_update_problem(self, text: str) -> None:
+        """An app update's restart went wrong. Updates can be started from
+        the web or automatically with nobody at the PC, so this never
+        blocks: a non-modal message on the PC plus the server alerts."""
+        box = QMessageBox(QMessageBox.Warning, "Update Installed", text, QMessageBox.Ok, self)
+        box.setModal(False)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.show()
+        target = self.config.get_active()
+        if target is not None:
+            self._notify(target, text, title="ConanOps Update")
+
+    def _restart_with_admin_rights(self) -> None:
+        """"Run with admin rights" was just turned on: start the elevated
+        copy (no prompt) and close this one. Servers keep running."""
+        import admin_mode
+        if not admin_mode.restart_elevated():
+            QMessageBox.warning(self, "Couldn't Restart",
+                                "ConanOps couldn't start itself with admin rights. Close and reopen it to switch.")
+            return
+        self._really_quit = True
+        self.close()
+        lock = getattr(QApplication.instance(), "_conanops_lock", None)
+        if lock is not None:
+            lock.unlock()  # after closing, so the web port is free for the new copy
+        QApplication.instance().quit()
+
     def _relaunch_after_update(self) -> None:
         """Called by AppSettingsPage right after self_update.apply_update()
         reports success. Python already has the OLD code loaded in
@@ -2519,11 +2590,9 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             proc = subprocess.Popen(relaunch_args, **popen_kwargs)
         except OSError as e:
             _log.error(f"Update installed, but couldn't relaunch automatically: {e}")
-            QMessageBox.information(
-                self, "Update Installed",
+            self._report_app_update_problem(
                 f"The update installed, but ConanOps couldn't restart itself automatically "
-                f"({e}). Please close and reopen it yourself.",
-            )
+                f"({e}). Please close and reopen it yourself.")
             return
 
         # Release the single-instance lock (see main.py) as soon as
@@ -2543,12 +2612,10 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         time.sleep(0.4)
         if proc.poll() is not None:
             _log.error(f"Relaunched process exited immediately (code {proc.returncode}); staying open.")
-            QMessageBox.warning(
-                self, "Update Installed",
+            self._report_app_update_problem(
                 "The update installed, but the new version didn't start up successfully. This window "
                 "will stay open so nothing you're running gets interrupted -- please try closing and "
-                "reopening ConanOps yourself, or check the update file if that keeps happening.",
-            )
+                "reopening ConanOps yourself, or check the update file if that keeps happening.")
             if lock is not None:
                 lock.tryLock(1_000)  # we're staying open after all -- reclaim it
             return
@@ -2726,10 +2793,19 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             page.show_web_remote_status(url, status)
         if url and url != getattr(self, "_last_web_url", ""):
             self._last_web_url = url
-            target = self.config.get_active()
-            if target is not None:
-                self._notify(target, f"Web version link (works from anywhere, password needed): {url}",
-                             title="Web Link")
+            # The link goes only to ntfy (a private phone topic) -- never to
+            # Discord, whose channels players can often read. Anyone with
+            # the link still needs the password, but there's no reason to
+            # hand it out.
+            topics = list(dict.fromkeys(s.webhook_ntfy_url for s in self.config.servers if s.webhook_ntfy_url))
+            if self.tray_icon and self.tray_icon.isVisible():
+                self.tray_icon.showMessage("Web Link", "The from-anywhere web link changed -- see App Settings → "
+                                                       "Web Version.", QSystemTrayIcon.Information, 5000)
+            if topics:
+                import threading
+                text = f"New from-anywhere link for the ConanOps web version (password needed): {url}"
+                threading.Thread(target=lambda: [webhooks.send_ntfy(t, text, title="ConanOps web link")
+                                                 for t in topics], daemon=True).start()
 
     def _start_or_run(self, worker) -> None:
         """Tests (RUN_OPS_INLINE) run the worker synchronously."""

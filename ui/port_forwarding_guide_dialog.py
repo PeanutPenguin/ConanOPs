@@ -48,6 +48,86 @@ def _step(number: int, title: str, body: str) -> QFrame:
     return card
 
 
+def guide_content(game_port: int, query_port: int, local_ip: str, router_ip: Optional[str],
+                  public_ip: Optional[str]):
+    """The guide's text: (intro, [(number, title, body), ...]) -- shared
+    by this dialog and the web version."""
+    ports_line = f"UDP {game_port}, {game_port + 1} (Conan's own second port, right above the game port), and {query_port}"
+    local_ip_text = local_ip or "(not yet detected -- run the Networking step or Diagnostics first)"
+    public_ip_text = public_ip or "(couldn't detect)"
+    if router_ip:
+        router_step = (
+            f"In a web browser, go to http://{router_ip} -- this is ConanOps' best guess at your router's "
+            f"address. If that doesn't load anything, open a Command Prompt, run \"ipconfig\", and use the "
+            f"\"Default Gateway\" address listed for your network adapter instead."
+        )
+    else:
+        router_step = (
+            "ConanOps couldn't detect your router's address. Open a Command Prompt, run \"ipconfig\", and "
+            "use the \"Default Gateway\" address listed for your network adapter (often 192.168.0.1 or "
+            "192.168.1.1) -- type it into a web browser's address bar. A sticker on the router usually "
+            "shows it too."
+        )
+
+    intro = (
+        "Every router is a little different, so exact menu names vary -- but the steps below "
+        "are the same shape everywhere. This only needs doing once per router; ConanOps has no "
+        "way to do it for you, since it would need your router's own admin login, which only you have."
+    )
+    steps = []
+    steps.append((
+        1, "Open your router's admin page", router_step,
+    ))
+    steps.append((
+        2, "Log in",
+        "Often admin/admin or admin/password if it's never been changed -- check a sticker on the "
+        "router itself first, since many ship with a unique password printed there. Your ISP's "
+        "setup guide or the router's own manual (searchable by its model number, also usually on "
+        "that sticker) will have it if not.",
+    ))
+    steps.append((
+        3, "Find port forwarding",
+        "Look for \"Port Forwarding,\" \"Virtual Server,\" \"NAT Forwarding,\" or sometimes a "
+        "\"Gaming\" section -- usually under an \"Advanced\" menu. The exact name depends on the "
+        "router's brand, but it's almost always one of these.",
+    ))
+    steps.append((
+        4, "Give this PC a fixed local address",
+        f"Find \"DHCP Reservation\", \"Address Reservation\" or \"Static Lease\" (often under LAN or "
+        f"DHCP settings) and reserve {local_ip_text} for this PC. Without this, the router can hand "
+        f"the PC a different address after a restart, and the forwarding rules below would point at "
+        f"nothing.",
+    ))
+    steps.append((
+        5, "Add three UDP forwarding rules",
+        f"Forward {ports_line} -- all pointed at this PC's local IP address: {local_ip_text}. Choose "
+        f"UDP as the protocol. If the router only offers TCP or \"Both\", pick \"Both\". Keep the "
+        f"external and internal port numbers the same.",
+    ))
+    steps.append((
+        6, "Save, and reboot the router if it asks",
+        "Some routers apply port-forwarding rules immediately; others need a restart first. If "
+        "the router's own interface doesn't say either way, restarting it after saving is the "
+        "safe default.",
+    ))
+    steps.append((
+        7, "Check it actually worked",
+        f"Have a friend outside your home network connect to {public_ip_text}:{game_port}. Testing "
+        f"your own public IP from inside your home often fails even when everything is set up "
+        f"correctly (many routers don't support \"NAT loopback\"), and most online \"open port\" "
+        f"checkers only test TCP, not UDP -- so a friend actually connecting is the check that can't "
+        f"be wrong.",
+    ))
+    steps.append((
+        8, "Still not reachable?",
+        "If your router's status page shows its own internet/WAN address starting with 10., 172.16-31., "
+        "192.168. or 100.64-127., there's another router or modem in front of it (double NAT), or your "
+        "ISP shares one public address between customers (carrier-grade NAT). Forward the same ports "
+        "on the ISP's modem too (or put it in bridge mode), or ask your ISP for a public IP address.",
+    ))
+    return intro, steps
+
+
 class PortForwardingGuideDialog(QDialog):
     def __init__(
         self,
@@ -63,32 +143,12 @@ class PortForwardingGuideDialog(QDialog):
         self.setModal(True)
         self.setMinimumSize(520, 560)
 
-        ports_line = f"UDP {game_port}, {game_port + 1} (Conan's own second port, right above the game port), and {query_port}"
-        local_ip_text = local_ip or "(not yet detected -- run the Networking step or Diagnostics first)"
-        public_ip_text = public_ip or "(couldn't detect)"
-        if router_ip:
-            router_step = (
-                f"In a web browser, go to http://{router_ip} -- this is ConanOps' best guess at your router's "
-                f"address. If that doesn't load anything, open a Command Prompt, run \"ipconfig\", and use the "
-                f"\"Default Gateway\" address listed for your network adapter instead."
-            )
-        else:
-            router_step = (
-                "ConanOps couldn't detect your router's address. Open a Command Prompt, run \"ipconfig\", and "
-                "use the \"Default Gateway\" address listed for your network adapter (often 192.168.0.1 or "
-                "192.168.1.1) -- type it into a web browser's address bar. A sticker on the router usually "
-                "shows it too."
-            )
-
+        intro_text, steps = guide_content(game_port, query_port, local_ip, router_ip, public_ip)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 16)
         root.setSpacing(12)
 
-        intro = QLabel(
-            "Every router is a little different, so exact menu names vary -- but the steps below "
-            "are the same shape everywhere. This only needs doing once per router; ConanOps has no "
-            "way to do it for you, since it would need your router's own admin login, which only you have."
-        )
+        intro = QLabel(intro_text)
         intro.setWordWrap(True)
         root.addWidget(intro)
 
@@ -99,57 +159,8 @@ class PortForwardingGuideDialog(QDialog):
         steps_layout = QVBoxLayout(steps_container)
         steps_layout.setSpacing(10)
 
-        steps_layout.addWidget(_step(
-            1, "Open your router's admin page", router_step,
-        ))
-        steps_layout.addWidget(_step(
-            2, "Log in",
-            "Often admin/admin or admin/password if it's never been changed -- check a sticker on the "
-            "router itself first, since many ship with a unique password printed there. Your ISP's "
-            "setup guide or the router's own manual (searchable by its model number, also usually on "
-            "that sticker) will have it if not.",
-        ))
-        steps_layout.addWidget(_step(
-            3, "Find port forwarding",
-            "Look for \"Port Forwarding,\" \"Virtual Server,\" \"NAT Forwarding,\" or sometimes a "
-            "\"Gaming\" section -- usually under an \"Advanced\" menu. The exact name depends on the "
-            "router's brand, but it's almost always one of these.",
-        ))
-        steps_layout.addWidget(_step(
-            4, "Give this PC a fixed local address",
-            f"Find \"DHCP Reservation\", \"Address Reservation\" or \"Static Lease\" (often under LAN or "
-            f"DHCP settings) and reserve {local_ip_text} for this PC. Without this, the router can hand "
-            f"the PC a different address after a restart, and the forwarding rules below would point at "
-            f"nothing.",
-        ))
-        steps_layout.addWidget(_step(
-            5, "Add three UDP forwarding rules",
-            f"Forward {ports_line} -- all pointed at this PC's local IP address: {local_ip_text}. Choose "
-            f"UDP as the protocol. If the router only offers TCP or \"Both\", pick \"Both\". Keep the "
-            f"external and internal port numbers the same.",
-        ))
-        steps_layout.addWidget(_step(
-            6, "Save, and reboot the router if it asks",
-            "Some routers apply port-forwarding rules immediately; others need a restart first. If "
-            "the router's own interface doesn't say either way, restarting it after saving is the "
-            "safe default.",
-        ))
-        steps_layout.addWidget(_step(
-            7, "Check it actually worked",
-            f"Have a friend outside your home network connect to {public_ip_text}:{game_port}. Testing "
-            f"your own public IP from inside your home often fails even when everything is set up "
-            f"correctly (many routers don't support \"NAT loopback\"), and most online \"open port\" "
-            f"checkers only test TCP, not UDP -- so a friend actually connecting is the check that can't "
-            f"be wrong.",
-        ))
-        steps_layout.addWidget(_step(
-            8, "Still not reachable?",
-            "If your router's status page shows its own internet/WAN address starting with 10., 172.16-31., "
-            "192.168. or 100.64-127., there's another router or modem in front of it (double NAT), or your "
-            "ISP shares one public address between customers (carrier-grade NAT). Forward the same ports "
-            "on the ISP's modem too (or put it in bridge mode), or ask your ISP for a public IP address.",
-        ))
-
+        for step in steps:
+            steps_layout.addWidget(_step(*step))
         steps_layout.addStretch(1)
         scroll.setWidget(steps_container)
         root.addWidget(scroll, 1)

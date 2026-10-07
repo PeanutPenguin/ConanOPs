@@ -45,27 +45,71 @@ def _find_layout_of(widget: QWidget) -> Optional[QLayout]:
     return search(parent.layout())
 
 
+def _preceding_label(widget: QWidget) -> Optional[QLabel]:
+    layout = _find_layout_of(widget)
+    if layout is None:
+        return None
+    idx = next((i for i in range(layout.count()) if layout.itemAt(i).widget() is widget), -1)
+    for i in range(idx - 1, -1, -1):
+        w = layout.itemAt(i).widget()
+        if isinstance(w, QLabel) and w.text().strip():
+            return w
+    return None
+
+
+def _label_widget(widget: QWidget) -> Optional[QLabel]:
+    """The QLabel naming a field: the one before it in its layout -- or,
+    when the field sits inside a small wrapper with a button (password +
+    Show, address + Auto-detect), the one before that wrapper."""
+    w = widget
+    for _ in range(3):
+        lbl = _preceding_label(w)
+        if lbl is not None:
+            return lbl
+        parent = w.parentWidget()
+        if parent is None or parent.layout() is None or parent.layout().count() > 4:
+            break
+        w = parent
+    return None
+
+
+def _clean(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text or "").strip()
+
+
 def _label_for(widget: QWidget) -> str:
     if isinstance(widget, QCheckBox) and widget.text().strip():
         return widget.text().strip()
     name = widget.accessibleName().strip()
     if name:
         return name
-    layout = _find_layout_of(widget)
-    if layout is not None:
-        idx = next((i for i in range(layout.count()) if layout.itemAt(i).widget() is widget), -1)
-        for i in range(idx - 1, -1, -1):
-            w = layout.itemAt(i).widget()
-            if isinstance(w, QLabel) and w.text().strip():
-                return re.sub(r"<[^>]+>", "", w.text()).strip().rstrip(":")
-    return ""
+    lbl = _label_widget(widget)
+    return _clean(lbl.text()).rstrip(":") if lbl is not None else ""
+
+
+def _help_for(widget: QWidget) -> str:
+    text = _clean(widget.toolTip())
+    if not text:
+        lbl = _label_widget(widget)
+        text = _clean(lbl.toolTip()) if lbl is not None else ""
+    return text
+
+
+def _hhmm(value: Any) -> str:
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(value or ""))
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else str(value or "")
+
+
+def is_secret(name: str, widget: QWidget) -> bool:
+    return isinstance(widget, QLineEdit) and (
+        widget.echoMode() != QLineEdit.Normal or bool(re.search(r"password|token|webhook|url", name, re.I)))
 
 
 def describe_field(name: str, widget: QWidget, getter, slider_scale=None) -> Dict[str, Any]:
     f: Dict[str, Any] = {
         "key": name,
         "label": _label_for(widget) or _humanize(name),
-        "help": re.sub(r"<[^>]+>", "", widget.toolTip() or "").strip(),
+        "help": _help_for(widget),
         "enabled": widget.isEnabled(),
     }
     value = getter(widget)
@@ -91,33 +135,59 @@ def describe_field(name: str, widget: QWidget, getter, slider_scale=None) -> Dic
     elif isinstance(widget, QTimeEdit):
         f.update(type="time", value=value)
     elif isinstance(widget, QLineEdit):
-        secret = widget.echoMode() != QLineEdit.Normal or bool(re.search(r"password|token|webhook|url", name, re.I))
-        f.update(type="text", value=value, placeholder=widget.placeholderText(), secret=secret)
-        if re.fullmatch(r"\d{1,2}:\d{2}", str(value or "")) or "HH:MM" in widget.placeholderText().upper():
-            f["type"] = "time"
+        if is_secret(name, widget):
+            # Never sent to the browser: it only learns whether one is set.
+            # Typing a new one replaces it; leaving it alone keeps it.
+            f.update(type="secret", value="", has_value=bool(str(value or "")),
+                     placeholder=widget.placeholderText())
+        else:
+            f.update(type="text", value=value, placeholder=widget.placeholderText())
+            if re.fullmatch(r"\s*\d{1,2}:\d{2}\s*", str(value or "")) or "HH:MM" in widget.placeholderText().upper():
+                f.update(type="time", value=_hhmm(value))
     else:
         f.update(type="text", value=value if isinstance(value, (str, int, float, bool)) else str(value))
     return f
 
 
-def _page_error(page) -> str:
-    """The first visible error text on a page (labels named ErrorText)."""
-    for lbl in page.findChildren(QLabel):
-        if lbl.objectName() == "ErrorText" and lbl.isVisibleTo(page) and lbl.text().strip():
-            return lbl.text().strip()
-    return ""
+def page_error(page) -> str:
+    """The visible error text on a page (labels named ErrorText)."""
+    errors = [lbl.text().strip() for lbl in page.findChildren(QLabel)
+              if lbl.objectName() == "ErrorText" and not lbl.isHidden() and lbl.text().strip()]
+    return "\n".join(dict.fromkeys(errors))
+
+
+def _enabled_when(page, disabled: List[str]) -> Dict[str, Dict[str, Any]]:
+    """For fields greyed out until a switch on the same page is ticked
+    (scheduled restart times, say): {field: {switch: value}}."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not disabled:
+        return out
+    for name, w in page._fields.items():
+        if not isinstance(w, QCheckBox):
+            continue
+        original = w.isChecked()
+        w.setChecked(not original)
+        for d in disabled:
+            if d not in out and page._fields[d].isEnabled():
+                out[d] = {name: not original}
+        w.setChecked(original)
+    return out
 
 
 def describe_page(key: str, title: str, page) -> Dict[str, Any]:
     sliders = getattr(page, "_sliders", {}) or {}
     fields = [describe_field(name, w, page._getters[name], (sliders.get(name) or (None, None))[1])
               for name, w in page._fields.items()]
-    return {
-        "key": key, "title": title, "fields": fields,
-        "apply_label": page.apply_btn.text(),
-        "note": "Saved now; takes effect the next time the server restarts."
-        if "Restart" in page.apply_btn.text() else "",
-    }
+    deps = _enabled_when(page, [f["key"] for f in fields if not f["enabled"]])
+    for f in fields:
+        if f["key"] in deps:
+            f["enabled_when"] = deps[f["key"]]
+    note = ""
+    if "Restart" in page.apply_btn.text():
+        note = "Saved now; takes effect the next time the server restarts."
+    elif key == "alerts":
+        note = "RCON changes take effect the next time the server restarts; alerts change right away."
+    return {"key": key, "title": title, "fields": fields, "apply_label": page.apply_btn.text(), "note": note}
 
 
 def _coerce(widget: QWidget, value: Any) -> Any:
@@ -127,25 +197,33 @@ def _coerce(widget: QWidget, value: Any) -> Any:
         return int(value)
     if isinstance(widget, (QDoubleSpinBox, QAbstractSlider)):
         return float(value)
-    return "" if value is None else value if not isinstance(value, str) else value
+    if isinstance(widget, QComboBox):
+        idx = widget.findData(value)
+        if idx < 0:
+            idx = widget.findText(str(value))
+        if idx < 0:
+            raise ValueError(f"{value!r} isn't one of the choices")
+        return value
+    return "" if value is None else str(value)
 
 
-def apply_page(page, values: Dict[str, Any]) -> Dict[str, Any]:
-    """Puts `values` into the page's widgets and runs its own Apply.
-    Unknown keys are ignored. Raises WebActionError when the page
-    refuses (its own validation), with the page's own error text."""
+def put_values(page, values: Dict[str, Any]) -> None:
+    """Puts `values` into a page's widgets (unknown keys are ignored).
+    Raises WebActionError for a value that doesn't fit the field."""
     for name, value in values.items():
-        if name in page._fields:
-            try:
-                page._setters[name](page._fields[name], _coerce(page._fields[name], value))
-            except (TypeError, ValueError) as e:
-                page.discard()
-                raise WebActionError(f"Invalid value for {name}: {e}") from e
-    if page.dirty_count() == 0:
-        return {"changed": False}
-    if not page.can_apply():
-        reason = _page_error(page) or "These settings can't be saved as they are."
-        page.discard()
-        raise WebActionError(reason)
-    page.apply_own()
-    return {"changed": True}
+        if name not in page._fields:
+            continue
+        widget = page._fields[name]
+        try:
+            v = _coerce(widget, value)
+            if isinstance(widget, QLineEdit) and widget.inputMask() == "" and _is_time_field(page, name, widget):
+                v = _hhmm(v)
+            page._setters[name](widget, v)
+        except (TypeError, ValueError) as e:
+            label = _label_for(widget) or _humanize(name)
+            why = "enter a number" if "literal" in str(e) or "float" in str(e) else str(e)
+            raise WebActionError(f"{label}: {why}.") from e
+
+
+def _is_time_field(page, name: str, widget: QLineEdit) -> bool:
+    return "HH:MM" in widget.placeholderText().upper() or name in ("restart_start", "restart_end")

@@ -20,6 +20,9 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
+import shutil
+import tempfile
 import socket
 import sys
 import threading
@@ -27,7 +30,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn, TCPServer
 from typing import Callable, Optional, Tuple
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import applog
 import network_utils
@@ -128,14 +131,51 @@ def _make_handler(owner: "WebControlServer"):
                 parts.append("Secure")
             return "; ".join(parts)
 
+        def _chunked(self) -> bool:
+            return "chunked" in (self.headers.get("Transfer-Encoding") or "").lower()
+
+        def _read_chunks(self, limit: int, sink) -> int:
+            """Reads a Transfer-Encoding: chunked body (some proxies send
+            those instead of a Content-Length) into sink(bytes). Returns
+            the size, or -1 if it's over `limit` or malformed."""
+            total = 0
+            while True:
+                line = self.rfile.readline(1024)
+                try:
+                    size = int(line.split(b";")[0].strip() or b"0", 16)
+                except ValueError:
+                    return -1
+                if size == 0:
+                    while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
+                        pass  # trailers
+                    return total
+                total += size
+                if total > limit:
+                    return -1
+                remaining = size
+                while remaining:
+                    chunk = self.rfile.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        return -1
+                    sink(chunk)
+                    remaining -= len(chunk)
+                self.rfile.readline(8)  # the CRLF after each chunk
+
         def _read_body(self) -> Optional[dict]:
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                return None
-            if length > MAX_BODY:
-                return None
-            raw = self.rfile.read(length) if length else b""
+            if self._chunked():
+                parts: list = []
+                if self._read_chunks(MAX_BODY, parts.append) < 0:
+                    return None
+                raw = b"".join(parts)
+                length = len(raw)
+            else:
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    return None
+                if length > MAX_BODY:
+                    return None
+                raw = self.rfile.read(length) if length else b""
             if not raw:
                 return {}
             try:
@@ -177,9 +217,59 @@ def _make_handler(owner: "WebControlServer"):
             if url.path == "/api/logout":
                 owner.sessions.revoke(self._token())
                 return self._json({"ok": True}, extra={"Set-Cookie": self._cookie("", 0)})
+            m = re.fullmatch(r"/api/servers/([^/]+)/backups/import", url.path)
+            if m:
+                return self._import_backup(m.group(1))
             if url.path.startswith("/api/"):
                 return self._api("POST", url)
             self._json({"error": "Not found"}, 404)
+
+        def _import_backup(self, sid: str) -> None:
+            """A backup zip uploaded from the browser, streamed to a temp
+            file (it can be large) and then imported like the app's
+            "Import External Backup"."""
+            if not owner.password_hash() or not self._authed():
+                return self._json({"error": "Please sign in.", "needs_login": True}, 401)
+            if owner.api is None:
+                return self._json({"error": "ConanOps is still starting."}, 503)
+            from webui.api import MAX_IMPORT_BYTES
+            from webui.bridge import WebActionError
+            chunked = self._chunked()
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0 and not chunked:
+                return self._json({"ok": False, "message": "Choose a backup file first."}, 400)
+            if length > MAX_IMPORT_BYTES:
+                self.close_connection = True
+                return self._json({"ok": False, "message": "That file is too big to be a server backup."}, 413)
+            folder = tempfile.mkdtemp(prefix="conanops-import-")
+            path = os.path.join(folder, "upload.zip")
+            try:
+                remaining = 0 if chunked else length
+                with open(path, "wb") as f:
+                    if chunked and self._read_chunks(MAX_IMPORT_BYTES, f.write) <= 0:
+                        raise OSError("the upload was empty, too big or broken")
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise OSError("the upload stopped before it finished")
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                name = unquote(self.headers.get("X-Filename", "") or "")
+                result = owner.api.import_backup(sid, path, name)
+                self._json(result)
+            except WebActionError as e:
+                self._json({"ok": False, "error": str(e), "message": str(e)}, 400)
+            except OSError as e:
+                self.close_connection = True
+                self._json({"ok": False, "message": f"The upload failed: {e}"}, 400)
+            except Exception as e:  # noqa: BLE001
+                _log.exception(f"Backup import failed: {e}")
+                self._json({"ok": False, "message": "Something went wrong -- see conanops.log on the PC."}, 500)
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
 
         def _static(self, path: str) -> None:
             file_path = _asset(*_STATIC[path])
@@ -238,8 +328,10 @@ def _make_handler(owner: "WebControlServer"):
                 self._json(result if isinstance(result, dict) else {"ok": True})
             except WebActionError as e:
                 self._json({"ok": False, "error": str(e), "message": str(e)}, 400)
-            except TimeoutError as e:
-                self._json({"ok": False, "error": str(e), "message": str(e)}, 504)
+            except TimeoutError:
+                msg = ("ConanOps on the PC is busy and didn't answer in time. It may still finish this -- check "
+                       "before trying again.")
+                self._json({"ok": False, "error": msg, "message": msg}, 504)
             except Exception as e:  # noqa: BLE001 - never leak a traceback to the browser
                 _log.exception(f"Web API {method} {url.path} failed: {e}")
                 self._json({"ok": False, "error": "Something went wrong -- see conanops.log on the PC.",

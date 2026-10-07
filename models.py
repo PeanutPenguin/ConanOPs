@@ -281,6 +281,7 @@ class AppConfig:
     keep_pc_awake: bool = True
     # Reopen ConanOps if it stops while someone is signed in (keep_alive.py).
     keep_alive_enabled: bool = False
+    admin_mode_enabled: bool = False
     # What happens when a mod stops a server from starting (ui/mod_recovery.py):
     # "wait" for the mod's author to fix it (keeps the world intact),
     # "start_without" the broken mod, or just "alert".
@@ -451,6 +452,7 @@ class AppConfig:
             background_mode_enabled=raw.get("background_mode_enabled", False),
             keep_pc_awake=raw.get("keep_pc_awake", True),
             keep_alive_enabled=raw.get("keep_alive_enabled", False),
+            admin_mode_enabled=raw.get("admin_mode_enabled", False),
             mod_recovery_mode=raw.get("mod_recovery_mode", "wait"),
             tour_done=raw.get("tour_done", False),
             handle_update_restarts=raw.get("handle_update_restarts", False),
@@ -495,6 +497,7 @@ class AppConfig:
             "background_mode_enabled": self.background_mode_enabled,
             "keep_pc_awake": self.keep_pc_awake,
             "keep_alive_enabled": self.keep_alive_enabled,
+            "admin_mode_enabled": self.admin_mode_enabled,
             "mod_recovery_mode": self.mod_recovery_mode,
             "tour_done": self.tour_done,
             "handle_update_restarts": self.handle_update_restarts,

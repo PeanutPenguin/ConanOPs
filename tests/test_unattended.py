@@ -279,7 +279,7 @@ def test_background_option_hidden_unless_already_on(monkeypatch, tmp_path):
     monkeypatch.setattr(background_mode, "status", lambda: None)
     for enabled, visible in ((False, False), (True, True)):
         page = _make_page(models.AppConfig(background_mode_enabled=enabled))
-        assert page.background_checkbox.isVisibleTo(page) is visible
+        assert (not page.background_checkbox.isHidden()) is visible  # within its section
 
 
 @pytest.mark.parametrize("policy,opt_out,expected", [

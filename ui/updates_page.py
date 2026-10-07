@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -24,11 +25,14 @@ class UpdatesPage(QWidget):
         self.on_update_now_guard = None      # callable(server) -> bool: True if an update is already in flight elsewhere
         self.on_stop_before_update = None    # callable(server) -> bool: stops the server if running, returns was_running
         self.on_relaunch_after_update = None  # callable(server, was_running) -> None
-        self._check_worker: Optional[CheckWorker] = None
-        self._update_worker: Optional[UpdateWorker] = None
+        # Per server (by id), so a check or update keeps going -- and its
+        # result stays -- when someone switches servers, and so the web
+        # version can show and start them for any server.
+        self._check_workers: Dict[str, CheckWorker] = {}
+        self._update_workers: Dict[str, UpdateWorker] = {}
+        self._state: Dict[str, dict] = {}
         # See ui/access_page.py's AccessPage._retiring_workers comment.
         self._retiring_workers: list = []
-        self._pending_changelog: Optional[changelog.ChangelogInfo] = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
@@ -131,16 +135,60 @@ class UpdatesPage(QWidget):
         self._retiring_workers.append(worker)
         worker.finished.connect(lambda w=worker: self._retiring_workers.remove(w) if w in self._retiring_workers else None)
 
+    # ------------------------------------------------------------ state --
+    def state_for(self, server: ServerConfig) -> dict:
+        """What's known about a server's updates: "build_state" (text,
+        pill), "pending" (headline or ""), "latest", "changelog",
+        "history" (newest first: when, change, result), "checking",
+        "updating"."""
+        st = self._state.setdefault(server.id, {
+            "build_state": ("● Not checked yet", "PillOff"), "pending": "", "latest": "", "changelog": "",
+            "history": [],
+        })
+        st["checking"] = server.id in self._check_workers
+        st["updating"] = server.id in self._update_workers
+        return st
+
+    def _render(self) -> None:
+        server = self.server
+        if server is None:
+            return
+        st = self.state_for(server)
+        self.installed_label.setText(server.installed_buildid or "Unknown")
+        self._set_build_state(*st["build_state"])
+        self.check_btn.setEnabled(not st["checking"])
+        self.check_btn.setText("Checking…" if st["checking"] else "Check Now")
+        self.update_now_btn.setEnabled(not st["updating"])
+        self.update_now_btn.setText("Updating…" if st["updating"] else "Back Up && Update Now")
+        if st["pending"]:
+            self.pending_label.setText(st["pending"])
+            self.changelog_view.setPlainText(st["changelog"])
+            self.pending_frame.show()
+        else:
+            self.pending_frame.hide()
+        self.history_table.setRowCount(0)
+        for when, change, result in st["history"]:
+            row = self.history_table.rowCount()
+            self.history_table.insertRow(row)
+            for col, text in enumerate((when, change, result)):
+                self.history_table.setItem(row, col, QTableWidgetItem(text))
+
     def set_server(self, server: ServerConfig) -> None:
         self.server = server
-        self.installed_label.setText(server.installed_buildid or "Unknown")
+        self.refresh_settings()
+        self._render()
+
+    def refresh_settings(self) -> None:
+        """Shows the server's saved auto-update settings (after they were
+        changed somewhere else, e.g. the web version)."""
+        if not self.server:
+            return
         self.auto_update_check.blockSignals(True)
-        self.auto_update_check.setChecked(server.auto_update)
+        self.auto_update_check.setChecked(self.server.auto_update)
         self.auto_update_check.blockSignals(False)
         self.interval_spin.blockSignals(True)
-        self.interval_spin.setValue(server.auto_update_check_interval_hours)
+        self.interval_spin.setValue(self.server.auto_update_check_interval_hours)
         self.interval_spin.blockSignals(False)
-        self.pending_frame.hide()
 
     def _on_auto_update_toggled(self, on: bool) -> None:
         if self.server:
@@ -154,49 +202,47 @@ class UpdatesPage(QWidget):
             if self.on_auto_update_setting_changed:
                 self.on_auto_update_setting_changed(self.server)
 
-    def check_now(self) -> None:
-        if not self.server or self._check_worker:
-            return
-        server = self.server
-        self.check_btn.setEnabled(False)
-        self.check_btn.setText("Checking…")
-        self._check_worker = CheckWorker(server.steamcmd_dir)
-        self._check_worker.finished_check.connect(
-            lambda latest, info, srv=server: self._on_check_finished(srv, latest, info)
-        )
-        self._check_worker.start()
+    def check_now(self, server: Optional[ServerConfig] = None) -> bool:
+        """Starts a check for `server` (default: the one shown). False if
+        one is already running for it."""
+        server = server or self.server
+        if not server or server.id in self._check_workers:
+            return False
+        worker = CheckWorker(server.steamcmd_dir)
+        worker.finished_check.connect(lambda latest, info, srv=server: self._on_check_finished(srv, latest, info))
+        self._check_workers[server.id] = worker
+        worker.start()
+        if self.server is server:
+            self._render()
+        return True
 
     def _on_check_finished(self, server: ServerConfig, latest_buildid, info: changelog.ChangelogInfo) -> None:
-        self._check_worker = None
-        # Same reasoning as _on_update_finished: don't let a check that
-        # was kicked off for one server paint its result onto a
-        # different server's page if the person switched away while it
-        # was running.
-        if self.server is not server:
-            return
-        self.check_btn.setEnabled(True)
-        self.check_btn.setText("Check Now")
+        self._retire_worker(self._check_workers.pop(server.id, None))
+        self.record_check(server, latest_buildid, info)
 
+    def record_check(self, server: ServerConfig, latest_buildid, info) -> None:
+        """A check's result (from this page or an automatic one)."""
+        st = self.state_for(server)
         if not latest_buildid or latest_buildid == server.installed_buildid:
-            self.pending_frame.hide()
-            self._set_build_state("● Up to date" if latest_buildid else "● Couldn't check", "PillOn" if latest_buildid else "PillWarn")
-            return
-        self._set_build_state(f"● Build {latest_buildid} available", "PillWarn")
-
-        self._pending_changelog = info
-        # installed_buildid/latest_buildid are bare Steam build ids, not
-        # dotted version strings -- pass "" for both so this only goes
-        # on the changelog's own keyword check (see is_major_update's
-        # docstring); comparing two build ids as if they were versions
-        # made every update show up as MAJOR UPDATE.
-        is_major = changelog.is_major_update("", "", info.body if info.fetched_ok else "")
-        label = "MAJOR UPDATE" if is_major else "Update"
-        self.pending_label.setText(f"{label}: Build {latest_buildid} available")
-        self.changelog_view.setPlainText(
-            info.body if info.fetched_ok and info.body else "No changelog text available yet."
-        )
-        self._latest_buildid = latest_buildid
-        self.pending_frame.show()
+            st.update(pending="", latest="", changelog="",
+                      build_state=("● Up to date", "PillOn") if latest_buildid else ("● Couldn't check", "PillWarn"))
+        else:
+            # installed_buildid/latest_buildid are bare Steam build ids, not
+            # dotted version strings -- pass "" for both so this only goes
+            # on the changelog's own keyword check (see is_major_update's
+            # docstring); comparing two build ids as if they were versions
+            # made every update show up as MAJOR UPDATE.
+            body = getattr(info, "body", "") if getattr(info, "fetched_ok", False) else ""
+            is_major = changelog.is_major_update("", "", body)
+            st.update(
+                build_state=(f"● Build {latest_buildid} available", "PillWarn"),
+                pending=f"{'MAJOR UPDATE' if is_major else 'Update'}: Build {latest_buildid} available",
+                latest=latest_buildid,
+                changelog=body or "No changelog text available yet.",
+            )
+        st["checked_at"] = datetime.now().isoformat(timespec="minutes")
+        if self.server is server:
+            self._render()
 
     def _set_build_state(self, text: str, pill: str) -> None:
         self.build_state_label.setText(text)
@@ -205,42 +251,44 @@ class UpdatesPage(QWidget):
         self.build_state_label.style().polish(self.build_state_label)
 
     def _update_now(self) -> None:
-        if not self.server or self._update_worker:
-            return
-        server = self.server  # captured now -- see _on_update_finished's comment
-        if self.on_update_now_guard and self.on_update_now_guard(server):
-            QMessageBox.information(
-                self, "Update already in progress",
-                f"An update for \"{server.name}\" is already running (started automatically or from "
-                f"another tab) -- wait for it to finish before starting another.",
-            )
-            return
+        self.update_now(self.server)
 
-        # The backup now happens inside UpdateWorker, AFTER the server has
+    def update_now(self, server: Optional[ServerConfig], quiet: bool = False) -> str:
+        """Backs up, stops (if running), updates and restarts `server`.
+        Returns "" when started, else why not (also shown in a dialog
+        unless quiet)."""
+        if not server:
+            return "No server."
+        if server.id in self._update_workers or (self.on_update_now_guard and self.on_update_now_guard(server)):
+            msg = (f"An update for \"{server.name}\" is already running (started automatically or from "
+                   f"another tab) -- wait for it to finish before starting another.")
+            if not quiet:
+                QMessageBox.information(self, "Update already in progress", msg)
+            return msg
+
+        # The backup happens inside UpdateWorker, AFTER the server has
         # stopped -- a backup taken first would copy a live database.
-
-        # A manual update used to run straight against a live server --
-        # stop it first, the same as the automatic update path already
-        # did, so files being validated/replaced aren't also open and
-        # being written to by the running process at the same time.
+        # A manual update stops the server first, the same as the
+        # automatic update path, so files being validated/replaced
+        # aren't also open and being written to by the running process.
         was_running = self.on_stop_before_update(server) if self.on_stop_before_update else False
-
-        self.update_now_btn.setEnabled(False)
-        self.update_now_btn.setText("Updating…")
-        self._update_worker = UpdateWorker(
+        worker = UpdateWorker(
             server.steamcmd_dir, server.install_dir,
             stop_server=server if was_running else None,
             backup_server=server if server.backup_before_update else None,
             backup_destination=server.backup_destination if server.backup_before_update else "",
         )
-        self._update_worker.finished_update.connect(
+        worker.finished_update.connect(
             lambda result, srv=server, wr=was_running: self._on_update_finished(srv, result, wr)
         )
-        self._update_worker.start()
+        self._update_workers[server.id] = worker
+        worker.start()
+        if self.server is server:
+            self._render()
+        return ""
 
     def _on_update_finished(self, server: ServerConfig, result, was_running: bool) -> None:
-        self._retire_worker(self._update_worker)
-        self._update_worker = None
+        self._retire_worker(self._update_workers.pop(server.id, None))
 
         if self.on_relaunch_after_update:
             self.on_relaunch_after_update(server, was_running, result)
@@ -249,30 +297,19 @@ class UpdatesPage(QWidget):
             server.installed_buildid = result.installed_buildid or server.installed_buildid
             if self.on_update_applied:
                 self.on_update_applied(server, server.installed_buildid)
+        self.record_result(server, result.success)
 
-        # `server` is the one THIS update was actually for, captured
-        # when the button was clicked -- not necessarily self.server
-        # anymore, since the person may have switched to a different
-        # server in the sidebar while the update was running. Only
-        # touch this page's own widgets (button state, installed-build
-        # label, history table) if we're still looking at that same
-        # server; otherwise those widgets belong to whatever server IS
-        # showing now, and overwriting them with this update's result
-        # would display the wrong server's build id.
-        if self.server is not server:
-            return
-        self.update_now_btn.setEnabled(True)
-        self.update_now_btn.setText("Back Up && Update Now")
-        if result.success:
-            self.installed_label.setText(server.installed_buildid or "Unknown")
-            self._add_history_row("just now", f"→ {server.installed_buildid}", "succeeded")
-            self.pending_frame.hide()
+    def record_result(self, server: ServerConfig, success: bool, automatic: bool = False) -> None:
+        """Adds an update attempt to the server's history (manual or
+        automatic) and clears its pending notice after a success."""
+        st = self.state_for(server)
+        when = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if success:
+            st["history"].insert(0, (when, f"→ {server.installed_buildid}" + (" (automatic)" if automatic else ""),
+                                     "succeeded"))
+            st.update(pending="", latest="", changelog="", build_state=("● Up to date", "PillOn"))
         else:
-            self._add_history_row("just now", "update attempt", "failed")
-
-    def _add_history_row(self, when: str, change: str, result: str) -> None:
-        # Always insert at the top (index 0) so History reads newest-first.
-        self.history_table.insertRow(0)
-        self.history_table.setItem(0, 0, QTableWidgetItem(when))
-        self.history_table.setItem(0, 1, QTableWidgetItem(change))
-        self.history_table.setItem(0, 2, QTableWidgetItem(result))
+            st["history"].insert(0, (when, "automatic update attempt" if automatic else "update attempt", "failed"))
+        del st["history"][50:]
+        if self.server is server:
+            self._render()

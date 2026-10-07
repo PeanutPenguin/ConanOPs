@@ -601,8 +601,18 @@ Code signing is optional and configured with environment variables -- see `SIGNI
 
 ## Web version (1.0.3)
 
-App Settings → Web Control. Turn it on, set a password (at least 8 characters), and open the "On your Wi-Fi" link on any device on the same network ("Allow Through Firewall" if Windows blocks it). "Also let me use it from anywhere" downloads Cloudflare's signed `cloudflared.exe` into `data/tools/` and runs a free quick tunnel; the https link appears in App Settings and is sent to server alerts whenever it changes (it changes each time the tunnel reconnects).
+App Settings → Web Control. Turn it on, set a password (at least 8 characters), and open the "On your Wi-Fi" link on any device on the same network ("Allow Through Firewall" if Windows blocks it). "Also let me use it from anywhere" downloads Cloudflare's signed `cloudflared.exe` into `data/tools/` and runs a free quick tunnel; the https link appears in App Settings and is sent to the servers' ntfy topics (never Discord) whenever it changes (it changes each time the tunnel reconnects).
 
 The web version (`assets/web/`) is a single-page app served by `web_control.py`; its API (`webui/api.py`) runs every action on the app's GUI thread through `webui/bridge.py`, using the same handlers as the app's buttons. Dialogs the app would show during a web action are returned to the browser as text instead (questions are answered "No"). Settings pages are read and written generically from each page's widgets (`webui/fields.py`).
 
 Security: PBKDF2-SHA256 password hash in the config; random session tokens kept only as SHA-256 hashes in `web_sessions.json`; HttpOnly, SameSite=Strict cookies (Secure over the tunnel); changes require a custom header and matching Origin; 5 wrong passwords lock that address out with growing delays (to 1 hour), plus an overall limit; strict Content-Security-Policy. Not available from the web: deleting ConanOps or servers, adding servers, changing the web password, turning the remote link on/off.
+
+### Windows permission prompts and the web version
+
+A web action never shows a Windows permission (UAC) prompt: `powershell.no_prompts()` is active while the bridge runs it, and `run_privileged()` returns `RUN_NEEDS_PC` instead. Changes that need one (firewall rules for a port change or Repair Networking, Windows update hours, the Visual C++ runtime) are queued with `MainWindow.queue_for_pc()` and offered the next time someone activates the window on the PC; the web shows them as "Waiting for the PC".
+
+"Run with admin rights" (`admin_mode.py`) registers the Task Scheduler task "ConanOps (admin)" (RunLevel Highest, no trigger, priority 4, no time limit). A copy of ConanOps started without admin rights starts the task (`schtasks /Run`, no prompt), hands over the single-instance lock and exits; the elevated copy carries `--elevated` so it never loops, and picks up `--keep-alive` from `admin-launch-args.json`. If the task doesn't start within 20 s, the unelevated copy carries on. The uninstaller asks an elevated copy to close via `quit.request` (an unelevated process can't end it) and removes the task. Trade-off: anything that can write to ConanOps' folder could get admin rights without a prompt.
+
+### How the web version saves settings
+
+`webui/settings.py` keeps its own, never-shown copies of the settings pages. A request loads the chosen server's saved values (`MainWindow.settings_values`), runs the page's own validation, and calls the app's save handler for that server (`_apply_network(values, server)` etc.). If that server is open in the app, `settings_saved_elsewhere` gives its pages the new saved values only for fields nobody is editing (`merge_committed`). Secret fields (passwords, webhook URLs, tokens) are never sent to the browser; it only learns whether one is set.

@@ -72,6 +72,9 @@ class ModsPage(QWidget):
         self._palette = load_theme()         # row colors for outdated/broken mods
         self._downloaded: dict = {}          # mod id -> .pak present, refreshed by _refresh()
         self._mod_status: dict = {}          # server_id -> {workshop_id: swa.WorkshopItem}
+        # server_id -> the mod ids that check asked about. A mod added
+        # since isn't "not on the Workshop" -- it just hasn't been checked.
+        self._mod_status_ids: dict = {}
         self._mod_status_error: dict = {}    # server_id -> error text from the last check
         self._status_worker: Optional[ModStatusWorker] = None
         self._status_worker_server_id: Optional[str] = None
@@ -192,10 +195,22 @@ class ModsPage(QWidget):
     def _cutoff_ts(self) -> int:
         return swa.cutoff_timestamp(self.get_update_cutoff() if self.get_update_cutoff else swa.DEFAULT_CUTOFF_DATE)
 
-    def _check_mod_status(self) -> None:
-        if not self.server or not self.server.mods or self._status_worker is not None:
+    def _was_checked(self, mod_id: str, server=None) -> bool:
+        server = server or self.server
+        return bool(server) and mod_id in self._mod_status_ids.get(server.id, set())
+
+    def store_status(self, server_id: str, ids, items: dict) -> None:
+        """A status check's result, from here or the web version."""
+        self._mod_status[server_id] = dict(items)
+        self._mod_status_ids[server_id] = set(ids)
+        self._mod_status_error.pop(server_id, None)
+        if self.server is not None and self.server.id == server_id:
+            self._refresh()
+
+    def _check_mod_status(self, server=None) -> None:
+        server = server if server is not None and not isinstance(server, bool) else self.server
+        if not server or not server.mods or self._status_worker is not None:
             return
-        server = self.server
         api_key = self.get_api_key() if self.get_api_key else ""
         worker = ModStatusWorker([m["id"] for m in server.mods], api_key=api_key, cutoff_ts=self._cutoff_ts())
         self._status_worker = worker
@@ -203,14 +218,15 @@ class ModsPage(QWidget):
         self.check_status_btn.setEnabled(False)
         self.check_status_btn.setText("Checking…")
         self.status_spinner.show()
-        worker.finished_status.connect(lambda result, sid=server.id: self._on_mod_status(sid, result))
+        ids = [m["id"] for m in server.mods]
+        worker.finished_status.connect(lambda result, sid=server.id, i=ids: self._on_mod_status(sid, result, i))
         self._retiring_download_workers.append(worker)  # same keep-alive as the download worker
         worker.finished.connect(
             lambda w=worker: self._retiring_download_workers.remove(w) if w in self._retiring_download_workers else None
         )
         worker.start()
 
-    def _on_mod_status(self, server_id: str, result) -> None:
+    def _on_mod_status(self, server_id: str, result, ids=None) -> None:
         self._status_worker = None
         self._status_worker_server_id = None
         self.check_status_btn.setEnabled(True)
@@ -218,6 +234,10 @@ class ModsPage(QWidget):
         self.status_spinner.hide()
         if result.ok:
             self._mod_status[server_id] = dict(result.items)
+            if ids is None:  # older callers: everything it returned, plus what's on the server now
+                srv = next((x for x in [self.server] if x is not None and x.id == server_id), None)
+                ids = set(result.items) | ({m["id"] for m in srv.mods} if srv else set())
+            self._mod_status_ids[server_id] = set(ids)
             self._mod_status_error.pop(server_id, None)
         else:
             self._mod_status_error[server_id] = result.error
@@ -233,6 +253,8 @@ class ModsPage(QWidget):
         if known is None:
             return ""
         info = known.get(mod["id"])
+        if info is None and not self._was_checked(mod["id"]):
+            return ""
         if info is None or info.status == swa.STATUS_LEGACY or any(c not in server_ids for c in info.children):
             return pal.red
         if info.status == swa.STATUS_STALE:
@@ -243,7 +265,7 @@ class ModsPage(QWidget):
         """Short per-row note from the last status check ("" if none)."""
         info = known.get(mod["id"])
         if info is None:
-            return "  —  ⚠ not found on the Workshop (removed or private?)"
+            return "  —  ⚠ not found on the Workshop (removed or private?)" if self._was_checked(mod["id"]) else ""
         parts = []
         if info.status == swa.STATUS_STALE:
             parts.append(f"⚠ not updated for current patch (last {info.time_updated and self._fmt_day(info.time_updated)})")
@@ -276,7 +298,7 @@ class ModsPage(QWidget):
         enabled = [m for m in self.server.mods if m.get("enabled", True)]
         stale = [m for m in enabled if m["id"] in known and known[m["id"]].status == swa.STATUS_STALE]
         legacy = [m for m in enabled if m["id"] in known and known[m["id"]].status == swa.STATUS_LEGACY]
-        gone = [m for m in enabled if m["id"] not in known]
+        gone = [m for m in enabled if m["id"] not in known and self._was_checked(m["id"])]
         needs = [m for m in enabled if m["id"] in known and any(c not in server_ids for c in known[m["id"]].children)]
         bits = []
         if stale:
@@ -311,8 +333,12 @@ class ModsPage(QWidget):
         # While another server's is in flight, say so and disable the
         # button, rather than leaving it clickable and silently doing
         # nothing when clicked.
-        self.download_btn.setEnabled(self._download_worker is None)
-        if downloading_this_server:
+        # A download started elsewhere (the web version, the daily check,
+        # an update) for this server counts too.
+        busy_elsewhere = (not downloading_this_server and self.server is not None
+                          and bool(self.is_mod_refresh_busy and self.is_mod_refresh_busy(self.server.id)))
+        self.download_btn.setEnabled(self._download_worker is None and not busy_elsewhere)
+        if downloading_this_server or busy_elsewhere:
             self.download_btn.setText("Downloading…")
         elif downloading_other_server:
             self.download_btn.setText("Busy (another server)…")
@@ -372,7 +398,7 @@ class ModsPage(QWidget):
             return pills
         info = known.get(mod["id"])
         if info is None:
-            return pills + [("PillBad", "Not on the Workshop")]
+            return pills + ([("PillBad", "Not on the Workshop")] if self._was_checked(mod["id"]) else [])
         if info.status == swa.STATUS_UPDATED:
             pills.insert(0, ("PillOn", "Updated for current patch"))
         elif info.status == swa.STATUS_STALE:
@@ -507,6 +533,13 @@ class ModsPage(QWidget):
         self.id_edit.clear()
         self.name_edit.clear()
         self._persist()
+        self.mods_added(self.server)
+
+    def mods_added(self, server) -> None:
+        """New mods get their Workshop status checked right away (if
+        automatic checks are on), rather than showing as unknown."""
+        if self.auto_check_mod_status and server is not None:
+            QTimer.singleShot(0, lambda srv=server: self._check_mod_status(srv))
 
     @staticmethod
     def _extract_workshop_id(raw: str) -> Optional[str]:
@@ -581,10 +614,14 @@ class ModsPage(QWidget):
         if not self.server:
             return
         api_key = self.get_api_key() if self.get_api_key else ""
-        dlg = WorkshopBrowserDialog(self.server, api_key, on_changed=self.on_changed, parent=self, cutoff_ts=self._cutoff_ts())
+        server = self.server
+        before = {m["id"] for m in server.mods}
+        dlg = WorkshopBrowserDialog(server, api_key, on_changed=self.on_changed, parent=self, cutoff_ts=self._cutoff_ts())
         dlg.exec()
         self._dispose_dialog(dlg)
         self._refresh()
+        if {m["id"] for m in server.mods} - before:
+            self.mods_added(server)
 
     @staticmethod
     def _dispose_dialog(dlg, worker=None) -> None:

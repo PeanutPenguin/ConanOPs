@@ -142,7 +142,7 @@ def test_settings_page_shows_available_update_and_auto_installs(monkeypatch, rep
     info = app_updates.ReleaseInfo("1.2.0", "t", "Fixed stuff", "https://github.com/o/r", "https://github.com/x", 1, "")
     page._on_update_checked(info, "", automatic=True)
     assert "1.2.0" in page.app_update_status.text()
-    assert page.install_online_btn.isVisibleTo(page)
+    assert not page.install_online_btn.isHidden()  # shown in its section
     assert notified == [info] and installs == [False]
 
 

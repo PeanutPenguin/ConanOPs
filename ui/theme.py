@@ -387,6 +387,13 @@ def build_stylesheet(palette: ThemePalette = DEFAULT_PALETTE) -> str:
     }}
     QLabel#Muted {{ color: {MUTED}; }}
     QLabel#Dim {{ color: {DIM}; }}
+    QToolButton#GuideToggle {{ background: transparent; border: none; color: {ACCENT_TEXT}; font-weight: 600;
+        padding: 2px 0; }}
+    QToolButton#GuideToggle:hover {{ text-decoration: underline; }}
+    QToolButton#StepToggle {{ background: transparent; border: none; color: {TEXT}; font-weight: 600;
+        text-align: left; padding: 2px 0; }}
+    QLabel#StepBadge {{ background: {_mix(PANEL, ACCENT, 0.2)}; color: {ACCENT_TEXT}; border-radius: 12px;
+        font-weight: 600; }}
     QLabel#ErrorText {{ color: {RED}; }}
     QLabel#StatLabel {{ color: {MUTED}; font-size: 12px; font-weight: 500; }}
     QLabel#StatValue {{

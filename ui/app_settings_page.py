@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor
 from PySide6.QtCore import QThread, Signal, QTime, Qt
-from PySide6.QtWidgets import QTimeEdit, QTextBrowser, QProgressBar, QComboBox
+from PySide6.QtWidgets import QTimeEdit, QTextBrowser, QProgressBar, QComboBox, QStackedWidget, QButtonGroup
 
 from models import AppConfig
 from theme_config import ThemePalette, DEFAULT_PALETTE, COLOR_FIELD_LABELS, FONT_FIELD_LABELS, load_theme, save_theme, theme_file_path
@@ -28,6 +28,8 @@ import background_mode
 import powershell
 import windows_update
 import keep_alive
+import admin_mode
+import proc_utils
 import app_updates
 import update_runner
 import version
@@ -105,6 +107,16 @@ def _font_row(label_text: str, initial_value: str):
     return row, edit
 
 
+class _CardCollector:
+    """Stands in for a layout while the page's cards are built."""
+
+    def __init__(self):
+        self.widgets: list = []
+
+    def addWidget(self, widget, *args) -> None:  # noqa: N802 - Qt-style name
+        self.widgets.append(widget)
+
+
 class AppSettingsPage(QWidget):
     def __init__(self, config: AppConfig, save_config: Callable[[], None],
                  on_theme_changed: Callable[[ThemePalette], None],
@@ -148,15 +160,10 @@ class AppSettingsPage(QWidget):
         header.addStretch(1)
         root.addLayout(header)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        container = QWidget()
-        form = QVBoxLayout(container)
-        form.setContentsMargins(24, 8, 24, 24)
-        form.setSpacing(18)
-        scroll.setWidget(container)
-        root.addWidget(scroll, 1)
+        # Each card below is collected and then shown as its own section
+        # (side list + one panel at a time) -- see _build_sections().
+        form = _CardCollector()
+        self._root_layout = root
 
         # ----------------------------------------------------------- theme --
         theme_card = QFrame()
@@ -165,7 +172,7 @@ class AppSettingsPage(QWidget):
         theme_layout.setContentsMargins(20, 16, 20, 16)
         theme_layout.setSpacing(10)
 
-        theme_title = QLabel("Theme")
+        theme_title = QLabel("Appearance")
         theme_title.setObjectName("PageTitle")
         theme_layout.addWidget(theme_title)
 
@@ -237,7 +244,7 @@ class AppSettingsPage(QWidget):
         ul = QVBoxLayout(unattended_card)
         ul.setContentsMargins(20, 16, 20, 16)
         ul.setSpacing(10)
-        ut = QLabel("Unattended Operation")
+        ut = QLabel("Keep Running")
         ut.setObjectName("PageTitle")
         ul.addWidget(ut)
 
@@ -284,6 +291,21 @@ class AppSettingsPage(QWidget):
         ka_note.setObjectName("Dim")
         ka_note.setWordWrap(True)
         ul.addWidget(ka_note)
+
+        self.admin_mode_checkbox = QCheckBox("Run with admin rights (no Windows permission prompts)")
+        self.admin_mode_checkbox.setChecked(self.config.admin_mode_enabled)
+        self.admin_mode_checkbox.toggled.connect(self._on_admin_mode_toggled)
+        ul.addWidget(self.admin_mode_checkbox)
+        self.admin_mode_note = QLabel()
+        self.admin_mode_note.setObjectName("Dim")
+        self.admin_mode_note.setWordWrap(True)
+        ul.addWidget(self.admin_mode_note)
+        self.admin_mode_problem_label = QLabel("")
+        self.admin_mode_problem_label.setObjectName("ErrorText")
+        self.admin_mode_problem_label.setWordWrap(True)
+        self.admin_mode_problem_label.hide()
+        ul.addWidget(self.admin_mode_problem_label)
+        self._refresh_admin_mode_note()
 
         self.keep_awake_checkbox = QCheckBox("Keep this PC awake while a server is running")
         self.keep_awake_checkbox.setChecked(self.config.keep_pc_awake)
@@ -467,7 +489,7 @@ class AppSettingsPage(QWidget):
         lock_layout.setContentsMargins(20, 16, 20, 16)
         lock_layout.setSpacing(10)
 
-        lock_title = QLabel("Startup PIN Lock")
+        lock_title = QLabel("PIN Lock")
         lock_title.setObjectName("PageTitle")
         lock_layout.addWidget(lock_title)
 
@@ -500,7 +522,7 @@ class AppSettingsPage(QWidget):
         web_layout.setContentsMargins(20, 16, 20, 16)
         web_layout.setSpacing(10)
 
-        web_title = QLabel("Web Control")
+        web_title = QLabel("Web Version")
         web_title.setObjectName("PageTitle")
         web_layout.addWidget(web_title)
 
@@ -564,7 +586,7 @@ class AppSettingsPage(QWidget):
         remote_note = QLabel(
             "Works on mobile data, with no router changes and your home address hidden -- Cloudflare's free "
             "tunnel carries it over HTTPS. The link changes whenever it reconnects; ConanOps sends the new one "
-            "to your server alerts (Discord/ntfy). Anyone with the link still needs the password."
+            "to your ntfy phone alerts if you use them (never to Discord, where players might see it). Anyone with the link still needs the password."
         )
         remote_note.setObjectName("Dim")
         remote_note.setWordWrap(True)
@@ -715,9 +737,81 @@ class AppSettingsPage(QWidget):
         delete_layout.addWidget(everything_note)
 
         form.addWidget(delete_card)
-        form.addStretch(1)
+        self._build_sections(form.widgets)
 
         self._refresh_web_control_ui()
+
+    # ---------------------------------------------------------- sections --
+    # (key, label, group heading or "") in display order; the cards are
+    # built above in this order: theme, startup, unattended, workshop,
+    # duckdns, lock, web, update, delete. Shared with the web version.
+    SECTIONS = [
+        ("startup", "Startup", "Running"),
+        ("keep", "Keep Running", ""),
+        ("web", "Web Version", "Remote Access"),
+        ("ddns", "Dynamic DNS", ""),
+        ("workshop", "Steam Workshop", "Integrations"),
+        ("appearance", "Appearance", "ConanOps"),
+        ("lock", "PIN Lock", ""),
+        ("updates", "Updates", ""),
+        ("delete", "Delete ConanOps", ""),
+    ]
+    _CARD_ORDER = ["appearance", "startup", "keep", "workshop", "ddns", "lock", "web", "updates", "delete"]
+
+    def _build_sections(self, cards: list) -> None:
+        body = QHBoxLayout()
+        body.setContentsMargins(24, 4, 24, 20)
+        body.setSpacing(24)
+        nav = QVBoxLayout()
+        nav.setSpacing(2)
+        nav.setContentsMargins(0, 0, 0, 0)
+        nav_box = QWidget()
+        nav_box.setLayout(nav)
+        nav_box.setFixedWidth(210)
+        self._section_stack = QStackedWidget()
+        self._section_buttons: dict = {}
+        self._section_pages: dict = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        by_key = dict(zip(self._CARD_ORDER, cards))
+        for key, label, heading in self.SECTIONS:
+            if heading:
+                h = QLabel(heading)
+                h.setObjectName("SectionLabel")
+                nav.addWidget(h)
+            btn = QPushButton(label.replace("&", "&&"))
+            btn.setObjectName("NavButton")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _=False, k=key: self.show_section(k))
+            group.addButton(btn)
+            nav.addWidget(btn)
+            self._section_buttons[key] = btn
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            inner = QWidget()
+            col = QVBoxLayout(inner)
+            col.setContentsMargins(0, 0, 8, 0)
+            col.addWidget(by_key[key])
+            col.addStretch(1)
+            scroll.setWidget(inner)
+            self._section_stack.addWidget(scroll)
+            self._section_pages[key] = scroll
+        nav.addStretch(1)
+        body.addWidget(nav_box)
+        body.addWidget(self._section_stack, 1)
+        self._root_layout.addLayout(body, 1)
+        self.show_section("startup")
+
+    def show_section(self, key: str) -> None:
+        if key not in self._section_pages:
+            return
+        self._section_buttons[key].setChecked(True)
+        self._section_stack.setCurrentWidget(self._section_pages[key])
+
+    def current_section(self) -> str:
+        page = self._section_stack.currentWidget()
+        return next((k for k, p in self._section_pages.items() if p is page), "")
 
     # ------------------------------------------------------------- theme --
     def _reset_theme_fields(self) -> None:
@@ -841,6 +935,58 @@ class AppSettingsPage(QWidget):
                                 "Windows didn't accept the change -- see conanops.log for details.")
 
         self._run_call(keep_alive.enable if checked else keep_alive.disable, done)
+
+    # ------------------------------------------------- admin rights --
+    def _refresh_admin_mode_note(self) -> None:
+        state = ""
+        if self.config.admin_mode_enabled:
+            state = (" ConanOps is running with admin rights now." if proc_utils.is_admin()
+                     else " It takes effect the next time ConanOps starts.")
+        self.admin_mode_note.setText(
+            "Windows asks for permission once. After that ConanOps starts itself with admin rights, so firewall "
+            "changes and Windows' update hours never wait for someone to click \"Yes\" -- including from the web "
+            "version. Trade-off: anything that can change files in ConanOps' folder could also get admin rights "
+            "this way." + state)
+
+    def show_admin_mode_problem(self, text: str) -> None:
+        self.admin_mode_problem_label.setText(text)
+        self.admin_mode_problem_label.setVisible(bool(text))
+
+    def _on_admin_mode_toggled(self, checked: bool) -> None:
+        self.admin_mode_checkbox.setEnabled(False)
+
+        def done(outcome, want=checked):
+            self.admin_mode_checkbox.setEnabled(True)
+            if want and outcome != powershell.RUN_OK:
+                self._set_checked_quietly(self.admin_mode_checkbox, False)
+                if outcome != powershell.RUN_DECLINED:
+                    QMessageBox.warning(self, "Couldn't Turn This On",
+                                        "Windows didn't accept the change -- see conanops.log for details.")
+                return
+            self.config.admin_mode_enabled = want
+            self.save_config()
+            self.show_admin_mode_problem("")
+            self._refresh_admin_mode_note()
+            if not want:
+                if outcome != powershell.RUN_OK:
+                    QMessageBox.information(
+                        self, "Turned Off",
+                        "ConanOps won't use admin rights from its next start. Windows' task for it couldn't be "
+                        "removed (see conanops.log); it's no longer used.")
+                elif proc_utils.is_admin():
+                    QMessageBox.information(self, "Turned Off",
+                                            "ConanOps keeps admin rights until it next restarts.")
+                return
+            if proc_utils.is_admin() or not callable(getattr(self, "on_restart_elevated", None)):
+                return
+            answer = QMessageBox.question(
+                self, "Restart ConanOps?",
+                "Restart ConanOps now so it has admin rights? Your servers keep running.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if answer == QMessageBox.Yes:
+                self.on_restart_elevated()
+
+        self._run_call(admin_mode.enable if checked else admin_mode.disable, done)
 
     def refresh_sign_in_status(self) -> None:
         """Checks (off the UI thread) whether Windows signs back in after

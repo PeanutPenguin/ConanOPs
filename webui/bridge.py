@@ -10,6 +10,11 @@ While a web action runs, any dialog the app would normally pop up (a
 warning, a "are you sure?") is captured instead of shown -- nobody is
 sitting at the PC to click it -- and returned to the browser as text.
 Questions are answered "No", the safe choice.
+
+Windows permission (UAC) prompts are never shown during a web action
+either -- nobody is at the PC to answer them (see powershell.no_prompts).
+Changes that need one wait for someone at the PC instead, unless
+ConanOps runs with administrator rights and needs no prompt at all.
 """
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 import applog
+import powershell
 
 _log = applog.get_logger(__name__)
 
@@ -29,8 +35,25 @@ class WebActionError(Exception):
     """Raised by an action to send a plain message back with HTTP 400."""
 
 
+NEEDS_PC_NOTE = ("Not done: {what} needs Windows' permission, which can only be given at the PC -- do it in the "
+                 "app there. (With \"Run with admin rights\" on in App Settings, this works from the web too.)")
+QUEUED_NOTE = ("Waiting for the PC: {what} needs Windows' permission, which can only be given there. ConanOps "
+               "will ask the next time someone uses it. (With \"Run with admin rights\" on in App Settings, "
+               "this happens right away.)")
+
+
 @contextmanager
 def captured_dialogs():
+    with powershell.no_prompts() as blocked, _captured() as messages:
+        try:
+            yield messages
+        finally:
+            for what in dict.fromkeys(blocked):
+                messages.append(NEEDS_PC_NOTE.format(what=what))
+
+
+@contextmanager
+def _captured():
     messages: List[str] = []
     saved = {name: getattr(QMessageBox, name) for name in ("information", "warning", "critical", "question")}
     saved_exec = QDialog.exec

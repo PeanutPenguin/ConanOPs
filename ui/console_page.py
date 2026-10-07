@@ -69,8 +69,10 @@ class ConsolePage(QWidget):
         root.addLayout(input_row)
 
     def set_server(self, server: ServerConfig) -> None:
+        # Same server (its RCON settings changed): keep the output.
+        if server is not getattr(self, "server", None):
+            self.output.clear()
         self.server = server
-        self.output.clear()
         if not server.rcon_enabled:
             self.status_label.setText("RCON is disabled for this server (enable it on the RCON & Alerts settings page).")
             self.command_edit.setEnabled(False)

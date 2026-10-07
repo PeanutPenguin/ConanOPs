@@ -66,6 +66,7 @@ class ModRecoveryMixin:
 
     def _init_mod_recovery(self) -> None:
         self._recovery_workers: dict = {}      # server id -> AutoBisectWorker
+        self._recovery_manual: dict = {}       # server id -> was it running (only for checks started by hand)
         self._fix_check_workers: dict = {}     # server id -> _ModUpdateCheckWorker
         self._mod_fix_timer = QTimer(self)
         self._mod_fix_timer.timeout.connect(self._check_for_mod_fixes)
@@ -73,13 +74,19 @@ class ModRecoveryMixin:
         QTimer.singleShot(90_000, self._check_for_mod_fixes)
 
     # ------------------------------------------------------------ start --
-    def _start_mod_recovery(self, server, what: str) -> bool:
+    def _start_mod_recovery(self, server, what: str, manual: bool = False) -> bool:
         """Starts the automatic culprit search. True if it started (the
         caller then says nothing more); False if recovery doesn't apply
-        here, so the caller should fall back to its own alert."""
+        here, so the caller should fall back to its own alert.
+
+        manual: someone asked for the check (the web version's "Find
+        Broken Mod") rather than the server failing -- it runs whatever
+        the recovery setting is, and a server that was running and turns
+        out fine is started again."""
         mode = getattr(self.config, "mod_recovery_mode", MODE_WAIT)
         enabled = [m for m in server.mods if m.get("enabled", True)]
-        if mode == MODE_ALERT or not enabled or not server.steamcmd_dir or server.id in self._recovery_workers:
+        if ((mode == MODE_ALERT and not manual) or not enabled or not server.steamcmd_dir
+                or server.id in self._recovery_workers):
             return False
         if getattr(getattr(self, "mods_page", None), "_active_bisect_dialog", None) is not None:
             return False  # someone is running the search by hand right now
@@ -90,12 +97,20 @@ class ModRecoveryMixin:
         )
         self._recovery_workers[server.id] = worker
         self._automation_locked.add(server.id)
-        server.update_hold = (f"It {what} repeatedly. ConanOps is finding out which mod is responsible "
-                              f"(your world is protected while it tests).")
+        if manual:
+            self._recovery_manual[server.id] = bool(server.install_dir and process_manager.is_running(server.install_dir))
+            server.update_hold = ("ConanOps is testing the mods to find a broken one (your world is protected "
+                                  "while it tests).")
+            notice = (f"Testing {server.name}'s mods to find a broken one -- this can take a while and restarts "
+                      f"the server many times. Your world is backed up for the test and put back exactly as it was.")
+        else:
+            server.update_hold = (f"It {what} repeatedly. ConanOps is finding out which mod is responsible "
+                                  f"(your world is protected while it tests).")
+            notice = (f"{server.name} {what} repeatedly. ConanOps is testing its mods to find the broken "
+                      f"one -- this can take a while. Your world is backed up for the test and put back "
+                      f"exactly as it was.")
         self.config.save()
-        self._notify(server, f"{server.name} {what} repeatedly. ConanOps is testing its mods to find the broken "
-                             f"one -- this can take a while. Your world is backed up for the test and put back "
-                             f"exactly as it was.", title="Finding the Broken Mod")
+        self._notify(server, notice, title="Finding the Broken Mod")
         worker.finished_bisect.connect(lambda outcome, srv=server, w=what: self._on_mod_recovery_finished(srv, outcome, w))
         self._retire_worker(worker)
         self._start_or_run(worker)
@@ -105,12 +120,17 @@ class ModRecoveryMixin:
     def _on_mod_recovery_finished(self, server, outcome, what: str) -> None:
         self._recovery_workers.pop(server.id, None)
         self._automation_locked.discard(server.id)
+        manual = server.id in self._recovery_manual
+        was_running = self._recovery_manual.pop(server.id, False)
         if server not in self.config.servers:
             return  # removed while testing
         names = {m["id"]: (m.get("name") or m["id"]) for m in server.mods}
         # The search leaves modlist.txt at its findings; put the person's
         # own list back -- what to load is decided below, not by the test.
         self._handle_mods_changed(server)
+        if manual:
+            self._finish_manual_mod_check(server, outcome, names, was_running)
+            return
 
         if outcome.error or outcome.cancelled:
             server.update_hold = f"It {what} repeatedly, and the automatic mod check couldn't finish."
@@ -165,6 +185,8 @@ class ModRecoveryMixin:
             server.update_hold = ""
             server.mod_recovery = {}
             self._handle_mods_changed(server)
+            if hasattr(self, "mods_changed_elsewhere"):
+                self.mods_changed_elsewhere(server)
             self._notify(server, f"Broken mod(s): {culprit_names}. They were switched off and the server was started "
                                  f"without them -- anything they added to the world is gone.{backup_note} Turn them "
                                  f"back on in Mods once their authors update them.", title="Started Without Broken Mod")
@@ -183,6 +205,38 @@ class ModRecoveryMixin:
                              f"soon as there is one. To start now without it, turn it off in Mods and click Start -- "
                              f"its items will be removed.", title="Waiting for a Mod Fix")
         self._remember_culprit_versions(server)
+
+    def _finish_manual_mod_check(self, server, outcome, names: dict, was_running: bool) -> None:
+        """A check someone asked for: report what it found. Nothing is
+        switched off by itself -- the person decides (Mods page)."""
+        culprits = list(outcome.found_culprits) or list(outcome.unresolved_suspects)
+        culprit_names = ", ".join(names.get(c, c) for c in culprits)
+        server.update_hold = ""
+        if outcome.error or outcome.cancelled:
+            text, title = f"The mod check couldn't finish: {outcome.error or 'it was stopped'}.", "Mod Check Failed"
+        elif outcome.could_not_reproduce:
+            text, title = "No broken mod: the server starts fine with all of its mods.", "Mods Are Fine"
+        elif outcome.not_mod_related:
+            text, title = ("The server doesn't start even with every mod off, so the problem isn't a mod -- check "
+                           "Diagnostics and the Console."), "Not a Mod Problem"
+        elif culprits:
+            server.update_hold = (f"Broken mod(s): {culprit_names}. Turn them off in Mods and start the server "
+                                  f"(their items are removed from the world), or wait for their authors to "
+                                  f"update them.")
+            text, title = (f"Found it: {culprit_names} stops the server from starting. It was left stopped so "
+                           f"your world keeps that mod's buildings and items -- turn it off in Mods and click "
+                           f"Start to run without it."), "Broken Mod Found"
+        else:
+            text, title = "The mod check couldn't pin the problem on a specific mod.", "Mod Check Inconclusive"
+        if outcome.skipped_not_downloaded:
+            text += (" Not tested (not downloaded): "
+                     + ", ".join(names.get(c, c) for c in outcome.skipped_not_downloaded) + ".")
+        self.config.save()
+        self._notify(server, text, title=title)
+        if was_running and not culprits and not outcome.not_mod_related and not outcome.error:
+            self._launch_recovered(server)
+        if hasattr(self, "mods_changed_elsewhere"):
+            self.mods_changed_elsewhere(server)
 
     def _launch_recovered(self, server) -> None:
         try:

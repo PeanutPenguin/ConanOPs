@@ -279,6 +279,8 @@ def cleanup_script(server_ids: Iterable[str] = (), legacy_names: Iterable[str] =
         import background_mode
         import keep_alive
         parts.append("try {\n" + keep_alive.unregister_script() + "} catch {}\n")
+        import admin_mode
+        parts.append("try {\n" + admin_mode.unregister_script() + "} catch {}\n")
         parts.append(
             f"try {{ Get-ScheduledTask -TaskName {q(background_mode.TASK_NAME)} -TaskPath {q(background_mode.TASK_PATH)} "
             "-ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false } catch {}\n"

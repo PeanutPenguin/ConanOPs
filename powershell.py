@@ -32,7 +32,9 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Iterable, List, Optional
+import threading
+from contextlib import contextmanager
+from typing import Dict, Iterable, List, Optional
 
 import applog
 import proc_utils
@@ -43,6 +45,83 @@ _log = applog.get_logger(__name__)
 RUN_OK = "ok"
 RUN_DECLINED = "declined"
 RUN_FAILED = "failed"
+RUN_NEEDS_PC = "needs_pc"  # a Windows permission prompt was needed, but nobody is at the PC to answer it
+
+
+# --------------------------------------------------------------------- #
+# No prompts while nobody's at the PC
+# --------------------------------------------------------------------- #
+# The web version runs actions for someone who isn't at the PC. A
+# Windows permission (UAC) prompt there would sit on the screen with
+# nobody to answer it, so while a web action runs, run_privileged()
+# doesn't prompt: it returns RUN_NEEDS_PC instead (unless ConanOps
+# already has administrator rights, when no prompt is needed at all).
+_gate_lock = threading.Lock()
+# thread id -> the note lists of the no_prompts() blocks active on that
+# thread. Per thread, so a prompt someone starts at the PC at the same
+# moment as a web action isn't blocked.
+_gates: Dict[int, List[List[str]]] = {}
+
+
+@contextmanager
+def no_prompts():
+    """While inside (on this thread, and in work handed on with
+    carry_gate()), run_privileged() never shows a permission prompt.
+    Yields a list that collects a note for each change that needed one."""
+    hits: List[str] = []
+    ident = threading.get_ident()
+    with _gate_lock:
+        _gates.setdefault(ident, []).append(hits)
+    try:
+        yield hits
+    finally:
+        with _gate_lock:
+            stack = _gates.get(ident, [])
+            if hits in stack:
+                stack.remove(hits)
+            if not stack:
+                _gates.pop(ident, None)
+
+
+def carry_gate(fn):
+    """Wraps fn so that, when it runs on another thread, it's under the
+    same no_prompts() block as the thread that wrapped it."""
+    with _gate_lock:
+        lists = list(_gates.get(threading.get_ident(), []))
+    if not lists:
+        return fn
+
+    def run(*args, **kwargs):
+        ident = threading.get_ident()
+        with _gate_lock:
+            _gates.setdefault(ident, []).extend(lists)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _gate_lock:
+                stack = _gates.get(ident, [])
+                for x in lists:
+                    if x in stack:
+                        stack.remove(x)
+                if not stack:
+                    _gates.pop(ident, None)
+    return run
+
+
+def prompts_blocked() -> bool:
+    """True while a web action runs on this thread and a permission
+    prompt couldn't be answered (ConanOps without administrator rights)."""
+    with _gate_lock:
+        active = bool(_gates.get(threading.get_ident()))
+    return active and not proc_utils.is_admin()
+
+
+def _note_blocked(script: str) -> None:
+    first = next((ln.strip() for ln in script.splitlines() if ln.strip().startswith("#")), "")
+    _log.info("Skipped a Windows permission prompt during a web action (nobody at the PC to answer it).")
+    with _gate_lock:
+        for hits in _gates.get(threading.get_ident(), []):
+            hits.append(first.lstrip("# ") or "a change that needs Windows' permission")
 
 PREAMBLE = (
     "$ErrorActionPreference = 'Stop'\n"
@@ -130,7 +209,11 @@ def run_readonly(script: str, timeout: float = 30.0) -> Optional[subprocess.Comp
 def run_privileged(script: str, timeout: float = 90.0) -> str:
     """Runs `script` with Administrator rights: directly if this process
     is already elevated, else through ONE Windows permission (UAC)
-    prompt. Returns RUN_OK / RUN_DECLINED / RUN_FAILED."""
+    prompt. Returns RUN_OK / RUN_DECLINED / RUN_FAILED, or RUN_NEEDS_PC
+    while prompts are blocked (see no_prompts())."""
+    if prompts_blocked():
+        _note_blocked(script)
+        return RUN_NEEDS_PC
     folder, path, text_hash = _write_script(PREAMBLE + script)
     try:
         args: List[str] = [*_BASE_ARGS, "-Command", _runner_command(path, text_hash)]

@@ -11,7 +11,7 @@ password and session cookie are encrypted on the way.
     ConanOps' data folder, and only used if Windows confirms it's validly
     signed by Cloudflare.
   * The address changes each time the tunnel starts; ConanOps shows the
-    current one (and sends it to the server alerts when it changes).
+    current one (and sends it to ntfy alerts when it changes).
   * Quick tunnels are Cloudflare's free, no-account option and come
     without an uptime guarantee; if it drops, it's restarted.
 """

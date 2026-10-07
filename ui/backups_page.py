@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog,
@@ -55,11 +56,45 @@ class BackupsPage(QWidget):
         self.table.setMinimumHeight(220)
         root.addWidget(self.table, 1)
 
+        # Backups also appear from elsewhere -- the schedule, before
+        # updates, safety copies before a restore, the web version, old
+        # ones being pruned -- so while this list is on screen it
+        # re-reads the folder when its contents change.
+        self._signature = None
+        self._watch = QTimer(self)
+        self._watch.setInterval(4000)
+        self._watch.timeout.connect(self._refresh_if_changed)
+
     def set_server(self, server: ServerConfig) -> None:
         self.server = server
         self.refresh()
 
+    def _folder_signature(self):
+        dest = self.server.backup_destination if self.server else ""
+        if not dest or not os.path.isdir(dest):
+            return (dest,)
+        try:
+            with os.scandir(dest) as it:
+                return (dest,) + tuple(sorted((e.name, e.stat().st_size, e.stat().st_mtime_ns)
+                                              for e in it if e.name.lower().endswith(".zip")))
+        except OSError:
+            return (dest,)
+
+    def _refresh_if_changed(self) -> None:
+        if self._folder_signature() != self._signature:
+            self.refresh()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._refresh_if_changed()
+        self._watch.start()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._watch.stop()
+
     def refresh(self) -> None:
+        self._signature = self._folder_signature()
         self.table.setRowCount(0)
         if not self.server or not self.server.backup_destination:
             return

@@ -15,6 +15,7 @@ import sys
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+import admin_mode
 import background_mode
 import keep_alive
 import conanops_paths
@@ -74,6 +75,11 @@ def main() -> int:
     if "--uninstall-cleanup" in sys.argv:
         return _uninstall_cleanup()
     background = background_mode.BACKGROUND_FLAG in sys.argv
+    elevated_launch = admin_mode.ELEVATED_FLAG in sys.argv
+    if elevated_launch:
+        # Started by the "Run with admin rights" task (admin_mode.py): pick
+        # up the flags the copy that handed over had (e.g. --keep-alive).
+        sys.argv += admin_mode.take_launch_args()
     # Started by the keep-alive watcher (keep_alive.py) after ConanOps
     # stopped: open quietly in the tray, and just exit if another copy
     # turns out to be running already.
@@ -107,9 +113,13 @@ def main() -> int:
         os.makedirs(lock_dir, exist_ok=True)
     except OSError:
         pass
-    lock = QLockFile(os.path.join(lock_dir, "conanops.lock"))
+    lock_path = os.path.join(lock_dir, "conanops.lock")
+    lock = QLockFile(lock_path)
     lock.setStaleLockTime(30_000)  # a crashed instance's lock is treated as stale after 30s
-    if not lock.tryLock(2_000 if background else 5_000):
+    # The admin-rights copy may be waiting for the copy that started it
+    # to finish closing (stopping workers, the web server...), which can
+    # take much longer than a normal relaunch.
+    if not lock.tryLock(2_000 if background else 90_000 if elevated_launch else 5_000):
         if background or keep_alive_launch:
             return 0  # someone already has it (normally the window) -- nothing to do
         if background_mode.background_instance_running():
@@ -126,6 +136,11 @@ def main() -> int:
                 return 0
         else:
             QMessageBox.information(None, "ConanOps Already Running", "ConanOps is already running.")
+            return 0
+    if not background and admin_mode.should_relaunch(sys.argv):
+        # "Run with admin rights" is on: hand over to the elevated copy
+        # (no prompt). If it doesn't start, carry on as we are.
+        if admin_mode.relaunch_elevated(sys.argv, lock, lock_path):
             return 0
     app._conanops_lock = lock  # so _relaunch_after_update can release it early -- see its comment
     background_mode.clear_handoff()  # a stale request must not make the next background instance quit
@@ -192,6 +207,7 @@ def main() -> int:
             startup_failed(e)
             return
         app._conanops_window = window  # keep a reference for app.exec()'s lifetime
+        start_quit_watch(window)
         if background:
             start_handoff_watch(window)
             QTimer.singleShot(0, self_update.confirm_update_success)
@@ -210,6 +226,26 @@ def main() -> int:
         # Confirm only now, after the window exists -- and on the next
         # event-loop pass, so it has also painted at least once.
         QTimer.singleShot(0, self_update.confirm_update_success)
+
+    def start_quit_watch(window) -> None:
+        """The uninstaller asking ConanOps to close (see
+        admin_mode.request_quit). Closing never stops servers."""
+        admin_mode.clear_quit_request()
+        timer = QTimer(app)
+
+        def check():
+            if not admin_mode.quit_requested():
+                return
+            timer.stop()
+            applog.get_logger("startup").info("Closing: the uninstaller asked.")
+            admin_mode.clear_quit_request()
+            window._really_quit = True
+            window.close()
+            lock.unlock()
+            app.quit()
+
+        timer.timeout.connect(check)
+        timer.start(2_000)
 
     def start_handoff_watch(window) -> None:
         """Background instance: every 2s, check whether a window has asked
@@ -278,6 +314,12 @@ def _uninstall_cleanup() -> int:
     except Exception as e:  # noqa: BLE001 - best-effort
         log.warning(f"Couldn't remove the keep-alive task: {e}")
     try:
+        # A leftover task would run whatever is later put at ConanOps'
+        # old path with admin rights, so it must go (one prompt).
+        admin_mode.disable()
+    except Exception as e:  # noqa: BLE001 - best-effort
+        log.warning(f"Couldn't remove the admin-rights task: {e}")
+    try:
         config = AppConfig.load()
         task = background_mode.status()
         if config.background_mode_enabled or (task and task.get("exists")):
@@ -285,10 +327,33 @@ def _uninstall_cleanup() -> int:
     except Exception as e:  # noqa: BLE001 - best-effort
         log.warning(f"Couldn't remove the background task: {e}")
     try:
+        # A copy running with admin rights can't be ended from here; ask
+        # it to close and give it a moment.
+        import time
+        admin_mode.request_quit()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and _other_conanops_running():
+            time.sleep(0.5)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"Couldn't ask ConanOps to close: {e}")
+    try:
         background_mode.stop_other_instances()
     except Exception as e:  # noqa: BLE001
         log.warning(f"Couldn't stop other ConanOps instances: {e}")
     return 0
+
+
+def _other_conanops_running() -> bool:
+    import psutil
+    me = os.getpid()
+    skip = {me}
+    try:
+        skip.add(psutil.Process(me).ppid())
+    except Exception:  # noqa: BLE001
+        pass
+    exe_name = os.path.basename(sys.executable).lower() if getattr(sys, "frozen", False) else "conanops.exe"
+    return any(p.info["pid"] not in skip and (p.info["name"] or "").lower() == exe_name
+               for p in psutil.process_iter(["pid", "name"]))
 
 
 # How long the startup screen animates before the main window starts
