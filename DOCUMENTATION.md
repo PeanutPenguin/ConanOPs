@@ -597,3 +597,12 @@ Code signing is optional and configured with environment variables -- see `SIGNI
   server by itself, starts without the mod after a backup, or just tells you.
 - **Dashboard tour** (`ui/tour.py`): shown once after the first setup; App Settings ->
   Show the Dashboard Tour replays it.
+
+
+## Web version (1.0.3)
+
+App Settings → Web Control. Turn it on, set a password (at least 8 characters), and open the "On your Wi-Fi" link on any device on the same network ("Allow Through Firewall" if Windows blocks it). "Also let me use it from anywhere" downloads Cloudflare's signed `cloudflared.exe` into `data/tools/` and runs a free quick tunnel; the https link appears in App Settings and is sent to server alerts whenever it changes (it changes each time the tunnel reconnects).
+
+The web version (`assets/web/`) is a single-page app served by `web_control.py`; its API (`webui/api.py`) runs every action on the app's GUI thread through `webui/bridge.py`, using the same handlers as the app's buttons. Dialogs the app would show during a web action are returned to the browser as text instead (questions are answered "No"). Settings pages are read and written generically from each page's widgets (`webui/fields.py`).
+
+Security: PBKDF2-SHA256 password hash in the config; random session tokens kept only as SHA-256 hashes in `web_sessions.json`; HttpOnly, SameSite=Strict cookies (Secure over the tunnel); changes require a custom header and matching Origin; 5 wrong passwords lock that address out with growing delays (to 1 hour), plus an overall limit; strict Content-Security-Policy. Not available from the web: deleting ConanOps or servers, adding servers, changing the web password, turning the remote link on/off.

@@ -275,6 +275,7 @@ def cleanup_script(server_ids: Iterable[str] = (), legacy_names: Iterable[str] =
             "} | Get-NetFirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue } catch {}\n"
         )
     if remove_task:
+        parts.append("try {\n" + network_setup.web_rule_remove_script() + "} catch {}\n")
         import background_mode
         import keep_alive
         parts.append("try {\n" + keep_alive.unregister_script() + "} catch {}\n")

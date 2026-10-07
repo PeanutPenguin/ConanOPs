@@ -5,7 +5,7 @@ version's update zip replaces, so after installing an update this
 reflects the new number automatically without anything else needing
 to change.
 """
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 # GitHub repository ("owner/name") that ConanOps checks for new releases
 # -- see app_updates.py and RELEASING.md. Leave empty to turn online

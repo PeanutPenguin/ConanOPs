@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import proc_utils
 import os
+from collections import deque
 import shutil
 import subprocess
 import sys
@@ -170,6 +171,9 @@ class _NotifyWorker(QThread):
 
 
 class MainWindow(QMainWindow, ModRecoveryMixin):
+    # From the Cloudflare tunnel's thread: (link or "", status text).
+    web_tunnel_changed = Signal(str, str)
+
     def __init__(self, config: Optional[AppConfig] = None, background: bool = False):
         # background=True: the windowless instance started by the
         # unattended-mode scheduled task (see background_mode.py). Same
@@ -198,6 +202,10 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         # lock/unlock_server_for_automation, so nothing else can clear
         # it out from under a running bisect.
         self._automation_locked: set = set()
+        # Recent log lines and status per server, for the web version
+        # (the dashboard only keeps the active server's).
+        self._web_logs: Dict[str, deque] = {}
+        self._web_status: Dict[str, dict] = {}
         self._known_running: Dict[str, bool] = {}  # server id -> was it running last health check
         # Watchdog crash-restart state -- see _attempt_watchdog_restart().
         # Neither dict is persisted: a fresh app session starts every
@@ -339,9 +347,17 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         ]
 
         self.settings_container = SettingsContainer(settings_entries)
+        self.settings_container_entries = settings_entries  # the web version reads these pages too
 
-        self.web_control = web_control.WebControlServer(get_active_server=self._active, save_config=self.config.save)
-        if self.config.web_control_enabled:
+        self.web_control = web_control.WebControlServer(
+            get_active_server=self._active, save_config=self.config.save,
+            get_password_hash=lambda: self.config.web_password_hash,
+            sessions_path=os.path.join(conanops_paths.no_space_root(), "web_sessions.json"),
+        )
+        from webui.tunnel import Tunnel
+        self.web_tunnel = Tunnel(on_change=lambda url, status: self.web_tunnel_changed.emit(url, status))
+        self.web_tunnel_changed.connect(self._on_web_tunnel_changed)
+        if self.config.web_control_enabled and not self.background:
             ok, message = self.web_control.start()
             if not ok:
                 _log.error(f"Couldn't auto-start web control on launch: {message}")
@@ -460,6 +476,15 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         # once shortly after start, then whenever 20 h have passed.
         self.app_settings_page.on_app_update_available = self._on_app_update_available
         self.app_settings_page.on_show_tour = self._show_tour_from_settings
+        self.app_settings_page.web_tunnel = self.web_tunnel
+        self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel
+        self.app_settings_page.on_web_password_changed = self.web_control.sessions.revoke_all
+        # The web version's API drives this window through the bridge.
+        from webui.api import WebApi
+        from webui.bridge import GuiBridge
+        self._web_bridge = GuiBridge(self)
+        self.web_control.api = WebApi(self, self._web_bridge)
+        QTimer.singleShot(2_000, self._sync_web_tunnel)
         self.app_settings_page.is_busy_for_app_update = self._busy_reason_for_app_update
         self._app_update_timer = QTimer(self)
         self._app_update_timer.timeout.connect(self._maybe_check_app_update)
@@ -855,10 +880,15 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
             self.players_page.set_online_players(self._online_by_server[server_id])
 
     def _on_status_update(self, server_id: str, data: dict) -> None:
+        self._web_status[server_id] = data
         if self.config.active_server_id == server_id:
             self.dashboard_page.on_status_update(data)
 
     def _on_log_line(self, server_id: str, line: str) -> None:
+        buf = self._web_logs.get(server_id)
+        if buf is None:
+            buf = self._web_logs[server_id] = deque(maxlen=400)
+        buf.append(line)
         if self.config.active_server_id == server_id:
             self.dashboard_page.on_log_line(line)
 
@@ -2680,6 +2710,27 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
         self._run_op(work, on_done=finished,
                      on_error=lambda e: _log.error(f"Keep-it-running setup failed: {e}"))
 
+    def _sync_web_tunnel(self) -> None:
+        """The remote link runs only while the web version is on, a
+        password is set and "from anywhere" is ticked."""
+        want = (self.config.web_control_enabled and self.web_control.is_running
+                and bool(self.config.web_password_hash) and self.config.web_remote_enabled and not self.background)
+        if want:
+            self.web_tunnel.start(self.web_control.actual_port)
+        elif self.web_tunnel.running:
+            self.web_tunnel.stop()
+
+    def _on_web_tunnel_changed(self, url: str, status: str) -> None:
+        page = getattr(self, "app_settings_page", None)
+        if page is not None and hasattr(page, "show_web_remote_status"):
+            page.show_web_remote_status(url, status)
+        if url and url != getattr(self, "_last_web_url", ""):
+            self._last_web_url = url
+            target = self.config.get_active()
+            if target is not None:
+                self._notify(target, f"Web version link (works from anywhere, password needed): {url}",
+                             title="Web Link")
+
     def _start_or_run(self, worker) -> None:
         """Tests (RUN_OPS_INLINE) run the worker synchronously."""
         if self.RUN_OPS_INLINE:
@@ -2802,4 +2853,5 @@ class MainWindow(QMainWindow, ModRecoveryMixin):
 
         self.scheduler.stop()
         self.web_control.stop()
+        self.web_tunnel.stop()
         super().closeEvent(event)

@@ -2,12 +2,10 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 
 ### New in this version
 
-- **Keep it running** – a new last step in setup turns on everything that keeps your servers up while you're away: start with Windows, reopen ConanOps if it closes or crashes, keep the PC awake, and only restart for Windows updates between 4 and 6 AM.
-- **Broken mods handled for you** – if a server keeps crashing after an update, ConanOps finds the mod responsible without touching your world. By default it keeps the server stopped (so you don't lose that mod's buildings and items) and starts it again by itself as soon as the mod's author releases a fix.
-- **Router check every hour** – port forwards are re-added if your router forgets them after a restart.
-- **Sign-in reminder** – ConanOps tells you if Windows won't sign back in after update restarts, which would leave your servers down.
-- **Dashboard tour** – a quick walkthrough after your first setup.
-- **Removing a server or deleting everything now cleans up completely** – files, firewall rules, router forwards and the Windows changes ConanOps made.
+- **A brand-new web version** – everything the app does, from your phone or any browser: the dashboard with live CPU, memory and log, start/stop/restart, players (kick and ban), the RCON console and broadcasts, mods (turn on/off, reorder, add, download, find a broken mod), updates, backups and restores, whitelist and bans, every server setting, diagnostics and network repair, and the keep-it-running options.
+- **Use it from anywhere** – turn on "Also let me use it from anywhere" in App Settings and ConanOps gives you a secure https link through Cloudflare. No router changes, works on mobile data, and your home address stays hidden.
+- **Password sign-in** – set a password in App Settings → Web Control. Your phone stays signed in, wrong guesses get locked out, and "Sign Everyone Out" ends every session. Add it to your home screen and it opens like an app.
+- Deleting servers or ConanOps itself, adding new servers, and changing the web password still need the PC.
 
 ### Requirements
 

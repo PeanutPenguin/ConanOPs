@@ -746,3 +746,43 @@ def get_public_ip(timeout: float = 4.0) -> Optional[str]:
         _log.info(f"Couldn't detect public IP: {e}")
         return None
     return ip if network_utils.is_valid_ipv4(ip) else None
+
+
+# --------------------------------------------------------------------- #
+# The web version's own port (TCP), for phones on the home network.
+# --------------------------------------------------------------------- #
+
+WEB_RULE_PREFIX = "ConanOps-web-"
+
+
+def web_rule_remove_script() -> str:
+    return (
+        "Get-NetFirewallRule -Group 'ConanOps' -ErrorAction SilentlyContinue | "
+        f"Where-Object {{ $_.Name -like {_ps_str(WEB_RULE_PREFIX + '*')} }} | "
+        "Remove-NetFirewallRule -ErrorAction SilentlyContinue\n"
+    )
+
+
+def allow_web_port(port: int) -> str:
+    """Lets other devices on PRIVATE (home) networks reach the web version
+    on `port` (TCP). Public networks -- cafes, dorm Wi-Fi marked public --
+    stay blocked; the remote link doesn't need this rule at all. One
+    permission prompt. Returns powershell.RUN_OK / RUN_DECLINED / RUN_FAILED."""
+    port = int(port)
+    script = web_rule_remove_script() + (
+        f"New-NetFirewallRule -Name {_ps_str(WEB_RULE_PREFIX + str(port))} "
+        f"-DisplayName {_ps_str(f'ConanOps web version ({port}/TCP)')} -Group 'ConanOps' "
+        "-Description 'Lets phones and PCs on your home network open the ConanOps web version.' "
+        f"-Direction Inbound -Action Allow -Protocol TCP -LocalPort {port} -Profile Private,Domain | Out-Null\n"
+        "exit 0\n"
+    )
+    return _run_ps_privileged(script)
+
+
+def web_port_allowed(port: int) -> Optional[bool]:
+    proc = _run_ps_readonly(
+        f"$r = Get-NetFirewallRule -Name {_ps_str(WEB_RULE_PREFIX + str(int(port)))} -ErrorAction SilentlyContinue\n"
+        "if ($r -and [string]$r.Enabled -eq 'True') { 'YES' } else { 'NO' }\nexit 0\n")
+    if proc is None or proc.returncode != 0:
+        return None
+    return (proc.stdout or "").strip().endswith("YES")

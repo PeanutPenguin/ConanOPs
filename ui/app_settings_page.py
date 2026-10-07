@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QApplication, QInputDialog,
 )
 from PySide6.QtGui import QColor
-from PySide6.QtCore import QThread, Signal, QTime
+from PySide6.QtCore import QThread, Signal, QTime, Qt
 from PySide6.QtWidgets import QTimeEdit, QTextBrowser, QProgressBar, QComboBox
 
 from models import AppConfig
@@ -505,31 +505,74 @@ class AppSettingsPage(QWidget):
         web_layout.addWidget(web_title)
 
         web_note = QLabel(
-            "Opens a small status/control page in a browser (Chrome, Firefox, etc.) for "
-            "whichever server is active in ConanOps -- view status, and start, stop, or "
-            "restart it. Off by default. Reachable from other devices on your network "
-            "(like your phone), not just this PC. No password is required, so anyone with "
-            "the link can control your server -- Windows may ask to allow this through your "
-            "firewall the first time."
+            "Use ConanOps from a browser on your phone or another computer -- dashboards, start/stop, "
+            "players, console, backups, updates, mods and server settings. Deleting things and adding "
+            "servers stay in this app. Everyone signs in with the password below."
         )
         web_note.setObjectName("Dim")
         web_note.setWordWrap(True)
         web_layout.addWidget(web_note)
 
-        self.web_control_checkbox = QCheckBox("Enable local web control")
+        self.web_control_checkbox = QCheckBox("Turn on the web version")
         self.web_control_checkbox.setChecked(self.config.web_control_enabled)
         self.web_control_checkbox.toggled.connect(self._on_web_control_toggled)
         web_layout.addWidget(self.web_control_checkbox)
 
+        pw_row = QHBoxLayout()
+        self.web_password_label = QLabel("")
+        self.web_password_label.setWordWrap(True)
+        self.web_password_btn = QPushButton("Set Password…")
+        self.web_password_btn.clicked.connect(self._set_web_password)
+        self.web_signout_btn = QPushButton("Sign Everyone Out")
+        self.web_signout_btn.clicked.connect(self._sign_out_web_sessions)
+        pw_row.addWidget(self.web_password_label, 1)
+        pw_row.addWidget(self.web_password_btn)
+        pw_row.addWidget(self.web_signout_btn)
+        web_layout.addLayout(pw_row)
+
         link_row = QHBoxLayout()
+        link_caption = QLabel("On your Wi-Fi:")
+        link_caption.setObjectName("Muted")
         self.web_control_link_label = QLabel("Not currently running.")
-        self.web_control_link_label.setObjectName("Muted")
-        self.copy_link_btn = QPushButton("Copy Link")
+        self.web_control_link_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.copy_link_btn = QPushButton("Copy")
         self.copy_link_btn.setEnabled(False)
         self.copy_link_btn.clicked.connect(self._copy_web_control_link)
+        self.web_firewall_btn = QPushButton("Allow Through Firewall")
+        self.web_firewall_btn.setToolTip("Lets phones and PCs on your home network reach it (asks Windows for "
+                                         "permission once). Not needed for the link from anywhere.")
+        self.web_firewall_btn.clicked.connect(self._allow_web_through_firewall)
+        link_row.addWidget(link_caption)
         link_row.addWidget(self.web_control_link_label, 1)
         link_row.addWidget(self.copy_link_btn)
+        link_row.addWidget(self.web_firewall_btn)
         web_layout.addLayout(link_row)
+
+        self.web_remote_checkbox = QCheckBox("Also let me use it from anywhere (secure link through Cloudflare)")
+        self.web_remote_checkbox.setChecked(self.config.web_remote_enabled)
+        self.web_remote_checkbox.toggled.connect(self._on_web_remote_toggled)
+        web_layout.addWidget(self.web_remote_checkbox)
+        remote_row = QHBoxLayout()
+        self.web_remote_label = QLabel("")
+        self.web_remote_label.setWordWrap(True)
+        self.web_remote_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.copy_remote_btn = QPushButton("Copy")
+        self.copy_remote_btn.clicked.connect(self._copy_remote_link)
+        remote_row.addWidget(self.web_remote_label, 1)
+        remote_row.addWidget(self.copy_remote_btn)
+        web_layout.addLayout(remote_row)
+        remote_note = QLabel(
+            "Works on mobile data, with no router changes and your home address hidden -- Cloudflare's free "
+            "tunnel carries it over HTTPS. The link changes whenever it reconnects; ConanOps sends the new one "
+            "to your server alerts (Discord/ntfy). Anyone with the link still needs the password."
+        )
+        remote_note.setObjectName("Dim")
+        remote_note.setWordWrap(True)
+        web_layout.addWidget(remote_note)
+        self.web_tunnel = None
+        self.on_web_remote_changed = None
+        self.on_web_password_changed = None
+        self._remote_url = ""
 
         form.addWidget(web_card)
 
@@ -1136,37 +1179,140 @@ class AppSettingsPage(QWidget):
 
     # ------------------------------------------------------- web control --
     def _refresh_web_control_ui(self) -> None:
-        if self.web_control_server.is_running:
-            url = self.web_control_server.url_for()
-            self.web_control_link_label.setText(url)
-            self.copy_link_btn.setEnabled(True)
+        running = self.web_control_server.is_running
+        has_pw = bool(self.config.web_password_hash)
+        self.web_password_label.setText(
+            "Password: set." if has_pw else "⚠ No password yet -- set one so you can sign in.")
+        self.web_password_btn.setText("Change Password…" if has_pw else "Set Password…")
+        self.web_signout_btn.setVisible(has_pw)
+        if running:
+            self.web_control_link_label.setText(self.web_control_server.url_for() or "")
         else:
             self.web_control_link_label.setText("Not currently running.")
-            self.copy_link_btn.setEnabled(False)
+        self.copy_link_btn.setEnabled(running)
+        self.web_firewall_btn.setVisible(running)
+        self.web_remote_checkbox.setEnabled(running and has_pw)
+        if not (running and has_pw):
+            self.web_remote_label.setText("Turn on the web version and set a password first."
+                                          if self.config.web_remote_enabled else "")
+        self.copy_remote_btn.setVisible(bool(self._remote_url) and self.config.web_remote_enabled)
+
+    def show_web_remote_status(self, url: str, status: str) -> None:
+        """Called by MainWindow when the Cloudflare link changes."""
+        self._remote_url = url
+        if not self.config.web_remote_enabled:
+            self.web_remote_label.setText("")
+        elif url:
+            self.web_remote_label.setText(url)
+        else:
+            self.web_remote_label.setText(status)
+        self.copy_remote_btn.setVisible(bool(url))
 
     def _on_web_control_toggled(self, checked: bool) -> None:
         if checked:
             ok, message = self.web_control_server.start()
             if not ok:
-                QMessageBox.warning(self, "Couldn't Start Web Control", message)
-                self.web_control_checkbox.blockSignals(True)
-                self.web_control_checkbox.setChecked(False)
-                self.web_control_checkbox.blockSignals(False)
+                QMessageBox.warning(self, "Couldn't Start the Web Version", message)
+                self._set_checked_quietly(self.web_control_checkbox, False)
                 self.config.web_control_enabled = False
                 self.save_config()
                 self._refresh_web_control_ui()
                 return
         else:
             self.web_control_server.stop()
-
         self.config.web_control_enabled = checked
         self.save_config()
         self._refresh_web_control_ui()
+        if callable(self.on_web_remote_changed):
+            self.on_web_remote_changed()
+
+    def _on_web_remote_toggled(self, checked: bool) -> None:
+        self.config.web_remote_enabled = checked
+        self.save_config()
+        if not checked:
+            self.web_remote_label.setText("")
+            self._remote_url = ""
+        self._refresh_web_control_ui()
+        if callable(self.on_web_remote_changed):
+            self.on_web_remote_changed()
+
+    def _set_web_password(self) -> None:
+        from webui import auth
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Web Version Password")
+        lay = QVBoxLayout(dlg)
+        info = QLabel(f"Choose a password for the web version (at least {auth.MIN_PASSWORD_LENGTH} characters). "
+                      "Changing it signs everyone out.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        first = QLineEdit()
+        first.setEchoMode(QLineEdit.Password)
+        first.setPlaceholderText("New password")
+        second = QLineEdit()
+        second.setEchoMode(QLineEdit.Password)
+        second.setPlaceholderText("Type it again")
+        error = QLabel("")
+        error.setObjectName("ErrorText")
+        lay.addWidget(first)
+        lay.addWidget(second)
+        lay.addWidget(error)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        ok = QPushButton("Save Password")
+        ok.setObjectName("PrimaryButton")
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        cancel.clicked.connect(dlg.reject)
+
+        def accept():
+            problem = auth.password_problem(first.text())
+            if not problem and first.text() != second.text():
+                problem = "The two passwords don't match."
+            if problem:
+                error.setText(problem)
+                return
+            dlg.accept()
+        ok.clicked.connect(accept)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.config.web_password_hash = auth.hash_password(first.text())
+        self.save_config()
+        if callable(self.on_web_password_changed):
+            self.on_web_password_changed()
+        self._refresh_web_control_ui()
+        if callable(self.on_web_remote_changed):
+            self.on_web_remote_changed()
+
+    def _sign_out_web_sessions(self) -> None:
+        if callable(self.on_web_password_changed):
+            self.on_web_password_changed()
+        QMessageBox.information(self, "Signed Out", "Every browser signed into the web version was signed out.")
+
+    def _allow_web_through_firewall(self) -> None:
+        import network_setup
+        port = self.web_control_server.actual_port
+        if not port:
+            return
+        self.web_firewall_btn.setEnabled(False)
+
+        def done(outcome):
+            self.web_firewall_btn.setEnabled(True)
+            if outcome == powershell.RUN_OK:
+                QMessageBox.information(self, "Allowed", "Phones and PCs on your home network can open it now.")
+            elif outcome != powershell.RUN_DECLINED:
+                QMessageBox.warning(self, "Not Allowed", "Windows didn't accept the change -- see conanops.log.")
+        self._run_call(lambda: network_setup.allow_web_port(port), done)
 
     def _copy_web_control_link(self) -> None:
         url = self.web_control_server.url_for()
         if url:
             QApplication.clipboard().setText(url)
+
+    def _copy_remote_link(self) -> None:
+        if self._remote_url:
+            QApplication.clipboard().setText(self._remote_url)
 
     # ------------------------------------------------------------ delete --
     def _confirm_delete_app_only(self) -> None:

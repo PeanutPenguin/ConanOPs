@@ -207,10 +207,10 @@ def test_splash_builds():
     splash.close()
 
 
-def test_web_control_page_uses_new_styles():
+def test_web_app_uses_the_app_palette():
     import web_control
-    html = web_control._render_page().decode()
-    assert "#1d1d1d" in html and 'class="primary"' in html
+    css = open(web_control._asset("web", "app.css"), encoding="utf-8").read()
+    assert "#1d1d1d" in css
 
 
 # ------------------------------------------------- mockup page layouts --

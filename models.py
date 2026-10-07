@@ -250,6 +250,10 @@ class AppConfig:
     # Off by default; persisted so an explicit choice to turn it on
     # survives an app restart, same as the PIN lock does.
     web_control_enabled: bool = False
+    # The web version's password (webui/auth.py PBKDF2 hash -- never the
+    # password itself) and whether the Cloudflare remote link is on.
+    web_password_hash: str = ""
+    web_remote_enabled: bool = False
 
     # --- Start with Windows ---
     # start_with_windows itself doesn't launch anything on its own --
@@ -440,6 +444,8 @@ class AppConfig:
             app_lock_pin_hash=raw.get("app_lock_pin_hash", ""),
             app_lock_salt=raw.get("app_lock_salt", ""),
             web_control_enabled=raw.get("web_control_enabled", False),
+            web_password_hash=raw.get("web_password_hash", ""),
+            web_remote_enabled=raw.get("web_remote_enabled", False),
             start_with_windows=raw.get("start_with_windows", False),
             start_minimized_to_tray=raw.get("start_minimized_to_tray", False),
             background_mode_enabled=raw.get("background_mode_enabled", False),
@@ -482,6 +488,8 @@ class AppConfig:
             "app_lock_pin_hash": self.app_lock_pin_hash,
             "app_lock_salt": self.app_lock_salt,
             "web_control_enabled": self.web_control_enabled,
+            "web_password_hash": self.web_password_hash,
+            "web_remote_enabled": self.web_remote_enabled,
             "start_with_windows": self.start_with_windows,
             "start_minimized_to_tray": self.start_minimized_to_tray,
             "background_mode_enabled": self.background_mode_enabled,

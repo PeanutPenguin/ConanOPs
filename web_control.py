@@ -1,257 +1,249 @@
 """
-Local web control: a lightweight HTTP server, stdlib only (no new
-dependency), that serves a small status/control page reachable from a
-browser on this machine or elsewhere on the local network. Off by
-default -- toggled from App Settings, which also owns whether it's
-remembered across restarts.
+ConanOps' web version: an HTTP server (stdlib only) that serves the web
+app (assets/web) and its JSON API (webui/api.py) to browsers on the
+home network -- and, with the remote link on, from anywhere through a
+Cloudflare tunnel (webui/tunnel.py), which provides the HTTPS.
 
-Deliberately unauthenticated, per an explicit choice: whoever has the
-link can view status and start/stop/restart the active server. That
-trade-off is surfaced in the App Settings UI text, not re-litigated
-here.
-
-Scope: controls whichever server is "active" in ConanOps at the
-moment a request arrives (via the get_active_server callable), not a
-specific server picked at startup -- so switching the active server in
-the app changes what the web page controls too.
+Security:
+  * Everything except the login itself needs a session (webui/auth.py):
+    a random token in an HttpOnly, SameSite=Strict cookie, Secure when
+    the request arrived over HTTPS.
+  * No password set in App Settings = nothing but the "set a password
+    first" screen works.
+  * Changes (POST) also need a custom header and a matching Origin, so
+    another website open in the same browser can't make them.
+  * Wrong passwords are rate-limited per address and overall.
+  * Strict security headers; the page loads nothing from other sites.
 """
 from __future__ import annotations
 
 import json
-import threading
-import sys
+import mimetypes
+import os
 import socket
+import sys
+import threading
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn, TCPServer
 from typing import Callable, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 import applog
 import network_utils
-import preflight
-import process_manager
-from models import ServerConfig
 
 _log = applog.get_logger(__name__)
 
 DEFAULT_PORT = 8787
 PORT_FALLBACK_ATTEMPTS = 5
+COOKIE = "conanops_session"
+MAX_BODY = 64 * 1024
 
-
-def _render_page() -> bytes:
-    html = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ConanOps Web Control</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { background: #1d1d1d; color: #ececec; font-family: Geist, -apple-system, 'Segoe UI', sans-serif;
-         font-size: 14px; max-width: 480px; margin: 40px auto; padding: 0 20px; }
-  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
-  .sub { color: #a3a3a3; margin: 0 0 20px; font-size: 13px; }
-  .card { background: #252525; border: 1px solid #303030; border-radius: 10px; padding: 18px; margin: 14px 0; }
-  #name { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
-  #state { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; }
-  #state::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-                   background: currentColor; margin-right: 6px; vertical-align: 1px; }
-  .status-online { color: #5fd38a; background: rgba(95, 211, 138, .12); }
-  .status-offline { color: #a3a3a3; background: rgba(163, 163, 163, .12); }
-  .players { color: #a3a3a3; margin-top: 10px; }
-  button { background: #232323; color: #ececec; border: 1px solid #3a3a3a; border-radius: 8px; min-height: 44px;
-           padding: 0 18px; font: inherit; font-weight: 500; margin: 4px 8px 4px 0; cursor: pointer; }
-  button:hover { background: #2c2c2c; }
-  button.primary { background: #ac6427; border-color: #ac6427; color: #fff; font-weight: 600; }
-  button.primary:hover { background: #b8702f; }
-  button:disabled { opacity: 0.45; cursor: default; }
-  button:focus-visible { outline: 2px solid #e2914f; outline-offset: 2px; }
-  #msg { margin-top: 10px; color: #f0b54a; min-height: 20px; }
-</style>
-</head>
-<body>
-<h1>ConanOps Web Control</h1>
-<p class="sub">Start, stop or restart your server from any device on your network.</p>
-<div class="card">
-  <div id="name">Loading...</div>
-  <div id="state" class="status-offline">-</div>
-  <div id="players" class="players"></div>
-</div>
-<div class="card">
-  <button id="startBtn" class="primary" onclick="doAction('start')">Start</button>
-  <button id="restartBtn" onclick="doAction('restart')">Restart</button>
-  <button id="stopBtn" onclick="doAction('stop')">Stop</button>
-  <div id="msg"></div>
-</div>
-<script>
-async function refresh() {
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    document.getElementById('name').textContent = d.name || '(no server configured)';
-    const state = document.getElementById('state');
-    if (!d.configured) {
-      state.textContent = 'Not configured';
-      state.className = 'status-offline';
-    } else {
-      state.textContent = d.running ? 'Online' : 'Offline';
-      state.className = d.running ? 'status-online' : 'status-offline';
-    }
-    document.getElementById('players').textContent =
-      (d.running && d.players !== null) ? `${d.players}/${d.max_players} players` : '';
-    document.getElementById('startBtn').disabled = !d.configured || d.running;
-    document.getElementById('restartBtn').disabled = !d.configured || !d.running;
-    document.getElementById('stopBtn').disabled = !d.configured || !d.running;
-  } catch (e) {
-    document.getElementById('msg').textContent = 'Lost connection to ConanOps.';
-  }
+_STATIC = {
+    "/": ("web", "index.html"),
+    "/index.html": ("web", "index.html"),
+    "/app.js": ("web", "app.js"),
+    "/app.css": ("web", "app.css"),
+    "/manifest.webmanifest": ("web", "manifest.webmanifest"),
+    "/icon.svg": ("conanops-icon-small.svg",),
+    "/icon-512.png": ("conanops-icon-512.png",),
+    "/fonts/Geist-Regular.ttf": ("fonts", "Geist-Regular.ttf"),
+    "/fonts/Geist-Medium.ttf": ("fonts", "Geist-Medium.ttf"),
+    "/fonts/Geist-SemiBold.ttf": ("fonts", "Geist-SemiBold.ttf"),
+    "/fonts/GeistMono-Regular.ttf": ("fonts", "GeistMono-Regular.ttf"),
 }
-async function doAction(action) {
-  const msg = document.getElementById('msg');
-  msg.textContent = 'Working...';
-  try {
-    const r = await fetch('/api/' + action, { method: 'POST' });
-    const d = await r.json();
-    msg.textContent = d.message || '';
-  } catch (e) {
-    msg.textContent = 'Request failed.';
-  }
-  refresh();
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": ("default-src 'self'; img-src 'self' data: https://steamuserimages-a.akamaihd.net "
+                                "https://images.steamusercontent.com; style-src 'self'; script-src 'self'; "
+                                "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+                                "form-action 'self'"),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
-refresh();
-setInterval(refresh, 4000);
-</script>
-</body>
-</html>"""
-    return html.encode("utf-8")
 
 
-def _make_handler(get_active_server: Callable[[], Optional[ServerConfig]],
-                   save_config: Optional[Callable[[], None]] = None):
-    # Shared across every request this handler class serves, so two
-    # Start/Restart POSTs that land close together (e.g. an impatient
-    # double-click on the web page) are serialized instead of both
-    # racing to launch the process -- process_manager.is_running() alone
-    # isn't enough since the first launch's process may not show up in
-    # a process scan yet by the time the second request checks it.
-    action_lock = threading.Lock()
+def _asset(*parts: str) -> str:
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "assets", *parts)
 
+
+def _make_handler(owner: "WebControlServer"):
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):  # noqa: A003 - silence default stderr logging
-            _log.info("web_control: " + (fmt % args))
+        server_version = "ConanOps"
+        sys_version = ""
 
-        def _origin_allowed(self) -> bool:
-            """Best-effort CSRF guard: this page is meant to be opened
-            directly, not embedded/POSTed-to from some other site a
-            browser on the LAN happens to have open. A browser sets
-            Origin on cross-origin requests (and most same-origin ones
-            too); a request with no Origin/Referer header at all (curl,
-            a same-origin fetch some browsers omit it for) is let
-            through, since this is defense in depth, not real auth --
-            the page is unauthenticated by design (see module
-            docstring)."""
-            origin = self.headers.get("Origin") or self.headers.get("Referer")
+        def log_message(self, fmt, *args):  # noqa: A003
+            if not self.path.startswith("/api/servers/") or self.command != "GET":
+                _log.info("web: " + (fmt % args))
+
+        # ------------------------------------------------------- helpers --
+        def _client_ip(self) -> str:
+            ip = self.client_address[0]
+            if ip in ("127.0.0.1", "::1") and self.headers.get("Cf-Connecting-Ip"):
+                return self.headers["Cf-Connecting-Ip"].strip()  # arrived through the tunnel
+            return ip
+
+        def _https(self) -> bool:
+            return (self.client_address[0] in ("127.0.0.1", "::1")
+                    and self.headers.get("X-Forwarded-Proto", "").lower() == "https")
+
+        def _token(self) -> Optional[str]:
+            raw = self.headers.get("Cookie")
+            if not raw:
+                return None
+            try:
+                c = SimpleCookie(raw)
+            except Exception:  # noqa: BLE001
+                return None
+            return c[COOKIE].value if COOKIE in c else None
+
+        def _authed(self) -> bool:
+            return bool(owner.password_hash()) and owner.sessions.valid(self._token())
+
+        def _send(self, status: int, body: bytes, ctype: str, extra: Optional[dict] = None,
+                  cache: str = "no-store") -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", cache)
+            for k, v in _SECURITY_HEADERS.items():
+                self.send_header(k, v)
+            if self._https():
+                self.send_header("Strict-Transport-Security", "max-age=31536000")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _json(self, obj, status: int = 200, extra: Optional[dict] = None) -> None:
+            self._send(status, json.dumps(obj, default=str).encode("utf-8"), "application/json", extra)
+
+        def _cookie(self, token: str, max_age: int) -> str:
+            parts = [f"{COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Strict", f"Max-Age={max_age}"]
+            if self._https():
+                parts.append("Secure")
+            return "; ".join(parts)
+
+        def _read_body(self) -> Optional[dict]:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return None
+            if length > MAX_BODY:
+                return None
+            raw = self.rfile.read(length) if length else b""
+            if not raw:
+                return {}
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return None
+            return data if isinstance(data, dict) else None
+
+        def _same_origin_post(self) -> bool:
+            if self.headers.get("X-ConanOps") != "1":
+                return False
+            origin = self.headers.get("Origin")
             if not origin:
                 return True
             host = self.headers.get("Host", "")
-            return host and (origin == f"http://{host}" or origin.startswith(f"http://{host}/"))
+            return urlsplit(origin).netloc == host
 
-        def _send_json(self, obj: dict, status: int = 200) -> None:
-            body = json.dumps(obj).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        # -------------------------------------------------------- routes --
+        def do_HEAD(self):  # noqa: N802
+            self.do_GET()
 
-        def do_GET(self) -> None:  # noqa: N802 - required name by BaseHTTPRequestHandler
-            if self.path == "/" or self.path == "/index.html":
-                body = _render_page()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif self.path == "/api/status":
-                self._send_json(self._status())
-            else:
-                self._send_json({"error": "not found"}, status=404)
+        def do_GET(self):  # noqa: N802
+            url = urlsplit(self.path)
+            if url.path in _STATIC:
+                return self._static(url.path)
+            if url.path == "/api/session":
+                return self._json({"authed": self._authed(), "password_set": bool(owner.password_hash()),
+                                   "remote": owner.is_remote_request(self)})
+            if url.path.startswith("/api/"):
+                return self._api("GET", url)
+            self._json({"error": "Not found"}, 404)
 
-        def do_POST(self) -> None:  # noqa: N802
-            if not self._origin_allowed():
-                self._send_json({"error": "forbidden"}, status=403)
-                return
-            if self.path == "/api/start":
-                self._send_json(self._start())
-            elif self.path == "/api/stop":
-                self._send_json(self._stop())
-            elif self.path == "/api/restart":
-                self._send_json(self._restart())
-            else:
-                self._send_json({"error": "not found"}, status=404)
+        def do_POST(self):  # noqa: N802
+            url = urlsplit(self.path)
+            if not self._same_origin_post():
+                return self._json({"error": "Forbidden"}, 403)
+            if url.path == "/api/login":
+                return self._login()
+            if url.path == "/api/logout":
+                owner.sessions.revoke(self._token())
+                return self._json({"ok": True}, extra={"Set-Cookie": self._cookie("", 0)})
+            if url.path.startswith("/api/"):
+                return self._api("POST", url)
+            self._json({"error": "Not found"}, 404)
 
-        # ------------------------------------------------------ actions --
-        def _status(self) -> dict:
-            server = get_active_server()
-            if server is None or not server.install_dir:
-                return {"configured": False, "name": None, "running": False, "players": None, "max_players": None}
-            running = process_manager.is_running(server.install_dir)
-            players = max_players = None
-            if running:
-                info = network_utils.query_a2s_info(server.bind_ip or "127.0.0.1", server.query_port, timeout=2.0)
-                if info:
-                    players = info.get("players")
-                    max_players = info.get("max_players")
-            return {
-                "configured": True, "name": server.name, "running": running,
-                "players": players, "max_players": max_players,
-            }
+        def _static(self, path: str) -> None:
+            file_path = _asset(*_STATIC[path])
+            try:
+                with open(file_path, "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self._json({"error": "Not found"}, 404)
+            ctype = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+            if path.endswith(".webmanifest"):
+                ctype = "application/manifest+json"
+            if ctype.startswith("text/") or ctype in ("application/javascript",):
+                ctype += "; charset=utf-8"
+            cache = "no-cache" if path in ("/", "/index.html", "/app.js", "/app.css") else "max-age=86400"
+            self._send(200, body, ctype, cache=cache)
 
-        def _start(self) -> dict:
-            with action_lock:
-                server = get_active_server()
-                if server is None or not server.install_dir:
-                    return {"success": False, "message": "No server is configured."}
-                if process_manager.is_running(server.install_dir):
-                    return {"success": False, "message": "Already running."}
-                result = preflight.run_preflight(server)
-                if save_config:
-                    save_config()
-                if not result.ok:
-                    return {"success": False, "message": "Pre-flight check failed: " + "; ".join(result.problems)}
-                try:
-                    process_manager.launch(server)
-                except OSError as e:
-                    _log.error(f"web_control: start failed: {e}")
-                    return {"success": False, "message": f"Failed to start: {e}"}
-                return {"success": True, "message": "Starting..."}
+        def _login(self) -> None:
+            ip = self._client_ip()
+            wait = owner.limiter.wait_seconds(ip)
+            if wait:
+                return self._json({"error": f"Too many wrong passwords. Try again in {wait} seconds."}, 429)
+            stored = owner.password_hash()
+            if not stored:
+                return self._json({"error": "Set a web password in ConanOps (App Settings) first."}, 403)
+            body = self._read_body() or {}
+            from webui import auth
+            if not auth.verify_password(str(body.get("password", "")), stored):
+                owner.limiter.failed(ip)
+                _log.warning(f"Web login: wrong password from {ip}")
+                return self._json({"error": "Wrong password."}, 401)
+            owner.limiter.succeeded(ip)
+            token, max_age = owner.sessions.create(bool(body.get("remember", True)))
+            _log.info(f"Web login from {ip}")
+            self._json({"ok": True}, extra={"Set-Cookie": self._cookie(token, max_age)})
 
-        def _stop(self) -> dict:
-            with action_lock:
-                server = get_active_server()
-                if server is None or not server.install_dir:
-                    return {"success": False, "message": "No server is configured."}
-                if not process_manager.is_running(server.install_dir):
-                    return {"success": False, "message": "Not running."}
-                ok = process_manager.graceful_stop(server)
-                return {"success": ok, "message": "Stopped." if ok else "Stop didn't complete cleanly."}
-
-        def _restart(self) -> dict:
-            with action_lock:
-                server = get_active_server()
-                if server is None or not server.install_dir:
-                    return {"success": False, "message": "No server is configured."}
-                result = preflight.run_preflight(server)
-                if save_config:
-                    save_config()
-                if not result.ok:
-                    return {"success": False, "message": "Pre-flight check failed: " + "; ".join(result.problems)}
-                try:
-                    process_manager.restart(server)
-                except OSError as e:
-                    _log.error(f"web_control: restart failed: {e}")
-                    return {"success": False, "message": f"Failed to restart: {e}"}
-                return {"success": True, "message": "Restarting..."}
+        def _api(self, method: str, url) -> None:
+            if not owner.password_hash():
+                return self._json({"error": "Set a web password in ConanOps (App Settings) first.",
+                                   "needs_password": True}, 403)
+            if not self._authed():
+                return self._json({"error": "Please sign in.", "needs_login": True}, 401)
+            if owner.api is None:
+                return self._json({"error": "ConanOps is still starting."}, 503)
+            fn, params = owner.api.match(method, url.path)
+            if fn is None:
+                return self._json({"error": "Not found"}, 404)
+            body = self._read_body() if method == "POST" else {}
+            if body is None:
+                return self._json({"error": "Bad request"}, 400)
+            from webui.api import Request
+            from webui.bridge import WebActionError
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            req = Request(method, url.path, params, query, body, self._client_ip())
+            try:
+                result = fn(req)
+                self._json(result if isinstance(result, dict) else {"ok": True})
+            except WebActionError as e:
+                self._json({"ok": False, "error": str(e), "message": str(e)}, 400)
+            except TimeoutError as e:
+                self._json({"ok": False, "error": str(e), "message": str(e)}, 504)
+            except Exception as e:  # noqa: BLE001 - never leak a traceback to the browser
+                _log.exception(f"Web API {method} {url.path} failed: {e}")
+                self._json({"ok": False, "error": "Something went wrong -- see conanops.log on the PC.",
+                            "message": "Something went wrong -- see conanops.log on the PC."}, 500)
 
     return Handler
 
@@ -273,28 +265,45 @@ class _ThreadingHTTPServer(ThreadingMixIn, TCPServer):
 
 
 class WebControlServer:
-    def __init__(self, get_active_server: Callable[[], Optional[ServerConfig]],
-                 save_config: Optional[Callable[[], None]] = None):
+    """The web version's server. `get_password_hash` reads the current
+    password hash from the config; `api` (a webui.api.WebApi) is attached
+    by MainWindow once the window exists."""
+
+    def __init__(self, get_active_server: Callable = None, save_config: Optional[Callable[[], None]] = None,
+                 get_password_hash: Optional[Callable[[], str]] = None, sessions_path: Optional[str] = None):
+        from webui.auth import LoginLimiter, SessionStore
         self.get_active_server = get_active_server
         self.save_config = save_config
+        self._get_password_hash = get_password_hash or (lambda: "")
+        self.sessions = SessionStore(sessions_path)
+        self.limiter = LoginLimiter()
+        self.api = None
+        self.tunnel_port_hint: Optional[int] = None
         self._httpd: Optional[_ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self.actual_port: Optional[int] = None
+
+    def password_hash(self) -> str:
+        try:
+            return self._get_password_hash() or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def is_remote_request(handler) -> bool:
+        return handler.client_address[0] in ("127.0.0.1", "::1") and bool(handler.headers.get("Cf-Connecting-Ip"))
 
     @property
     def is_running(self) -> bool:
         return self._httpd is not None
 
     def start(self, preferred_port: int = DEFAULT_PORT) -> Tuple[bool, str]:
-        """Binds to 0.0.0.0 (reachable from other devices on the LAN,
-        not just this machine) and serves in a background thread.
-        Tries a few ports past `preferred_port` if it's already taken,
-        since a fixed single port with no fallback is a common,
-        entirely avoidable failure mode."""
+        """Listens on every network adapter (so phones on the Wi-Fi can
+        reach it), trying a few ports past `preferred_port` if it's
+        taken."""
         if self.is_running:
             return True, f"Already running on port {self.actual_port}."
-
-        handler_cls = _make_handler(self.get_active_server, self.save_config)
+        handler_cls = _make_handler(self)
         last_error: Optional[Exception] = None
         for port in range(preferred_port, preferred_port + PORT_FALLBACK_ATTEMPTS):
             try:
@@ -304,12 +313,11 @@ class WebControlServer:
                 continue
             self._httpd = httpd
             self.actual_port = port
-            self._thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            self._thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="web-control")
             self._thread.start()
-            _log.info(f"web_control: listening on 0.0.0.0:{port}")
+            _log.info(f"web: listening on 0.0.0.0:{port}")
             return True, f"Listening on port {port}."
-
-        _log.error(f"web_control: couldn't bind any port starting from {preferred_port}: {last_error}")
+        _log.error(f"web: couldn't bind any port starting from {preferred_port}: {last_error}")
         return False, f"Couldn't start: {last_error}"
 
     def stop(self) -> None:
@@ -321,12 +329,10 @@ class WebControlServer:
         self._httpd = None
         self._thread = None
         self.actual_port = None
-        _log.info("web_control: stopped.")
+        _log.info("web: stopped.")
 
     def url_for(self, ip: Optional[str] = None) -> Optional[str]:
-        """The link to share/copy. Uses the machine's LAN IP (so it
-        works from another device), falling back to localhost if that
-        can't be determined."""
+        """The home-network link."""
         if not self.is_running:
             return None
         ip = ip or network_utils.get_local_ip()
