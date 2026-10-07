@@ -1,0 +1,40 @@
+{
+  "servers": [
+    {
+      "id": "example1",
+      "name": "My Server",
+      "install_dir": "C:\\ConanServers\\MyServer\\steamcmd\\steamapps\\common\\Conan Exiles Dedicated Server",
+      "steamcmd_dir": "C:\\ConanServers\\MyServer\\steamcmd",
+      "motd": "",
+      "map": "exiled",
+      "mode": "pvp",
+      "region": "us-east",
+      "description": "",
+      "password": "",
+      "admin_password": "",
+      "game_port": 7777,
+      "query_port": 27015,
+      "bind_ip": "",
+      "max_players": 40,
+      "xp_rate": 1.0,
+      "harvest_multiplier": 1.0,
+      "decay_days": 14,
+      "pvp_enabled": true,
+      "purge_enabled": true,
+      "offline_raid_protection": false,
+      "stamina_drain_sprint": true,
+      "backup_daily_keep": 7,
+      "backup_weekly_keep": 4,
+      "backup_interval_hours": 6,
+      "backup_destination": "",
+      "backup_before_update": true,
+      "restart_enabled": true,
+      "restart_start": "04:00",
+      "restart_end": "05:00",
+      "auto_update": true,
+      "installed_buildid": ""
+    }
+  ],
+  "active_server_id": "example1",
+  "accent_color": "#c9752f"
+}

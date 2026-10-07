@@ -1,0 +1,85 @@
+# Builds ConanOps on a real Windows machine and puts the files on a DRAFT
+# GitHub release. Nobody's ConanOps sees a draft -- you check it, then
+# click Publish.
+#
+# To release: raise VERSION in version.py, write RELEASE_NOTES.md, then
+# Actions -> "Build ConanOps release" -> Run workflow.
+name: Build ConanOps release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read the version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (python -c "import version; print(version.VERSION)").Trim()
+          if (git ls-remote --tags origin "refs/tags/v$v") {
+            throw "v$v is already released. Raise VERSION in version.py first."
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Building ConanOps $v"
+
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pytest pytest-timeout
+
+      # Runs on real Windows -- the one place ConanOps' Windows-only parts get
+      # exercised. Doesn't block the build yet: the results show up in this
+      # run's log so problems can be fixed, without stopping a release.
+      - name: Run tests
+        continue-on-error: true
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q -p no:cacheprovider --timeout 120 tests
+
+      - name: Build ConanOps.exe
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --onefile --windowed --name ConanOps --icon assets\conanops.ico --add-data "assets;assets" main.py
+
+      - name: Make the update file
+        shell: pwsh
+        run: Compress-Archive -LiteralPath dist\ConanOps.exe -DestinationPath dist\ConanOps-update.zip
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\inno.exe"
+          Start-Process "$env:RUNNER_TEMP\inno.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:\inno6' -Wait
+          & C:\inno6\ISCC.exe /Q "/DMyAppVersion=${{ steps.ver.outputs.version }}" installer\ConanOps.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+
+      - name: Put the files on a draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $tag = "v$v"
+          # A draft from an earlier run of the same version is replaced.
+          $existing = gh release view $tag --json isDraft --jq .isDraft 2>$null
+          if ($existing -eq "true") { gh release delete $tag --yes }
+          $notes = if (Test-Path RELEASE_NOTES.md) { "RELEASE_NOTES.md" } else { $null }
+          $ghArgs = @($tag, "dist\ConanOps-update.zip", "dist\ConanOps-Setup-$v.exe",
+                    "--draft", "--target", $env:GITHUB_SHA, "--title", "ConanOps $v")
+          if ($notes) { $ghArgs += @("--notes-file", $notes) } else { $ghArgs += @("--notes", "ConanOps $v") }
+          gh release create @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "Couldn't create the release" }

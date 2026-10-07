@@ -1,0 +1,63 @@
+{
+ "response": {
+  "publishedfiledetails": [
+   {
+    "result": 1,
+    "publishedfileid": "1000000001",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Updated Mod",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1789000000,
+    "subscriptions": 50000,
+    "tags": [
+     {
+      "tag": "Enhanced",
+      "display_name": "Enhanced"
+     }
+    ]
+   },
+   {
+    "result": 1,
+    "publishedfileid": "1000000002",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Stale Enhanced Mod",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1780000000,
+    "subscriptions": 1000,
+    "tags": [
+     {
+      "tag": "Enhanced",
+      "display_name": "Enhanced"
+     }
+    ]
+   },
+   {
+    "result": 1,
+    "publishedfileid": "1000000006",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Shared Library",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1789000000,
+    "subscriptions": 1000,
+    "tags": [
+     {
+      "tag": "Enhanced",
+      "display_name": "Enhanced"
+     }
+    ]
+   }
+  ]
+ }
+}

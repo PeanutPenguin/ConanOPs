@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Build output (BUILD_EXE.bat / PyInstaller / Inno Setup / GitHub Actions)
+build/
+dist/
+*.spec
+
+# ConanOps runtime data -- servers, worlds, backups, settings, logs
+data/
+*.log
+conanops.lock
+instance.json
+handoff.request
+keep-alive.on
+user-quit
+.conanops-manifest.json
+*.conanops-old
+
+# Signing certificates -- never upload these
+*.pfx
+*.p12
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

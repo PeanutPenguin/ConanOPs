@@ -1,0 +1,109 @@
+{
+ "response": {
+  "total": 6,
+  "next_cursor": "AoJ4",
+  "publishedfiledetails": [
+   {
+    "result": 1,
+    "publishedfileid": "1000000001",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Updated Mod",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1789000000,
+    "subscriptions": 50000,
+    "tags": [
+     {
+      "tag": "Enhanced",
+      "display_name": "Enhanced"
+     }
+    ]
+   },
+   {
+    "result": 1,
+    "publishedfileid": "1000000002",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Stale Enhanced Mod",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1780000000,
+    "subscriptions": 1000,
+    "tags": [
+     {
+      "tag": "Enhanced",
+      "display_name": "Enhanced"
+     }
+    ]
+   },
+   {
+    "result": 1,
+    "publishedfileid": "1000000003",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Legacy Mod",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1789000000,
+    "subscriptions": 1000,
+    "tags": [
+     {
+      "tag": "Legacy",
+      "display_name": "Legacy"
+     }
+    ]
+   },
+   {
+    "result": 1,
+    "publishedfileid": "1000000004",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Untagged Mod",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1789000000,
+    "subscriptions": 1000,
+    "tags": []
+   },
+   {
+    "result": 1,
+    "publishedfileid": "1000000005",
+    "creator": "76561198000000000",
+    "creator_appid": 440900,
+    "consumer_appid": 440900,
+    "file_type": 0,
+    "title": "Needs A Library",
+    "file_description": "",
+    "time_created": 1700000000,
+    "time_updated": 1789000000,
+    "subscriptions": 1000,
+    "tags": [
+     {
+      "tag": "Enhanced",
+      "display_name": "Enhanced"
+     }
+    ],
+    "children": [
+     {
+      "publishedfileid": "1000000006",
+      "sortorder": 0,
+      "file_type": 0
+     }
+    ]
+   },
+   {
+    "result": 9,
+    "publishedfileid": "1000000099"
+   }
+  ]
+ }
+}
