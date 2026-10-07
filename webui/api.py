@@ -213,7 +213,7 @@ class WebApi:
         a("GET", "/api/servers/{sid}/settings", self.settings)
         a("POST", "/api/servers/{sid}/settings/{page}", self.settings_save)
         a("POST", "/api/servers/{sid}/settings/{page}/action", self.settings_action)
-        a("POST", "/api/servers/{sid}/alerts/test", self.alerts_test)
+        a("POST", "/api/alerts/test", self.alerts_test)
         a("POST", "/api/servers/{sid}/diagnostics", self.diagnostics)
         a("GET", "/api/servers/{sid}/port-guide", self.port_guide)
         a("POST", "/api/servers/{sid}/install-vc-runtime", self.install_vc_runtime)
@@ -692,13 +692,9 @@ class WebApi:
         if kind not in ("discord", "ntfy"):
             raise WebActionError("Unknown alert type.")
         typed = str(req.body.get("url") or "").strip()
-
-        def read():
-            s = self._server(req.params["sid"])
-            return s.name, (s.webhook_discord_url if kind == "discord" else s.webhook_ntfy_url)
-        name, saved = self.gui(read)[0]
-        url = typed or saved
-        ok, text = (webhooks.test_discord if kind == "discord" else webhooks.test_ntfy)(url, name)
+        saved = self.gui(lambda: self.win.config.alert_discord_url if kind == "discord"
+                         else self.win.config.alert_ntfy_url)[0]
+        ok, text = (webhooks.test_discord if kind == "discord" else webhooks.test_ntfy)(typed or saved, "your servers")
         return {"ok": ok, "message": text}
 
     # -------------------------------------------------------- diagnostics --
@@ -791,6 +787,7 @@ class WebApi:
 
     # ------------------------------------------------------- app options --
     def app_options(self, req: Request) -> dict:
+        import alert_guides
         import proc_utils
 
         def read():
@@ -812,6 +809,9 @@ class WebApi:
                 "sign_in_note": page.sign_in_status_label.text() if not page.sign_in_status_label.isHidden() else "",
                 "steam_api_key_set": bool(c.steam_api_key), "workshop_update_cutoff": c.workshop_update_cutoff,
                 "duckdns_domain": c.duckdns_domain, "duckdns_token_set": bool(c.duckdns_token),
+                "alert_discord_set": bool(c.alert_discord_url), "alert_ntfy_set": bool(c.alert_ntfy_url),
+                "discord_status_enabled": bool(c.discord_status_enabled),
+                "alert_guides": {k: alert_guides.as_json(g) for k, g in alert_guides.ALL.items()},
                 "admin": proc_utils.is_admin(), "admin_mode": bool(getattr(c, "admin_mode_enabled", False)),
                 "needs_pc": self.win.needs_pc_labels(),
                 "web_lan_url": self.win.web_control.url_for() or "",
@@ -842,6 +842,9 @@ class WebApi:
             "workshop_update_cutoff": self._set_cutoff,
             "duckdns_domain": lambda v: self._set_text("duckdns_domain", str(v or "").strip(), "duckdns_domain_edit"),
             "duckdns_token": lambda v: self._set_text("duckdns_token", str(v or "").strip(), "duckdns_token_edit"),
+            "alert_discord_url": lambda v: self._set_alerts(discord=str(v or "")),
+            "alert_ntfy_url": lambda v: self._set_alerts(ntfy=str(v or "")),
+            "discord_status_enabled": lambda v: self._set_alerts(status=bool(v)),
             "check_app_update": lambda v: self._app_update(False),
             "install_app_update": lambda v: self._app_update(True),
         }
@@ -867,6 +870,18 @@ class WebApi:
             edit.blockSignals(True)
             edit.setText(value)
             edit.blockSignals(False)
+        return self._result(self.gui(act)[1], "Saved.")
+
+    def _set_alerts(self, discord=None, ntfy=None, status=None) -> dict:
+        def act():
+            c = self.win.config
+            try:
+                self.win.app_settings_page.set_alert_links(
+                    c.alert_discord_url if discord is None else discord,
+                    c.alert_ntfy_url if ntfy is None else ntfy,
+                    c.discord_status_enabled if status is None else status)
+            except ValueError as e:
+                raise WebActionError(str(e)) from None
         return self._result(self.gui(act)[1], "Saved.")
 
     def _set_cutoff(self, value) -> dict:

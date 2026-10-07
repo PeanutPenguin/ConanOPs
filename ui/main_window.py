@@ -348,7 +348,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
         settings_entries += [
             ("backups", "Backups", self.settings_backups_page),
             ("restart", "Restart Schedule", self.settings_restart_page),
-            ("alerts", "RCON & Alerts", self.settings_alerts_page),
+            ("alerts", "RCON", self.settings_alerts_page),
         ]
 
         self.settings_container = SettingsContainer(settings_entries)
@@ -482,6 +482,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
         self.app_settings_page.on_app_update_available = self._on_app_update_available
         self.app_settings_page.on_show_tour = self._show_tour_from_settings
         self.app_settings_page.on_restart_elevated = self._restart_with_admin_rights
+        self.app_settings_page.on_alerts_changed = self.alerts_changed
         self.admin_mode_problem.connect(self.app_settings_page.show_admin_mode_problem)
         self.app_settings_page.web_tunnel = self.web_tunnel
         self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel
@@ -677,7 +678,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
     def _automation_states(self, server: ServerConfig) -> dict:
         def hours(n: int) -> str:
             return f"every {n} h" if n != 1 else "every hour"
-        alerts = [name for name, url in (("Discord", server.webhook_discord_url), ("ntfy", server.webhook_ntfy_url)) if url]
+        alerts = [name for name, url in (("Discord", self.config.alert_discord_url), ("ntfy", self.config.alert_ntfy_url)) if url]
         ddns_on = bool(self.config.duckdns_domain and self.config.duckdns_token)
         return {
             "restart": (server.restart_enabled,
@@ -699,7 +700,10 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
         elif key == "ddns":
             self._on_nav_selected("app")
             self.app_settings_page.show_section("ddns")
-        elif key in ("restart", "backups", "alerts"):
+        elif key == "alerts":
+            self._on_nav_selected("app")
+            self.app_settings_page.show_section("alerts")
+        elif key in ("restart", "backups"):
             self._on_nav_selected("settings")
             self.settings_container._select(key)
 
@@ -920,7 +924,6 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
                 page.load_committed(values)
         self.settings_identity_page.set_install_dir(server.install_dir)
         self.settings_restart_page._refresh_suggestion()
-        self.settings_alerts_page.server_name = server.name
         self.diagnostics_page.on_server_switched()
 
     def _reserved_ports_for_active(self) -> set:
@@ -941,7 +944,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
         if self.tray_icon and self.tray_icon.isVisible():
             self.tray_icon.showMessage(full_title, message, QSystemTrayIcon.Information, 5000)
 
-        worker = _NotifyWorker(server.webhook_discord_url, server.webhook_ntfy_url, message, full_title, server.name)
+        worker = _NotifyWorker(self.config.alert_discord_url, self.config.alert_ntfy_url, message, full_title, server.name)
         worker.finished_notify.connect(self._on_notify_finished)
         self._notify_workers.append(worker)
         worker.finished_notify.connect(lambda *_, w=worker: self._notify_workers.remove(w) if w in self._notify_workers else None)
@@ -1214,14 +1217,8 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
 
     def _apply_alerts(self, values: dict, server: Optional[ServerConfig] = None) -> None:
         s = server or self._active()
-        old_webhook = s.webhook_discord_url
         for k, v in values.items():
             setattr(s, k, v)
-        if s.webhook_discord_url != old_webhook:
-            # The live status message lives in the old webhook's channel;
-            # post a fresh one in the new channel instead of trying to
-            # edit one that can't be reached through the new link.
-            s.discord_status_message_id = ""
         self.config.save()
         if s.install_dir:
             # RCON's actual home is Game.ini's [RconPlugin] section, per
@@ -2446,14 +2443,17 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
     _DISCORD_STATUS_FAILURE_RESET_THRESHOLD = 5
 
     def _check_discord_status_all(self) -> None:
+        url = self.config.alert_discord_url
+        if not (self.config.discord_status_enabled and url):
+            return
         for server in self.config.servers:
-            if not (server.discord_status_enabled and server.webhook_discord_url):
+            if not server.install_dir:
                 continue
             if server.id in self._discord_status_workers:
                 continue  # previous update still in flight -- skip this tick rather than overlap
             content = self._build_discord_status_message(server)
             worker = discord_status_runner.DiscordStatusWorker(
-                server.webhook_discord_url, server.discord_status_message_id, content, parent=self,
+                url, server.discord_status_message_id, content, parent=self,
             )
             worker.finished_update.connect(lambda message_id, srv=server: self._on_discord_status_finished(srv, message_id))
             self._discord_status_workers[server.id] = worker
@@ -2531,6 +2531,18 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
         just make the change (tray label) stays in sync."""
         if hasattr(self, "_lock_action"):
             self._lock_action.setText("Change App PIN…" if self.config.app_lock_enabled else "Set App PIN…")
+
+    def alerts_changed(self, discord_url_changed: bool) -> None:
+        """App Settings → Alerts were saved (here or from the web)."""
+        if discord_url_changed:
+            # Live status messages live in the old link's channel: post
+            # fresh ones in the new channel instead of editing old ones.
+            for s in self.config.servers:
+                s.discord_status_message_id = ""
+            self.config.save()
+        self._refresh_chrome()
+        if self.config.discord_status_enabled and self.config.alert_discord_url:
+            QTimer.singleShot(1000, self._check_discord_status_all)
 
     def _report_app_update_problem(self, text: str) -> None:
         """An app update's restart went wrong. Updates can be started from
@@ -2797,7 +2809,7 @@ class MainWindow(QMainWindow, ModRecoveryMixin, WebActionsMixin):
             # Discord, whose channels players can often read. Anyone with
             # the link still needs the password, but there's no reason to
             # hand it out.
-            topics = list(dict.fromkeys(s.webhook_ntfy_url for s in self.config.servers if s.webhook_ntfy_url))
+            topics = [self.config.alert_ntfy_url] if self.config.alert_ntfy_url else []
             if self.tray_icon and self.tray_icon.isVisible():
                 self.tray_icon.showMessage("Web Link", "The from-anywhere web link changed -- see App Settings → "
                                                        "Web Version.", QSystemTrayIcon.Information, 5000)

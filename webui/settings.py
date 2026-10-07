@@ -65,7 +65,7 @@ class WebSettings:
         entries += [
             ("backups", "Backups", SettingsBackupsPage()),
             ("restart", "Restart Schedule", SettingsRestartPage(get_hourly_activity=self._hourly_activity)),
-            ("alerts", "RCON & Alerts", SettingsAlertsPage()),
+            ("alerts", "RCON", SettingsAlertsPage()),
         ]
         self._entries = entries
         return entries
@@ -103,13 +103,6 @@ class WebSettings:
             d = fields.describe_page(key, title, page)
             d["error"] = fields.page_error(page)
             d["actions"] = [{"id": a, "label": label} for a, (k, label, _m) in PAGE_ACTIONS.items() if k == key]
-            if key == "alerts":
-                import alert_guides
-                # Shown under these fields: a fold-out setup guide and a
-                # "Send Test" button.
-                d["guides"] = {"webhook_discord_url": alert_guides.as_json(alert_guides.DISCORD),
-                               "webhook_ntfy_url": alert_guides.as_json(alert_guides.NTFY)}
-                d["tests"] = {"webhook_discord_url": "discord", "webhook_ntfy_url": "ntfy"}
             pages.append(d)
         return {"pages": pages}
 

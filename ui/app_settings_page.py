@@ -441,6 +441,7 @@ class AppSettingsPage(QWidget):
         workshop_layout.addWidget(self.workshop_cutoff_edit)
 
         form.addWidget(workshop_card)
+        form.addWidget(self._build_alerts_card())
 
         # -------------------------------------------------------- dynamic dns --
         duckdns_card = QFrame()
@@ -741,6 +742,126 @@ class AppSettingsPage(QWidget):
 
         self._refresh_web_control_ui()
 
+    # ------------------------------------------------------------ alerts --
+    def _build_alerts_card(self) -> QFrame:
+        """Discord and ntfy alerts -- one set for every server (each alert
+        names its server)."""
+        import alert_guides
+        import webhooks
+        from ui.fold_out_guide import FoldOutGuide
+        card = QFrame()
+        card.setObjectName("Card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(10)
+        title = QLabel("Alerts")
+        title.setObjectName("PageTitle")
+        lay.addWidget(title)
+        intro = QLabel("Get told when a server crashes, updates, finds a broken mod, a backup fails and more -- in a "
+                       "Discord channel, as phone notifications through ntfy, or both. These are for all your "
+                       "servers; every alert says which server it's about.")
+        intro.setObjectName("Dim")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        def field(label_text: str, placeholder: str, value: str) -> QLineEdit:
+            lbl = QLabel(label_text)
+            lbl.setObjectName("Muted")
+            lay.addWidget(lbl)
+            edit = QLineEdit(value)
+            edit.setPlaceholderText(placeholder)
+            lay.addWidget(edit)
+            return edit
+
+        self.alert_discord_edit = field("Discord webhook link", "https://discord.com/api/webhooks/...",
+                                        self.config.alert_discord_url)
+        self.alert_discord_edit.editingFinished.connect(self._on_alert_links_changed)
+        self.alert_discord_test_btn, self.alert_discord_result = self._alert_test_row(
+            lay, webhooks.test_discord, self.alert_discord_edit)
+        self.alert_discord_status_check = QCheckBox("Also keep a live status message for each server in that channel "
+                                                    "(updates every ~5 minutes)")
+        self.alert_discord_status_check.setChecked(self.config.discord_status_enabled)
+        self.alert_discord_status_check.toggled.connect(self._on_discord_status_toggled)
+        lay.addWidget(self.alert_discord_status_check)
+        self.alert_discord_guide = FoldOutGuide(*alert_guides.DISCORD)
+        lay.addWidget(self.alert_discord_guide)
+
+        spacer = QLabel("")
+        lay.addWidget(spacer)
+        self.alert_ntfy_edit = field("ntfy topic link (phone notifications)", "https://ntfy.sh/your-topic-name",
+                                     self.config.alert_ntfy_url)
+        self.alert_ntfy_edit.editingFinished.connect(self._on_alert_links_changed)
+        self.alert_ntfy_test_btn, self.alert_ntfy_result = self._alert_test_row(
+            lay, webhooks.test_ntfy, self.alert_ntfy_edit)
+        self.alert_ntfy_guide = FoldOutGuide(*alert_guides.NTFY)
+        lay.addWidget(self.alert_ntfy_guide)
+        self.alert_error_label = QLabel("")
+        self.alert_error_label.setObjectName("ErrorText")
+        self.alert_error_label.setWordWrap(True)
+        self.alert_error_label.hide()
+        lay.addWidget(self.alert_error_label)
+        return card
+
+    def _alert_test_row(self, lay, fn, edit: QLineEdit):
+        row = QHBoxLayout()
+        btn = QPushButton("Send Test")
+        label = QLabel("")
+        label.setObjectName("Dim")
+        label.setWordWrap(True)
+        row.addWidget(btn)
+        row.addWidget(label, 1)
+        lay.addLayout(row)
+
+        def run():
+            btn.setEnabled(False)
+            label.setText("Sending…")
+            url = edit.text().strip()
+
+            def done(result):
+                ok, text = result if isinstance(result, tuple) else (False, str(result))
+                btn.setEnabled(True)
+                label.setObjectName("OkNote" if ok else "ErrorText")
+                label.style().unpolish(label)
+                label.style().polish(label)
+                label.setText(text)
+            self._run_call(lambda: fn(url, "your servers"), done)
+        btn.clicked.connect(run)
+        return btn, label
+
+    def set_alert_links(self, discord_url: str, ntfy_url: str, status_on: bool) -> None:
+        """Saves the alert settings (from this page or the web version)."""
+        import webhooks
+        discord_url, ntfy_url = discord_url.strip(), ntfy_url.strip()
+        problem = (webhooks.discord_url_problem(discord_url) if discord_url else "") or \
+                  (webhooks.ntfy_url_problem(ntfy_url) if ntfy_url else "")
+        if problem:
+            raise ValueError(problem)
+        changed = discord_url != self.config.alert_discord_url
+        self.config.alert_discord_url = discord_url
+        self.config.alert_ntfy_url = ntfy_url
+        self.config.discord_status_enabled = bool(status_on)
+        self.save_config()
+        for edit, value in ((self.alert_discord_edit, discord_url), (self.alert_ntfy_edit, ntfy_url)):
+            if edit.text() != value:
+                edit.blockSignals(True)
+                edit.setText(value)
+                edit.blockSignals(False)
+        self._set_checked_quietly(self.alert_discord_status_check, bool(status_on))
+        self.alert_error_label.hide()
+        if callable(getattr(self, "on_alerts_changed", None)):
+            self.on_alerts_changed(changed)
+
+    def _on_alert_links_changed(self) -> None:
+        try:
+            self.set_alert_links(self.alert_discord_edit.text(), self.alert_ntfy_edit.text(),
+                                 self.alert_discord_status_check.isChecked())
+        except ValueError as e:
+            self.alert_error_label.setText(f"Not saved: {e}")
+            self.alert_error_label.show()
+
+    def _on_discord_status_toggled(self, on: bool) -> None:
+        self._on_alert_links_changed()
+
     # ---------------------------------------------------------- sections --
     # (key, label, group heading or "") in display order; the cards are
     # built above in this order: theme, startup, unattended, workshop,
@@ -750,13 +871,14 @@ class AppSettingsPage(QWidget):
         ("keep", "Keep Running", ""),
         ("web", "Web Version", "Remote Access"),
         ("ddns", "Dynamic DNS", ""),
-        ("workshop", "Steam Workshop", "Integrations"),
+        ("alerts", "Alerts", "Integrations"),
+        ("workshop", "Steam Workshop", ""),
         ("appearance", "Appearance", "ConanOps"),
         ("lock", "PIN Lock", ""),
         ("updates", "Updates", ""),
         ("delete", "Delete ConanOps", ""),
     ]
-    _CARD_ORDER = ["appearance", "startup", "keep", "workshop", "ddns", "lock", "web", "updates", "delete"]
+    _CARD_ORDER = ["appearance", "startup", "keep", "workshop", "alerts", "ddns", "lock", "web", "updates", "delete"]
 
     def _build_sections(self, cards: list) -> None:
         body = QHBoxLayout()

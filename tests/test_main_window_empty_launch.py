@@ -1667,8 +1667,9 @@ def test_check_discord_status_skips_servers_without_it_enabled(monkeypatch):
 
     cfg = models.AppConfig()
     server = cfg.add_server("Chudville")
-    server.discord_status_enabled = False
-    server.webhook_discord_url = "https://discord.com/api/webhooks/1/abc"
+    cfg.discord_status_enabled = False
+    cfg.alert_discord_url = "https://discord.com/api/webhooks/1/abc"
+    server.install_dir = "/tmp/fake-install"
     win = MainWindow(config=cfg)
     try:
         started = []
@@ -1686,8 +1687,9 @@ def test_check_discord_status_skips_without_webhook_url(monkeypatch):
 
     cfg = models.AppConfig()
     server = cfg.add_server("Chudville")
-    server.discord_status_enabled = True
-    server.webhook_discord_url = ""
+    cfg.discord_status_enabled = True
+    cfg.alert_discord_url = ""
+    server.install_dir = "/tmp/fake-install"
     win = MainWindow(config=cfg)
     try:
         started = []
@@ -1705,8 +1707,9 @@ def test_check_discord_status_starts_worker_when_enabled(monkeypatch):
 
     cfg = models.AppConfig()
     server = cfg.add_server("Chudville")
-    server.discord_status_enabled = True
-    server.webhook_discord_url = "https://discord.com/api/webhooks/1/abc"
+    cfg.discord_status_enabled = True
+    cfg.alert_discord_url = "https://discord.com/api/webhooks/1/abc"
+    server.install_dir = "/tmp/fake-install"
     server.discord_status_message_id = "12345"
     win = MainWindow(config=cfg)
     try:
@@ -1726,8 +1729,9 @@ def test_check_discord_status_skips_if_already_in_flight(monkeypatch):
 
     cfg = models.AppConfig()
     server = cfg.add_server("Chudville")
-    server.discord_status_enabled = True
-    server.webhook_discord_url = "https://discord.com/api/webhooks/1/abc"
+    cfg.discord_status_enabled = True
+    cfg.alert_discord_url = "https://discord.com/api/webhooks/1/abc"
+    server.install_dir = "/tmp/fake-install"
     win = MainWindow(config=cfg)
     try:
         win._discord_status_workers[server.id] = object()

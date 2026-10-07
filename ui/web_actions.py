@@ -302,9 +302,6 @@ class WebActionsMixin:
             "rcon_enabled": server.rcon_enabled,
             "rcon_port": server.rcon_port,
             "rcon_password": server.rcon_password,
-            "webhook_discord_url": server.webhook_discord_url,
-            "webhook_ntfy_url": server.webhook_ntfy_url,
-            "discord_status_enabled": server.discord_status_enabled,
         }
         return values
 

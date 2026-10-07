@@ -626,26 +626,34 @@ def test_app_dialogs_are_captured_not_shown(web):
 
 # ------------------------------------------------------------------ alerts --
 
-def test_alerts_page_has_guides_and_test_buttons(web):
-    _, c = web
+def test_alerts_are_app_settings_with_guides(web):
+    win, c = web
     pages = c.get("/api/servers/s1/settings")["pages"]
-    alerts = next(p for p in pages if p["key"] == "alerts")
-    assert alerts["tests"] == {"webhook_discord_url": "discord", "webhook_ntfy_url": "ntfy"}
-    guide = alerts["guides"]["webhook_discord_url"]
-    assert guide["title"].startswith("How do I") and len(guide["steps"]) >= 5
+    rcon = next(p for p in pages if p["key"] == "alerts")
+    assert rcon["title"] == "RCON" and not any("webhook" in f["key"] for f in rcon["fields"])
+    d = c.get("/api/app")
+    assert d["alert_discord_set"] is False and len(d["alert_guides"]["discord"]["steps"]) >= 5
+    c.post("/api/app/alert_discord_url", {"value": "https://discord.com/api/webhooks/1/abc"})
+    c.post("/api/app/discord_status_enabled", {"value": True})
+    assert win.config.alert_discord_url == "https://discord.com/api/webhooks/1/abc"
+    assert win.config.discord_status_enabled is True
+    assert win.app_settings_page.alert_discord_edit.text() == win.config.alert_discord_url
+    d = c.get("/api/app")
+    assert d["alert_discord_set"] is True and "webhooks/1/abc" not in json.dumps(d)
+    status, data, _ = c.call("POST", "/api/app/alert_discord_url", {"value": "https://evil.example/x"})
+    assert status == 400 and "Discord webhook" in data["error"]
 
 
 def test_send_test_uses_typed_link_else_saved(web, monkeypatch):
     import webhooks
     win, c = web
     seen = []
-    monkeypatch.setattr(webhooks, "test_discord", lambda url, name: seen.append((url, name)) or (True, "Sent"))
-    win.config.servers[0].webhook_discord_url = "https://discord.com/api/webhooks/1/saved"
-    assert c.post("/api/servers/s1/alerts/test", {"kind": "discord"})["ok"]
-    c.post("/api/servers/s1/alerts/test", {"kind": "discord", "url": "https://discord.com/api/webhooks/2/typed"})
-    assert seen == [("https://discord.com/api/webhooks/1/saved", "Exiled Lands"),
-                    ("https://discord.com/api/webhooks/2/typed", "Exiled Lands")]
-    assert c.call("POST", "/api/servers/s1/alerts/test", {"kind": "email"})[0] == 400
+    monkeypatch.setattr(webhooks, "test_discord", lambda url, name: seen.append(url) or (True, "Sent"))
+    win.config.alert_discord_url = "https://discord.com/api/webhooks/1/saved"
+    assert c.post("/api/alerts/test", {"kind": "discord"})["ok"]
+    c.post("/api/alerts/test", {"kind": "discord", "url": "https://discord.com/api/webhooks/2/typed"})
+    assert seen == ["https://discord.com/api/webhooks/1/saved", "https://discord.com/api/webhooks/2/typed"]
+    assert c.call("POST", "/api/alerts/test", {"kind": "email"})[0] == 400
 
 
 def test_app_options_describe_the_web_version(web):

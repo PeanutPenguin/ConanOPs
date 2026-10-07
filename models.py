@@ -334,6 +334,13 @@ class AppConfig:
     # password.
     duckdns_domain: str = ""
     duckdns_token: str = ""
+    # Alerts (Discord / ntfy), for every server -- App Settings → Alerts.
+    # Each alert names its server. The links are secrets (encrypted at
+    # rest, like duckdns_token). Before 1.0.4 these were per server
+    # (ServerConfig.webhook_*); load() carries those over once.
+    alert_discord_url: str = ""
+    alert_ntfy_url: str = ""
+    discord_status_enabled: bool = False
 
     # ---------------------------------------------------------------- io --
     @staticmethod
@@ -474,6 +481,18 @@ class AppConfig:
             cfg.duckdns_token = secrets_store.unprotect(raw.get("duckdns_token", ""))
         except secrets_store.DecryptionError:
             cfg.duckdns_token = ""
+        if "alert_discord_url" in raw or "alert_ntfy_url" in raw:
+            for attr in ("alert_discord_url", "alert_ntfy_url"):
+                try:
+                    setattr(cfg, attr, secrets_store.unprotect(raw.get(attr, "")))
+                except secrets_store.DecryptionError:
+                    setattr(cfg, attr, "")
+            cfg.discord_status_enabled = bool(raw.get("discord_status_enabled", False))
+        else:
+            # From before alerts were app-wide: use the first server's links.
+            cfg.alert_discord_url = next((x.webhook_discord_url for x in servers if x.webhook_discord_url), "")
+            cfg.alert_ntfy_url = next((x.webhook_ntfy_url for x in servers if x.webhook_ntfy_url), "")
+            cfg.discord_status_enabled = any(x.discord_status_enabled and x.webhook_discord_url for x in servers)
         if not cfg.servers:
             return cfg
         if cfg.active_server_id not in {s.id for s in cfg.servers}:
@@ -512,6 +531,9 @@ class AppConfig:
             "duckdns_domain": self.duckdns_domain,
             "workshop_update_cutoff": self.workshop_update_cutoff,
             "duckdns_token": secrets_store.protect(self.duckdns_token),
+            "alert_discord_url": secrets_store.protect(self.alert_discord_url),
+            "alert_ntfy_url": secrets_store.protect(self.alert_ntfy_url),
+            "discord_status_enabled": self.discord_status_enabled,
         }
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

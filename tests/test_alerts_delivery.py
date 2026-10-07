@@ -117,21 +117,63 @@ def test_rate_limit_is_retried_once(endpoint, monkeypatch):
     assert calls["n"] == 2
 
 
-def test_changing_the_webhook_starts_a_new_status_message(monkeypatch):
+def test_changing_the_webhook_starts_new_status_messages(monkeypatch):
     import sys
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication(sys.argv)
     import models
     from ui.main_window import MainWindow
     monkeypatch.setattr(models.AppConfig, "save", lambda self, *a, **k: None)
-    s = models.ServerConfig(id="s1", name="X", webhook_discord_url="https://discord.com/api/webhooks/1/a",
-                            discord_status_message_id="55")
-    win = MainWindow(config=models.AppConfig(servers=[s], active_server_id="s1"))
+    s = models.ServerConfig(id="s1", name="X", discord_status_message_id="55")
+    cfg = models.AppConfig(servers=[s], active_server_id="s1", alert_discord_url="https://discord.com/api/webhooks/1/a")
+    win = MainWindow(config=cfg)
     try:
-        win._apply_alerts({"webhook_discord_url": "https://discord.com/api/webhooks/1/a"}, s)
+        page = win.app_settings_page
+        page.set_alert_links("https://discord.com/api/webhooks/1/a", "", False)
         assert s.discord_status_message_id == "55"
-        win._apply_alerts({"webhook_discord_url": "https://discord.com/api/webhooks/2/b"}, s)
+        page.set_alert_links("https://discord.com/api/webhooks/2/b", "", False)
         assert s.discord_status_message_id == ""
+    finally:
+        win.close()
+
+
+def test_alerts_go_to_the_app_wide_links(monkeypatch):
+    import sys
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication(sys.argv)
+    import models
+    from ui import main_window
+    monkeypatch.setattr(models.AppConfig, "save", lambda self, *a, **k: None)
+    made = []
+
+    class FakeWorker:
+        def __init__(self, discord, ntfy, message, title, name):
+            from PySide6.QtCore import QObject, Signal
+
+            class S(QObject):
+                sig = Signal(object)
+                fin = Signal()
+            self._s = S()
+            self.finished_notify = self._s.sig
+            self.finished = self._s.fin
+            made.append((discord, ntfy, title))
+
+        def start(self):
+            pass
+
+        def isRunning(self):
+            return False
+
+        def wait(self, *a):
+            return True
+    monkeypatch.setattr(main_window, "_NotifyWorker", FakeWorker)
+    s = models.ServerConfig(id="s1", name="Exiled")
+    cfg = models.AppConfig(servers=[s], active_server_id="s1", alert_discord_url="https://discord.com/api/webhooks/1/a",
+                           alert_ntfy_url="https://ntfy.sh/t")
+    win = main_window.MainWindow(config=cfg)
+    try:
+        win._notify(s, "It crashed", title="Server Crashed")
+        assert made == [("https://discord.com/api/webhooks/1/a", "https://ntfy.sh/t", "Server Crashed — Exiled")]
     finally:
         win.close()
 
@@ -165,9 +207,10 @@ def test_from_anywhere_link_goes_to_ntfy_not_discord(monkeypatch):
     import threading
     monkeypatch.setattr(threading, "Thread", lambda target=None, args=(), daemon=None, **k:
                         type("T", (), {"start": lambda self: target(*args)})())
-    s = models.ServerConfig(id="s1", name="X", webhook_discord_url="https://discord.com/api/webhooks/1/a",
-                            webhook_ntfy_url="https://ntfy.sh/private")
-    win = MainWindow(config=models.AppConfig(servers=[s], active_server_id="s1"))
+    s = models.ServerConfig(id="s1", name="X")
+    win = MainWindow(config=models.AppConfig(servers=[s], active_server_id="s1",
+                                             alert_discord_url="https://discord.com/api/webhooks/1/a",
+                                             alert_ntfy_url="https://ntfy.sh/private"))
     try:
         win._on_web_tunnel_changed("https://abc.trycloudflare.com", "Connected")
         assert [x[0] for x in sent] == ["ntfy"] and "abc.trycloudflare.com" in sent[0][2]

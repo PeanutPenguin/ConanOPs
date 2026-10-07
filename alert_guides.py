@@ -11,8 +11,8 @@ Guide = Tuple[str, str, List[Tuple[str, str]]]  # (title, intro, [(step title, s
 
 DISCORD: Guide = (
     "How do I get a Discord webhook link?",
-    "A webhook lets ConanOps post into one channel of your Discord server. It takes about a minute, and you only "
-    "do it once per server.",
+    "A webhook lets ConanOps post into one channel of your Discord server. It takes about a minute, and one "
+    "webhook covers all your Conan servers.",
     [
         ("Open your Discord server's settings",
          "In Discord, click your server's name at the top left and choose Server Settings. On a phone, tap the "
@@ -27,11 +27,12 @@ DISCORD: Guide = (
          "Click Copy Webhook URL. It looks like https://discord.com/api/webhooks/123456789/abcDEF... Treat it like a "
          "password: anyone with it can post in that channel."),
         ("Paste it here and test",
-         "Paste it into \"Discord Webhook URL\" on this page and click Send Test -- a test message should appear "
-         "in the channel within a few seconds. Then save."),
+         "Paste it into \"Discord webhook link\" in App Settings → Alerts and click Send Test -- a test message "
+         "should appear in the channel within a few seconds. It's saved when you leave the box."),
         ("Optional: a live status message",
-         "Turn on \"Also show a live status message\" to keep one message in that channel always showing whether the "
-         "server is online and how many players are on. It updates every ~5 minutes instead of posting new ones."),
+         "Turn on \"Also keep a live status message\" to keep one message per server in that channel, always "
+         "showing whether it's online and how many players are on. It updates every ~5 minutes instead of posting "
+         "new ones."),
     ],
 )
 
@@ -48,7 +49,7 @@ NTFY: Guide = (
          "When your phone asks, allow notifications for the ntfy app."),
         ("Paste the topic link here and test",
          "Enter https://ntfy.sh/ followed by your topic name (for example https://ntfy.sh/conanops-7f3k9x2q) into "
-         "\"ntfy.sh Topic URL\" on this page and click Send Test -- your phone should buzz. Then save."),
+         "\"ntfy topic link\" in App Settings → Alerts and click Send Test -- your phone should buzz."),
     ],
 )
 

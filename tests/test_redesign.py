@@ -164,7 +164,7 @@ def test_main_window_header_and_automation_states(monkeypatch):
     cfg = models.AppConfig()
     s = cfg.add_server()
     s.name = "Chudville"
-    s.webhook_discord_url = "https://discord.example/hook"
+    cfg.alert_discord_url = "https://discord.example/hook"
     cfg.active_server_id = s.id
     monkeypatch.setattr(cfg, "save", lambda *a, **k: None)
     win = MainWindow(config=cfg)

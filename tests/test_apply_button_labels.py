@@ -60,17 +60,16 @@ def test_restart_schedule_page_does_not_require_restart():
     assert page.apply_btn.text() == "Apply"
 
 
-def test_alerts_page_does_not_overclaim_restart_for_webhooks():
-    """Mixed page: RCON needs a restart, webhooks don't. The page-level
-    button must not claim the whole page needs one -- that's scoped to
-    an inline note next to the RCON fields specifically instead."""
+def test_rcon_page_says_it_needs_a_restart():
+    """RCON lives in the server's Game.ini, read at startup. (Alerts moved
+    to App Settings, so this page no longer has anything immediate.)"""
     page = SettingsAlertsPage()
-    assert page.apply_btn.text() == "Apply"
+    assert page.apply_btn.text() == "Apply on Next Restart"
 
 
-def test_alerts_page_has_a_restart_note_scoped_to_rcon():
+def test_rcon_page_points_to_app_settings_for_alerts():
     from PySide6.QtWidgets import QLabel
     page = SettingsAlertsPage()
     all_text = " ".join(label.text() for label in page.findChildren(QLabel))
-    assert "next time the server restarts" in all_text
-    assert "immediately" in all_text
+    assert "App Settings → Alerts" in all_text
+    assert "webhook_discord_url" not in page._fields

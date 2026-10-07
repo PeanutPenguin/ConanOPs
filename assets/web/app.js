@@ -353,7 +353,7 @@ const notice = (text, kind, ...extra) => h("div", { class: "notice" + (kind ? " 
 
 // --------------------------------------------------------------- dashboard
 const TILE_TARGETS = { restart: ["settings", "restart"], updates: ["updates"], backups: ["settings", "backups"],
-                       alerts: ["settings", "alerts"], ddns: ["app", "ddns"] };
+                       alerts: ["app", "alerts"], ddns: ["app", "ddns"] };
 
 function openTarget(key) {
   const t = TILE_TARGETS[key];
@@ -966,7 +966,7 @@ async function viewDiagnostics(root) {
 const APP_SECTIONS = [
   ["Running", [["startup", "Startup"], ["keep", "Keep Running"]]],
   ["Remote Access", [["web", "Web Version"], ["ddns", "Dynamic DNS"]]],
-  ["Integrations", [["workshop", "Steam Workshop"]]],
+  ["Integrations", [["alerts", "Alerts"], ["workshop", "Steam Workshop"]]],
   ["ConanOps", [["appearance", "Appearance"], ["lock", "PIN Lock"], ["updates", "Updates"], ["delete", "Delete ConanOps"]]],
 ];
 
@@ -1045,6 +1045,43 @@ async function viewApp(root) {
           "internet address when it changes. Free at duckdns.org -- sign in, add a domain, and copy your token."),
         textSetting("duckdns_domain", "Domain (without .duckdns.org)", d.duckdns_domain, { placeholder: "yourdomain" }),
         textSetting("duckdns_token", "Token", d.duckdns_token_set, { secret: true }))],
+      alerts: () => {
+        const testRow = (kind, input) => {
+          const result = h("span", { class: "dim" });
+          return h("div", { class: "row", style: "margin-top:4px" },
+            h("button", { class: "btn small", type: "button", onclick: async (e) => {
+              result.textContent = "";
+              const r = await act(e.currentTarget, () => api("/api/alerts/test", { kind, url: input().value }));
+              if (r) { result.textContent = r.message; result.className = r.ok ? "ok-text" : "bad-text"; }
+            } }, "Send Test"), result);
+        };
+        const linkSetting = (key, text, isSet, placeholder) => {
+          const input = h("input", { type: "password", value: "", autocomplete: "new-password",
+            placeholder: isSet ? "Saved -- type to replace it" : placeholder,
+            oninput: () => { input.dataset.dirty = "1"; } });
+          const form = h("form", { class: "field", onsubmit: (e) => { e.preventDefault();
+              act(e.submitter, () => api("/api/app/" + key, { value: input.value }),
+                { after: (r) => { if (r && r.ok !== false) { delete input.dataset.dirty; input.value = ""; } refresh(); } }); } },
+            h("label", {}, text),
+            h("div", { class: "row" }, h("div", { style: "flex:1;min-width:160px" }, input),
+              h("button", { class: "btn small", type: "submit" }, "Save"),
+              isSet ? h("button", { class: "btn small", type: "button", onclick: (e) =>
+                act(e.currentTarget, () => api("/api/app/" + key, { value: "" }), { after: refresh }) }, "Remove") : null));
+          form.input = input;
+          return form;
+        };
+        const discord = linkSetting("alert_discord_url", "Discord webhook link", d.alert_discord_set, "https://discord.com/api/webhooks/...");
+        const ntfy = linkSetting("alert_ntfy_url", "ntfy topic link (phone notifications)", d.alert_ntfy_set, "https://ntfy.sh/your-topic-name");
+        return [h("div", { class: "card" },
+          h("p", { class: "muted", style: "margin:0 0 10px" }, "Get told when a server crashes, updates, finds a broken " +
+            "mod, a backup fails and more -- in a Discord channel, as phone notifications through ntfy, or both. " +
+            "These are for all your servers; every alert says which server it's about."),
+          discord, testRow("discord", () => discord.input),
+          toggle("discord_status_enabled", "Also keep a live status message for each server in that channel",
+            "Updates every ~5 minutes instead of posting new messages."),
+          foldOutGuide(d.alert_guides.discord)),
+          h("div", { class: "card" }, ntfy, testRow("ntfy", () => ntfy.input), foldOutGuide(d.alert_guides.ntfy))];
+      },
       workshop: () => [h("div", { class: "card" },
         textSetting("steam_api_key", "Steam Web API key", d.steam_api_key_set, { secret: true,
           help: "Lets ConanOps search the Workshop and see which mods need other mods." }),
