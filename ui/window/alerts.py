@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from models import ServerConfig
 import discord_status_runner
+import webhooks
 import applog
 
 
@@ -27,12 +28,33 @@ class AlertsMixin:
         if self.tray_icon and self.tray_icon.isVisible():
             self.tray_icon.showMessage(full_title, message, QSystemTrayIcon.Information, 5000)
 
-        worker = _NotifyWorker(self.config.alert_discord_url, self.config.alert_ntfy_url, message, full_title, server.name)
+        worker = _NotifyWorker(self.config.alert_discord_url, self.config.alert_ntfy_url, message, full_title, server.name,
+                               get_link_line=lambda sid=server.id: self.web_link_line(sid))
         worker.finished_notify.connect(self._on_notify_finished)
         self._notify_workers.append(worker)
         worker.finished_notify.connect(lambda *_, w=worker: self._notify_workers.remove(w) if w in self._notify_workers else None)
         self._retire_worker(worker)
         worker.start()
+
+    def web_link_line(self, server_id: str = "") -> str:
+        """Link to the web version for Discord messages: the from-anywhere
+        link when that's on, else the home-network one; "" when the web
+        version is off. May be slow (finds this PC's LAN address), so it's
+        called from the senders' background threads. With server_id the
+        link opens that server's dashboard."""
+        try:
+            web = getattr(self, "web_control", None)
+            if web is None or not web.is_running:
+                return ""
+            remote = getattr(getattr(self, "web_tunnel", None), "url", "") or ""
+            suffix = f"/?server={server_id}#/dashboard" if server_id else ""
+            if self.config.web_remote_enabled and remote:
+                return webhooks.web_link_line(remote.rstrip("/") + suffix)
+            lan = web.url_for() or ""
+            return webhooks.web_link_line(lan + suffix if lan else "", home_only=True)
+        except Exception as e:  # noqa: BLE001 - a missing link must never stop an alert
+            _log.warning(f"Couldn't work out the web link for an alert: {e}")
+            return ""
 
     def _on_notify_finished(self, ok: bool, server_name: str, title: str, message: str) -> None:
         if not ok:
@@ -56,6 +78,7 @@ class AlertsMixin:
             content = self._build_discord_status_message(server)
             worker = discord_status_runner.DiscordStatusWorker(
                 url, server.discord_status_message_id, content, parent=self,
+                get_link_line=lambda sid=server.id: self.web_link_line(sid),
             )
             worker.finished_update.connect(lambda message_id, srv=server: self._on_discord_status_finished(srv, message_id))
             self._discord_status_workers[server.id] = worker

@@ -675,7 +675,10 @@ class WebApi:
         typed = str(req.body.get("url") or "").strip()
         saved = self.gui(lambda: self.win.config.alert_discord_url if kind == "discord"
                          else self.win.config.alert_ntfy_url)[0]
-        ok, text = (webhooks.test_discord if kind == "discord" else webhooks.test_ntfy)(typed or saved, "your servers")
+        if kind == "discord":
+            ok, text = webhooks.test_discord(typed or saved, "your servers", self.win.web_link_line())
+        else:
+            ok, text = webhooks.test_ntfy(typed or saved, "your servers")
         return {"ok": ok, "message": text}
 
     # -------------------------------------------------------- diagnostics --

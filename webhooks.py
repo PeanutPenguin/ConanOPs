@@ -125,6 +125,25 @@ def _post_json(url: str, payload: dict, timeout: float = 5.0) -> bool:
         return False
 
 
+def web_link_line(url: str, home_only: bool = False) -> str:
+    """The "open the web version" line added to Discord messages. The <> keeps
+    Discord from attaching a big link preview."""
+    if not url:
+        return ""
+    where = " (works on your home Wi-Fi)" if home_only else ""
+    return f"[Open ConanOps]({'<' + url + '>'}){where}"
+
+
+def with_link(message: str, link_line: str) -> str:
+    """The message with the link line under it, kept within Discord's limit."""
+    if not link_line:
+        return message
+    room = DISCORD_MAX_CHARS - len(link_line) - 1
+    if len(message) > room:
+        message = message[:max(0, room - 1)] + "…"
+    return f"{message}\n{link_line}"
+
+
 def send_discord(webhook_url: str, message: str) -> bool:
     if not webhook_url:
         return False
@@ -193,12 +212,12 @@ def _send_ntfy(ntfy_url: str, message: str, title: str) -> Tuple[bool, str]:
         method="POST"), 5.0)
 
 
-def test_discord(webhook_url: str, server_name: str) -> Tuple[bool, str]:
+def test_discord(webhook_url: str, server_name: str, link_line: str = "") -> Tuple[bool, str]:
     """Sends a test message. (ok, plain-language result)."""
     problem = discord_url_problem(webhook_url)
     if problem:
         return False, problem
-    body = _discord_payload(f"**ConanOps test** — alerts for {server_name} will show up here.")
+    body = _discord_payload(with_link(f"**ConanOps test** — alerts for {server_name} will show up here.", link_line))
     ok, why = _send(lambda: urllib.request.Request(
         webhook_url.strip(), data=body, headers=_headers({"Content-Type": "application/json"}), method="POST"), 8.0)
     return ok, ("Sent -- check your Discord channel." if ok else f"Didn't work: Discord {why}.")
@@ -212,12 +231,14 @@ def test_ntfy(ntfy_url: str, server_name: str) -> Tuple[bool, str]:
     return ok, ("Sent -- check the ntfy app." if ok else f"Didn't work: ntfy {why}.")
 
 
-def notify(discord_url: Optional[str], ntfy_url: Optional[str], message: str, title: str = "ConanOps") -> bool:
+def notify(discord_url: Optional[str], ntfy_url: Optional[str], message: str, title: str = "ConanOps",
+           link_line: str = "") -> bool:
     """Sends to configured webhooks. True if all configured ones succeeded
-    (or none are set); callers should show failures to the person."""
+    (or none are set); callers should show failures to the person.
+    link_line (web_link_line()) goes under the Discord message."""
     ok = True
     if discord_url:
-        ok = send_discord(discord_url, f"**{title}**: {message}") and ok
+        ok = send_discord(discord_url, with_link(f"**{title}**: {message}", link_line)) and ok
     if ntfy_url:
         ok = send_ntfy(ntfy_url, message, title=title) and ok
     return ok

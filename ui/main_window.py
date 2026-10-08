@@ -388,6 +388,7 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self.app_settings_page.on_show_tour = self._show_tour_from_settings
         self.app_settings_page.on_restart_elevated = self._restart_with_admin_rights
         self.app_settings_page.on_alerts_changed = self.alerts_changed
+        self.app_settings_page.get_web_link_line = self.web_link_line
         self.admin_mode_problem.connect(self.app_settings_page.show_admin_mode_problem)
         self.app_settings_page.web_tunnel = self.web_tunnel
         self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel

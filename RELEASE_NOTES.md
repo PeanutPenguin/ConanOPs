@@ -9,6 +9,7 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 - **One-line help** under every gameplay setting, with ⓘ for the full explanation.
 - **Mods:** the tools (check for outdated mods, quick mod check, find all bad mods, bisect) are grouped in one "Fix Mod Problems" menu.
 - The web version has the same layout, search and fold-outs.
+- **Every Discord alert and live status message now has an "Open ConanOps" link** to the web version, straight to that server's dashboard. It uses the from-anywhere link when that's on, otherwise the home Wi-Fi link (no link if the web version is off).
 - Behind-the-scenes cleanup: ConanOps' code is simpler and better organized, which makes fixes and new features faster and safer. No changes to what it does.
 
 ### Requirements

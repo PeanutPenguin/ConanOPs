@@ -47,8 +47,10 @@ class _NotifyWorker(QThread):
     with 5s timeouts each)."""
     finished_notify = Signal(bool, str, str, str)  # ok, server_name, title, message
 
-    def __init__(self, discord_url: str, ntfy_url: str, message: str, title: str, server_name: str, parent=None):
+    def __init__(self, discord_url: str, ntfy_url: str, message: str, title: str, server_name: str, parent=None,
+                 get_link_line=None):
         super().__init__(parent)
+        self.get_link_line = get_link_line  # called here, off the GUI thread (the LAN lookup can be slow)
         self.discord_url = discord_url
         self.ntfy_url = ntfy_url
         self.message = message
@@ -57,7 +59,8 @@ class _NotifyWorker(QThread):
 
     def run(self) -> None:
         try:
-            ok = webhooks.notify(self.discord_url, self.ntfy_url, self.message, title=self.title)
+            link = self.get_link_line() if (self.get_link_line and self.discord_url) else ""
+            ok = webhooks.notify(self.discord_url, self.ntfy_url, self.message, title=self.title, link_line=link)
         except Exception as e:  # noqa: BLE001 - always emit so this worker gets cleared from _notify_workers
             _log.error(f"Alert delivery raised unexpectedly: {e}")
             ok = False

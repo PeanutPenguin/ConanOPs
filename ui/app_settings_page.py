@@ -768,8 +768,13 @@ class AppSettingsPage(QWidget):
         self.alert_discord_edit = field("Discord webhook link", "https://discord.com/api/webhooks/...",
                                         self.config.alert_discord_url)
         self.alert_discord_edit.editingFinished.connect(self._on_alert_links_changed)
+        # The test shows the web-version link too, like every Discord alert
+        # (get_web_link_line is set by MainWindow; called off the GUI thread).
+        self.get_web_link_line = None
         self.alert_discord_test_btn, self.alert_discord_result = self._alert_test_row(
-            lay, webhooks.test_discord, self.alert_discord_edit)
+            lay, lambda url, name: webhooks.test_discord(
+                url, name, self.get_web_link_line() if callable(self.get_web_link_line) else ""),
+            self.alert_discord_edit)
         self.alert_discord_status_check = QCheckBox("Also keep a live status message for each server in that channel "
                                                     "(updates every ~5 minutes)")
         self.alert_discord_status_check.setChecked(self.config.discord_status_enabled)

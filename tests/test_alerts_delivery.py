@@ -147,7 +147,7 @@ def test_alerts_go_to_the_app_wide_links(monkeypatch):
     made = []
 
     class FakeWorker:
-        def __init__(self, discord, ntfy, message, title, name):
+        def __init__(self, discord, ntfy, message, title, name, get_link_line=None):
             from PySide6.QtCore import QObject, Signal
 
             class S(QObject):

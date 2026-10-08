@@ -1277,6 +1277,13 @@ const VIEWS = { dashboard: viewDashboard, players: viewPlayersTabs, mods: viewMo
 
 // -------------------------------------------------------------------- boot
 async function start() {
+  // Links in Discord alerts name the server they're about (?server=<id>).
+  const linked = new URLSearchParams(location.search).get("server");
+  if (linked) {
+    state.sid = linked;
+    try { localStorage.setItem("conanops.sid", linked); } catch (e) { /* private mode */ }
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
   try {
     const s = await api("/api/session");
     state.remote = !!s.remote;

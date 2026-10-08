@@ -648,7 +648,7 @@ def test_send_test_uses_typed_link_else_saved(web, monkeypatch):
     import webhooks
     win, c = web
     seen = []
-    monkeypatch.setattr(webhooks, "test_discord", lambda url, name: seen.append(url) or (True, "Sent"))
+    monkeypatch.setattr(webhooks, "test_discord", lambda url, name, link="": seen.append(url) or (True, "Sent"))
     win.config.alert_discord_url = "https://discord.com/api/webhooks/1/saved"
     assert c.post("/api/alerts/test", {"kind": "discord"})["ok"]
     c.post("/api/alerts/test", {"kind": "discord", "url": "https://discord.com/api/webhooks/2/typed"})
