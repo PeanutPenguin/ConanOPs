@@ -45,3 +45,12 @@ if failed:
     print(f"::warning title=Windows test failures::{body}")
 else:
     print(f"::notice title=Windows tests::All {total} tests passed on Windows.")
+    if len(sys.argv) > 3 and sys.argv[3] not in ("0", ""):
+        # Every test passed but pytest still failed: show how its output ended.
+        try:
+            with open(sys.argv[2], encoding="utf-8", errors="replace") as f:
+                tail = [l.rstrip() for l in f.read().splitlines() if l.strip()][-30:]
+        except (OSError, IndexError):
+            tail = []
+        print("::warning title=pytest exited with " + sys.argv[3] + "::" + "%0A".join(
+            l.replace("%", "%25").replace("\r", "")[:300] for l in tail))
