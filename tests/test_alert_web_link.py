@@ -8,7 +8,6 @@ from ui.window.alerts import AlertsMixin
 def test_link_line_and_limit():
     line = webhooks.web_link_line("https://x.trycloudflare.com/?server=a#/dashboard")
     assert line == "[Open ConanOps](<https://x.trycloudflare.com/?server=a#/dashboard>)"
-    assert "home Wi-Fi" in webhooks.web_link_line("http://192.168.1.5:8765", home_only=True)
     assert webhooks.web_link_line("") == ""
     long = webhooks.with_link("x" * 3000, line)
     assert len(long) <= webhooks.DISCORD_MAX_CHARS and long.endswith(line)
@@ -32,11 +31,11 @@ def _win(running=True, remote="", remote_on=False, lan="http://192.168.1.5:8765"
     return w
 
 
-def test_link_prefers_from_anywhere_and_names_the_server():
+def test_link_is_always_the_cloudflare_one_and_names_the_server():
     line = AlertsMixin.web_link_line(_win(remote="https://a.trycloudflare.com", remote_on=True), "s1")
-    assert "<https://a.trycloudflare.com/?server=s1#/dashboard>" in line and "Wi-Fi" not in line
-    line = AlertsMixin.web_link_line(_win(), "s1")
-    assert "<http://192.168.1.5:8765/?server=s1#/dashboard>" in line and "home Wi-Fi" in line
+    assert line == "[Open ConanOps](<https://a.trycloudflare.com/?server=s1#/dashboard>)"
+    # Never the home-network (IP) link, even when that's all there is.
+    assert AlertsMixin.web_link_line(_win(), "s1") == ""
 
 
 def test_no_link_when_web_version_is_off():

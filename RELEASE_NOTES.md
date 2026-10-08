@@ -2,7 +2,7 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 
 ### New in this version
 
-- **Every Discord alert and live status message now has an "Open ConanOps" link** to the web version that goes straight to that server's dashboard. It uses the from-anywhere link when that's turned on, otherwise the home Wi-Fi link, and is left off if the web version is off. The Send Test message shows it too.
+- **Every Discord alert and live status message now has an "Open ConanOps" link** to the web version's from-anywhere (Cloudflare) link, straight to that server's dashboard, so it works on your phone wherever you are. It needs App Settings → Web Version → "from anywhere" turned on; without it there's no link. The Send Test message shows it too.
 
 ### Requirements
 

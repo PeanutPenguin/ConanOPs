@@ -125,13 +125,12 @@ def _post_json(url: str, payload: dict, timeout: float = 5.0) -> bool:
         return False
 
 
-def web_link_line(url: str, home_only: bool = False) -> str:
+def web_link_line(url: str) -> str:
     """The "open the web version" line added to Discord messages. The <> keeps
     Discord from attaching a big link preview."""
     if not url:
         return ""
-    where = " (works on your home Wi-Fi)" if home_only else ""
-    return f"[Open ConanOps]({'<' + url + '>'}){where}"
+    return f"[Open ConanOps](<{url}>)"
 
 
 def with_link(message: str, link_line: str) -> str:

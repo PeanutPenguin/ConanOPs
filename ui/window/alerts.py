@@ -37,21 +37,19 @@ class AlertsMixin:
         worker.start()
 
     def web_link_line(self, server_id: str = "") -> str:
-        """Link to the web version for Discord messages: the from-anywhere
-        link when that's on, else the home-network one; "" when the web
-        version is off. May be slow (finds this PC's LAN address), so it's
-        called from the senders' background threads. With server_id the
-        link opens that server's dashboard."""
+        """Link to the web version for Discord messages: always the
+        from-anywhere (Cloudflare) link, never the home-network one. "" when
+        that link isn't up (web version or from-anywhere off, or still
+        connecting). With server_id the link opens that server's dashboard."""
         try:
             web = getattr(self, "web_control", None)
             if web is None or not web.is_running:
                 return ""
             remote = getattr(getattr(self, "web_tunnel", None), "url", "") or ""
+            if not remote:
+                return ""
             suffix = f"/?server={server_id}#/dashboard" if server_id else ""
-            if self.config.web_remote_enabled and remote:
-                return webhooks.web_link_line(remote.rstrip("/") + suffix)
-            lan = web.url_for() or ""
-            return webhooks.web_link_line(lan + suffix if lan else "", home_only=True)
+            return webhooks.web_link_line(remote.rstrip("/") + suffix)
         except Exception as e:  # noqa: BLE001 - a missing link must never stop an alert
             _log.warning(f"Couldn't work out the web link for an alert: {e}")
             return ""
