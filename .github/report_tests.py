@@ -15,10 +15,11 @@ except (OSError, ET.ParseError, IndexError):
                 all_lines = [l.rstrip() for l in f.read().splitlines() if l.strip()]
             # The stack dump after a timeout: keep each thread's header and the
             # frames in ConanOps' own code, plus the test that was running.
-            start = max((i for i, l in enumerate(all_lines) if "Timeout" in l), default=max(0, len(all_lines) - 40))
-            tail = [l for l in all_lines[max(0, start - 3):]
-                    if "Timeout" in l or "Thread 0x" in l or "Current thread" in l or "\\a\\ConanOPs" in l
-                    or "::" in l][:80]
+            marks = [i for i, l in enumerate(all_lines) if "Timeout" in l and "+" in l]
+            start = marks[0] if marks else max(0, len(all_lines) - 60)
+            # Every thread's frames, without pytest/pluggy plumbing.
+            tail = [l for l in all_lines[max(0, start - 2):]
+                    if "_pytest" not in l and "pluggy" not in l][:150]
         except OSError:
             pass
     body = "pytest stopped before writing its report. Last output:%0A" + "%0A".join(
