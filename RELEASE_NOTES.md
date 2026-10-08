@@ -2,15 +2,7 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 
 ### New in this version
 
-- **Simpler layout, same options.** The sidebar is down to six pages: Dashboard, Players, Mods, Console, Server Settings and App Settings. Updates now lives in Server Settings → Server Updates (and a new build shows up on the Dashboard), and Access is a tab on the Players page.
-- **Search every setting.** Server Settings and App Settings both have a search box. Type "xp", "port", "decay" or "discord" and click a result to jump straight to it.
-- **Most-used settings first.** Each settings page shows the common settings up front, and everything else sits under "More options". Gameplay puts the most-changed settings on top, and every category (Progression, Combat, Purge…) folds out below with its sliders. Nothing was removed.
-- **One save bar.** Change settings on as many pages as you like, then Save or Discard them all at once.
-- **One-line help** under every gameplay setting, with ⓘ for the full explanation.
-- **Mods:** the tools (check for outdated mods, quick mod check, find all bad mods, bisect) are grouped in one "Fix Mod Problems" menu.
-- The web version has the same layout, search and fold-outs.
-- **Every Discord alert and live status message now has an "Open ConanOps" link** to the web version, straight to that server's dashboard. It uses the from-anywhere link when that's on, otherwise the home Wi-Fi link (no link if the web version is off).
-- Behind-the-scenes cleanup: ConanOps' code is simpler and better organized, which makes fixes and new features faster and safer. No changes to what it does.
+- **Every Discord alert and live status message now has an "Open ConanOps" link** to the web version that goes straight to that server's dashboard. It uses the from-anywhere link when that's turned on, otherwise the home Wi-Fi link, and is left off if the web version is off. The Send Test message shows it too.
 
 ### Requirements
 
