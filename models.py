@@ -245,6 +245,10 @@ class AppConfig:
     alert_discord_url: str = ""
     alert_ntfy_url: str = ""
     discord_status_enabled: bool = False
+    # Discord bot for !status / !restart (the token is a secret).
+    discord_bot_token: str = ""
+    discord_bot_channel_id: str = ""
+    discord_bot_admin_ids: str = ""   # Discord user IDs allowed to !restart, comma-separated
 
     # ---------------------------------------------------------------- io --
     @staticmethod
@@ -348,6 +352,12 @@ class AppConfig:
             cfg.duckdns_token = secrets_store.unprotect(raw.get("duckdns_token", ""))
         except secrets_store.DecryptionError:
             cfg.duckdns_token = ""
+        try:
+            cfg.discord_bot_token = secrets_store.unprotect(raw.get("discord_bot_token", ""))
+        except secrets_store.DecryptionError:
+            cfg.discord_bot_token = ""
+        cfg.discord_bot_channel_id = str(raw.get("discord_bot_channel_id", "") or "")
+        cfg.discord_bot_admin_ids = str(raw.get("discord_bot_admin_ids", "") or "")
         if "alert_discord_url" in raw or "alert_ntfy_url" in raw:
             for attr in ("alert_discord_url", "alert_ntfy_url"):
                 try:
@@ -401,6 +411,9 @@ class AppConfig:
             "alert_discord_url": secrets_store.protect(self.alert_discord_url),
             "alert_ntfy_url": secrets_store.protect(self.alert_ntfy_url),
             "discord_status_enabled": self.discord_status_enabled,
+            "discord_bot_token": secrets_store.protect(self.discord_bot_token),
+            "discord_bot_channel_id": self.discord_bot_channel_id,
+            "discord_bot_admin_ids": self.discord_bot_admin_ids,
         }
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

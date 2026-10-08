@@ -57,3 +57,31 @@ def as_json(guide: Guide) -> dict:
     title, intro, steps = guide
     return {"title": title, "intro": intro,
             "steps": [{"number": i, "title": t, "body": b} for i, (t, b) in enumerate(steps, 1)]}
+
+DISCORD_BOT = (
+    "How do I set up Discord commands (!status, !restart)?",
+    "Discord commands need a small bot of your own -- a webhook can only post messages, not read them. "
+    "It's free and takes about five minutes.",
+    [
+        ("Create the bot",
+         "Go to discord.com/developers/applications, click New Application, name it ConanOps, then open the "
+         "Bot page on the left."),
+        ("Turn on Message Content Intent",
+         "On the Bot page, under Privileged Gateway Intents, switch on Message Content Intent and save. "
+         "Without it the bot can't read \"!status\"."),
+        ("Copy the token",
+         "On the Bot page click Reset Token, then Copy. Paste it into \"Bot token\" here. Treat it like a "
+         "password -- anyone with it can act as your bot."),
+        ("Invite the bot to your server",
+         "Open OAuth2 → URL Generator, tick \"bot\", then tick View Channels, Send Messages and Read Message "
+         "History. Open the link it makes and pick your Discord server."),
+        ("Copy the channel ID",
+         "In Discord: User Settings → Advanced → turn on Developer Mode. Then right-click the channel the "
+         "commands should work in → Copy Channel ID, and paste it here."),
+        ("Choose who can restart",
+         "Right-click each person allowed to use !restart → Copy User ID, and paste the IDs here, separated by "
+         "commas. Anyone in the channel can use !status."),
+    ],
+)
+
+ALL["discord_bot"] = DISCORD_BOT

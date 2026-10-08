@@ -55,6 +55,70 @@ class AlertsMixin:
             _log.warning(f"Couldn't work out the web link for an alert: {e}")
             return ""
 
+    # ------------------------------------------------- Discord commands --
+    def _sync_discord_bot(self) -> None:
+        """Starts, restarts or stops the !status/!restart bot to match App Settings."""
+        import discord_bot
+        want = (self.config.discord_bot_token.strip(), self.config.discord_bot_channel_id.strip())
+        bot = getattr(self, "_discord_bot", None)
+        if bot is not None and (bot.token, bot.channel_id) == want and bot.isRunning():
+            return
+        if bot is not None:
+            bot.stop()
+            self._retire_worker(bot)
+            self._discord_bot = None
+        self.discord_bot_problem = ""
+        if not all(want):
+            return
+        bot = discord_bot.DiscordBotWorker(*want)
+        bot.command.connect(self._on_discord_command)
+        bot.problem.connect(self._on_discord_bot_problem)
+        self._discord_bot = bot
+        bot.start()
+
+    def _on_discord_bot_problem(self, text: str) -> None:
+        self.discord_bot_problem = text
+        _log.warning(f"Discord commands: {text}")
+        page = getattr(self, "app_settings_page", None)
+        if page is not None and hasattr(page, "show_discord_bot_problem"):
+            page.show_discord_bot_problem(text)
+
+    def _discord_status_rows(self) -> list:
+        rows = []
+        for s in self.config.servers:
+            if not s.install_dir:
+                continue
+            names = sorted(self._online_by_server.get(s.id, set()) or ())
+            rows.append({"name": s.name, "running": bool(self._known_running.get(s.id)),
+                         "players": len(names), "names": names,
+                         "max_players": getattr(s, "max_players", 0), "busy": self.server_busy(s)})
+        return rows
+
+    def _on_discord_command(self, message_id: str, author_id: str, author: str, content: str) -> None:
+        import discord_bot
+        bot = getattr(self, "_discord_bot", None)
+        parsed = discord_bot.parse_command(content)
+        if bot is None or parsed is None:
+            return
+        cmd, arg = parsed
+        if cmd == "help":
+            reply = discord_bot.HELP
+        elif cmd == "status":
+            reply = discord_bot.status_text(self._discord_status_rows(), self.web_link_line())
+        elif author_id not in discord_bot.admin_ids(self.config.discord_bot_admin_ids):
+            reply = "Only people on ConanOps' allowed list can restart the server."
+        else:
+            server, why = discord_bot.pick_server(self.config.servers, arg)
+            if server is None:
+                reply = why
+            else:
+                problem = self.restart_server(server)
+                reply = (f"Can't restart {server.name}: {problem}" if problem
+                         else f"Restarting **{server.name}** -- players get a warning and the world is saved first.")
+                if not problem:
+                    _log.info(f"{server.name}: restart requested from Discord by {author} ({author_id})")
+        bot.reply(message_id, reply)
+
     def _on_notify_finished(self, ok: bool, server_name: str, title: str, message: str) -> None:
         if not ok:
             _log.warning(f"Alert delivery failed for {server_name}: {title} -- {message}")
@@ -119,5 +183,6 @@ class AlertsMixin:
                 s.discord_status_message_id = ""
             self.config.save()
         self._refresh_chrome()
+        self._sync_discord_bot()
         if self.config.discord_status_enabled and self.config.alert_discord_url:
             QTimer.singleShot(1000, self._check_discord_status_all)

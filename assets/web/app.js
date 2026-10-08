@@ -1228,7 +1228,16 @@ async function viewApp(root) {
           toggle("discord_status_enabled", "Also keep a live status message for each server in that channel",
             "Updates every ~5 minutes instead of posting new messages."),
           foldOutGuide(d.alert_guides.discord)),
-          h("div", { class: "card" }, ntfy, testRow("ntfy", () => ntfy.input), foldOutGuide(d.alert_guides.ntfy))];
+          h("div", { class: "card" }, ntfy, testRow("ntfy", () => ntfy.input), foldOutGuide(d.alert_guides.ntfy)),
+          h("div", { class: "card" }, h("h3", {}, "Discord commands"),
+            h("p", { class: "muted", style: "margin:6px 0 10px" }, "Friends type !status in a Discord channel to see " +
+              "who's on, and people you allow can type !restart. Needs a free Discord bot -- the guide below shows how."),
+            d.discord_bot_problem ? notice(d.discord_bot_problem, "bad") : null,
+            textSetting("discord_bot_token", "Bot token", d.discord_bot_token_set, { secret: true }),
+            textSetting("discord_bot_channel_id", "Channel ID", d.discord_bot_channel_id, { placeholder: "123456789012345678" }),
+            textSetting("discord_bot_admin_ids", "Who can use !restart (Discord user IDs, comma-separated)",
+              d.discord_bot_admin_ids, { placeholder: "123456789012345678, 234567890123456789" }),
+            foldOutGuide(d.alert_guides.discord_bot))];
       },
       workshop: () => [h("div", { class: "card" },
         textSetting("steam_api_key", "Steam Web API key", d.steam_api_key_set, { secret: true,

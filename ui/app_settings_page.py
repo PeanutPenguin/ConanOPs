@@ -792,6 +792,34 @@ class AppSettingsPage(QWidget):
             lay, webhooks.test_ntfy, self.alert_ntfy_edit)
         self.alert_ntfy_guide = FoldOutGuide(*alert_guides.NTFY)
         lay.addWidget(self.alert_ntfy_guide)
+        # Discord commands: a bot that answers !status and !restart.
+        lay.addWidget(QLabel(""))
+        bot_title = QLabel("Discord commands")
+        bot_title.setObjectName("SectionTitle")
+        lay.addWidget(bot_title)
+        bot_intro = QLabel("Friends type !status in a Discord channel to see who's on, and people you allow can "
+                           "type !restart. Needs a free Discord bot -- the guide below shows how.")
+        bot_intro.setObjectName("Dim")
+        bot_intro.setWordWrap(True)
+        lay.addWidget(bot_intro)
+        self.discord_bot_token_edit = field("Bot token", "Paste the token from the Developer Portal",
+                                            self.config.discord_bot_token)
+        self.discord_bot_token_edit.setEchoMode(QLineEdit.Password)
+        self.discord_bot_channel_edit = field("Channel ID", "e.g. 123456789012345678",
+                                              self.config.discord_bot_channel_id)
+        self.discord_bot_admins_edit = field("Who can use !restart (Discord user IDs, comma-separated)",
+                                             "e.g. 123456789012345678, 234567890123456789",
+                                             self.config.discord_bot_admin_ids)
+        for edit in (self.discord_bot_token_edit, self.discord_bot_channel_edit, self.discord_bot_admins_edit):
+            edit.editingFinished.connect(self._on_discord_bot_changed)
+        self.discord_bot_problem_label = QLabel("")
+        self.discord_bot_problem_label.setObjectName("ErrorText")
+        self.discord_bot_problem_label.setWordWrap(True)
+        self.discord_bot_problem_label.hide()
+        lay.addWidget(self.discord_bot_problem_label)
+        self.discord_bot_guide = FoldOutGuide(*alert_guides.DISCORD_BOT)
+        lay.addWidget(self.discord_bot_guide)
+
         self.alert_error_label = QLabel("")
         self.alert_error_label.setObjectName("ErrorText")
         self.alert_error_label.setWordWrap(True)
@@ -855,6 +883,35 @@ class AppSettingsPage(QWidget):
         except ValueError as e:
             self.alert_error_label.setText(f"Not saved: {e}")
             self.alert_error_label.show()
+
+    def set_discord_bot(self, token: str, channel_id: str, admin_ids: str) -> None:
+        """Saves the Discord commands settings (here or from the web) and restarts the bot."""
+        token, channel_id = token.strip(), "".join(ch for ch in channel_id if ch.isdigit())
+        changed = (token, channel_id, admin_ids.strip()) != (
+            self.config.discord_bot_token, self.config.discord_bot_channel_id, self.config.discord_bot_admin_ids)
+        self.config.discord_bot_token = token
+        self.config.discord_bot_channel_id = channel_id
+        self.config.discord_bot_admin_ids = admin_ids.strip()
+        for edit, value in ((self.discord_bot_token_edit, token), (self.discord_bot_channel_edit, channel_id),
+                            (self.discord_bot_admins_edit, admin_ids.strip())):
+            if edit.text() != value:
+                edit.blockSignals(True)
+                edit.setText(value)
+                edit.blockSignals(False)
+        if not changed:
+            return
+        self.save_config()
+        self.show_discord_bot_problem("")
+        if callable(getattr(self, "on_alerts_changed", None)):
+            self.on_alerts_changed(False)
+
+    def _on_discord_bot_changed(self) -> None:
+        self.set_discord_bot(self.discord_bot_token_edit.text(), self.discord_bot_channel_edit.text(),
+                             self.discord_bot_admins_edit.text())
+
+    def show_discord_bot_problem(self, text: str) -> None:
+        self.discord_bot_problem_label.setText(text)
+        self.discord_bot_problem_label.setVisible(bool(text))
 
     def _on_discord_status_toggled(self, on: bool) -> None:
         self._on_alert_links_changed()

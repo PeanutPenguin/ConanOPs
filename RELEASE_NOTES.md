@@ -2,8 +2,7 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 
 ### New in this version
 
-- **Discord links now always use your from-anywhere (Cloudflare) link**, never the home network address, so the "Open ConanOps" link in every alert and live status message works on your phone wherever you are. It needs App Settings → Web Version → "from anywhere" turned on; without it, messages have no link.
-- Fixed a rare freeze: ConanOps could lock up while tidying away a finished background task (checks, backups, alerts) at the same moment it started a new one.
+- **Discord commands.** Friends can type `!status` in a Discord channel to see each server's status and who's online, and people you allow can type `!restart` (players get a warning and the world is saved first). `!help` lists the commands. Set it up in App Settings → Alerts → Discord commands; a step-by-step guide shows how to make the free Discord bot it needs.
 
 ### Requirements
 

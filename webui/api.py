@@ -794,6 +794,9 @@ class WebApi:
                 "duckdns_domain": c.duckdns_domain, "duckdns_token_set": bool(c.duckdns_token),
                 "alert_discord_set": bool(c.alert_discord_url), "alert_ntfy_set": bool(c.alert_ntfy_url),
                 "discord_status_enabled": bool(c.discord_status_enabled),
+                "discord_bot_token_set": bool(c.discord_bot_token), "discord_bot_channel_id": c.discord_bot_channel_id,
+                "discord_bot_admin_ids": c.discord_bot_admin_ids,
+                "discord_bot_problem": getattr(self.win, "discord_bot_problem", ""),
                 "alert_guides": {k: alert_guides.as_json(g) for k, g in alert_guides.ALL.items()},
                 "admin": proc_utils.is_admin(), "admin_mode": bool(getattr(c, "admin_mode_enabled", False)),
                 "needs_pc": self.win.needs_pc_labels(),
@@ -828,6 +831,9 @@ class WebApi:
             "alert_discord_url": lambda v: self._set_alerts(discord=str(v or "")),
             "alert_ntfy_url": lambda v: self._set_alerts(ntfy=str(v or "")),
             "discord_status_enabled": lambda v: self._set_alerts(status=bool(v)),
+            "discord_bot_token": lambda v: self._set_bot(token=str(v or "")),
+            "discord_bot_channel_id": lambda v: self._set_bot(channel=str(v or "")),
+            "discord_bot_admin_ids": lambda v: self._set_bot(admins=str(v or "")),
             "check_app_update": lambda v: self._app_update(False),
             "install_app_update": lambda v: self._app_update(True),
         }
@@ -865,6 +871,15 @@ class WebApi:
                     c.discord_status_enabled if status is None else status)
             except ValueError as e:
                 raise WebActionError(str(e)) from None
+        return self._result(self.gui(act)[1], "Saved.")
+
+    def _set_bot(self, token=None, channel=None, admins=None) -> dict:
+        def act():
+            c = self.win.config
+            self.win.app_settings_page.set_discord_bot(
+                c.discord_bot_token if token is None else token,
+                c.discord_bot_channel_id if channel is None else channel,
+                c.discord_bot_admin_ids if admins is None else admins)
         return self._result(self.gui(act)[1], "Saved.")
 
     def _set_cutoff(self, value) -> dict:

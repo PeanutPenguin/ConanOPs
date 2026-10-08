@@ -398,6 +398,7 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self._web_bridge = GuiBridge(self)
         self.web_control.api = WebApi(self, self._web_bridge)
         QTimer.singleShot(2_000, self._sync_web_tunnel)
+        QTimer.singleShot(3_000, self._sync_discord_bot)
         self.app_settings_page.is_busy_for_app_update = self._busy_reason_for_app_update
         self._app_update_timer = QTimer(self)
         self._app_update_timer.timeout.connect(self._maybe_check_app_update)
@@ -1164,4 +1165,8 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self.scheduler.stop()
         self.web_control.stop()
         self.web_tunnel.stop()
+        bot = getattr(self, "_discord_bot", None)
+        if bot is not None:
+            bot.stop()
+            bot.wait(3000)
         super().closeEvent(event)
