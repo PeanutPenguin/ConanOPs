@@ -48,7 +48,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest -q -p no:cacheprovider --timeout 120 --junitxml=test-results.xml tests 2>&1 | Tee-Object -FilePath test-log.txt
+          python -m pytest -v -p no:cacheprovider --timeout 120 --junitxml=test-results.xml tests 2>&1 | Tee-Object -FilePath test-log.txt
           $code = $LASTEXITCODE
           # Failed tests as one build annotation, so they can be read without the full log.
           python .github/report_tests.py test-results.xml test-log.txt

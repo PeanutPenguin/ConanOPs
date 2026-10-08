@@ -12,7 +12,13 @@ except (OSError, ET.ParseError, IndexError):
     if len(sys.argv) > 2:
         try:
             with open(sys.argv[2], encoding="utf-8", errors="replace") as f:
-                tail = [l.rstrip() for l in f.read().splitlines() if l.strip()][-40:]
+                all_lines = [l.rstrip() for l in f.read().splitlines() if l.strip()]
+            # The stack dump after a timeout: keep each thread's header and the
+            # frames in ConanOps' own code, plus the test that was running.
+            start = max((i for i, l in enumerate(all_lines) if "Timeout" in l), default=max(0, len(all_lines) - 40))
+            tail = [l for l in all_lines[max(0, start - 3):]
+                    if "Timeout" in l or "Thread 0x" in l or "Current thread" in l or "\\a\\ConanOPs" in l
+                    or "::" in l][:80]
         except OSError:
             pass
     body = "pytest stopped before writing its report. Last output:%0A" + "%0A".join(
