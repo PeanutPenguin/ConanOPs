@@ -402,6 +402,8 @@ def test_download_worker_is_kept_alive_until_its_thread_exits(monkeypatch):
     assert page._download_worker is None
     assert worker in page._retiring_download_workers  # still referenced -- run() hasn't returned yet
     worker.finished.emit()
+    from PySide6.QtCore import QCoreApplication
+    QCoreApplication.processEvents()  # the release is queued to the GUI thread
     assert worker not in page._retiring_download_workers
 
 

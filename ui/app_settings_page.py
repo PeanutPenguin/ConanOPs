@@ -1087,7 +1087,8 @@ class AppSettingsPage(QWidget):
         worker = _CallWorker(fn, parent=self)
         self._call_workers.append(worker)
         worker.finished_call.connect(on_done)
-        worker.finished.connect(lambda w=worker: self._call_workers.remove(w) if w in self._call_workers else None)
+        worker.finished.connect(lambda w=worker: self._call_workers.remove(w) if w in self._call_workers else None,
+                                Qt.QueuedConnection)
         worker.start()
 
     def _set_checked_quietly(self, box: QCheckBox, value: bool) -> None:

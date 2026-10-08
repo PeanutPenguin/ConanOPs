@@ -111,6 +111,9 @@ def test_retire_worker_holds_reference_until_thread_finished():
     assert worker in page._retiring_workers
 
     worker.finished.emit()  # simulate QThread's own completion signal
+    assert worker in page._retiring_workers  # released on the GUI thread, not inside the signal
+    from PySide6.QtCore import QCoreApplication
+    QCoreApplication.processEvents()
 
     assert worker not in page._retiring_workers
 
@@ -121,3 +124,33 @@ def test_retire_worker_ignores_none():
     page = access_page.AccessPage()
     page._retire_worker(None)  # must not raise
     assert page._retiring_workers == []
+
+
+def test_release_waits_for_the_thread_and_runs_on_the_gui_thread():
+    """Letting go of a worker inside its own finishing thread (or before
+    that thread exits) could destroy a running QThread and lock up the app."""
+    import threading
+    from PySide6.QtCore import QCoreApplication
+    from ui.workers import keep_until_finished
+
+    where = []
+
+    class W(QThread):
+        def run(self):
+            pass
+
+        def wait(self, *a):
+            where.append(threading.current_thread() is threading.main_thread())
+            return super().wait(*a)
+
+    holder = []
+    w = W()
+    keep_until_finished(holder, w)
+    w.start()
+    for _ in range(200):
+        QCoreApplication.processEvents()
+        if not holder:
+            break
+        threading.Event().wait(0.01)
+    assert holder == [], where
+    assert where and all(where)

@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
@@ -32,7 +32,8 @@ class AlertsMixin:
                                get_link_line=lambda sid=server.id: self.web_link_line(sid))
         worker.finished_notify.connect(self._on_notify_finished)
         self._notify_workers.append(worker)
-        worker.finished_notify.connect(lambda *_, w=worker: self._notify_workers.remove(w) if w in self._notify_workers else None)
+        worker.finished_notify.connect(lambda *_, w=worker: self._notify_workers.remove(w) if w in self._notify_workers else None,
+                                       Qt.QueuedConnection)
         self._retire_worker(worker)
         worker.start()
 
