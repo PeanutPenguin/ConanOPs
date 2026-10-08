@@ -51,8 +51,11 @@ jobs:
           python -m pytest -v -p no:cacheprovider --timeout 120 --junitxml=test-results.xml tests 2>&1 | Tee-Object -FilePath test-log.txt
           $code = $LASTEXITCODE
           # Failed tests as one build annotation, so they can be read without the full log.
+          # The results decide: a report with every test passed is a pass, even if
+          # pytest's process exits non-zero while shutting down (that's still
+          # reported as a warning on the run).
           python .github/report_tests.py test-results.xml test-log.txt $code
-          exit $code
+          exit $LASTEXITCODE
 
       - name: Build ConanOps.exe
         shell: pwsh

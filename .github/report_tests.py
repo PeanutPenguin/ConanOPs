@@ -25,7 +25,7 @@ except (OSError, ET.ParseError, IndexError):
     body = "pytest stopped before writing its report. Last output:%0A" + "%0A".join(
         l.replace("%", "%25").replace("\r", "")[:300] for l in tail)
     print(f"::warning title=Windows tests stopped early::{body}")
-    sys.exit(0)
+    sys.exit(1)
 lines = []
 total = failed = 0
 for case in root.iter("testcase"):
@@ -54,3 +54,5 @@ else:
             tail = []
         print("::warning title=pytest exited with " + sys.argv[3] + "::" + "%0A".join(
             l.replace("%", "%25").replace("\r", "")[:300] for l in tail))
+
+sys.exit(1 if failed or total == 0 else 0)
