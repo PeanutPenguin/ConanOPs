@@ -6,6 +6,18 @@ import xml.etree.ElementTree as ET
 try:
     root = ET.parse(sys.argv[1]).getroot()
 except (OSError, ET.ParseError, IndexError):
+    # No report: pytest was stopped (a test hung past --timeout, or crashed).
+    # Show the end of its output instead.
+    tail = []
+    if len(sys.argv) > 2:
+        try:
+            with open(sys.argv[2], encoding="utf-8", errors="replace") as f:
+                tail = [l.rstrip() for l in f.read().splitlines() if l.strip()][-40:]
+        except OSError:
+            pass
+    body = "pytest stopped before writing its report. Last output:%0A" + "%0A".join(
+        l.replace("%", "%25").replace("\r", "")[:300] for l in tail)
+    print(f"::warning title=Windows tests stopped early::{body}")
     sys.exit(0)
 lines = []
 total = failed = 0
