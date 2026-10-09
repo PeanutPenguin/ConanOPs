@@ -55,6 +55,11 @@ class WebActionsMixin:
             return (f"Can't {verb}: the server's files aren't on this PC anymore (deleted or moved). Download "
                     f"them again from the app on the PC.")
         result = preflight.run_preflight(server)
+        if getattr(result, "files_missing", False) and self._repair_game_files(
+                server, why=f"game files were missing when asked to {verb} it", then_start=True,
+                stop_first=self.is_running(server)):
+            return (f"Some game files were missing, so ConanOps is having Steam check and re-download them, "
+                    f"then it starts the server. You'll get an alert when it's done.")
         if not result.ok:
             return f"Can't {verb} -- pre-flight checks failed:\n" + "\n".join(result.problems)
         if result.repairs:

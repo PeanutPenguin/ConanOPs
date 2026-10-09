@@ -61,7 +61,7 @@ def test_per_server_nav_disabled_with_no_servers_enabled_once_added(monkeypatch)
         for key in ("players", "mods", "console", "settings"):
             assert nav_by_key[key].isEnabled() is False
 
-        win._on_add_server()
+        win._add_new_server()
 
         for key in ("players", "mods", "console", "settings"):
             assert nav_by_key[key].isEnabled() is True
@@ -75,7 +75,16 @@ def test_dashboard_empty_state_add_button_creates_a_server(monkeypatch):
     monkeypatch.setattr(win, "_open_setup_wizard", lambda server: None)  # don't block on a real modal wizard
     try:
         assert cfg.servers == []
+        import server_finder
+        from PySide6.QtWidgets import QApplication
+        monkeypatch.setattr(server_finder, "find_unmanaged", lambda *a, **k: [])  # nothing already on this PC
         win.dashboard_page.empty_add_btn.click()
+        for _ in range(200):  # the scan runs in the background first
+            QApplication.processEvents()
+            if cfg.servers:
+                break
+            import time
+            time.sleep(0.01)
         assert len(cfg.servers) == 1
     finally:
         win.close()
@@ -540,7 +549,7 @@ def test_cancelling_setup_wizard_for_a_brand_new_server_removes_it(monkeypatch):
     try:
         _fake_setup_wizard(monkeypatch, accept=False)
 
-        win._on_add_server()
+        win._add_new_server()
 
         assert cfg.servers == []
     finally:
@@ -553,7 +562,7 @@ def test_finishing_setup_wizard_keeps_the_server(monkeypatch):
     try:
         _fake_setup_wizard(monkeypatch, accept=True)
 
-        win._on_add_server()
+        win._add_new_server()
 
         assert len(cfg.servers) == 1
         assert cfg.servers[0].install_dir == "C:\\fake\\install"
@@ -682,11 +691,14 @@ def test_watchdog_restarts_a_crashed_desired_server(monkeypatch):
     server = cfg.add_server("Chudville")
     server.install_dir = "/tmp/fake-install"
     server.desired_running = True
+    # Patched before the window exists: its startup resume runs pre-flight too.
+    monkeypatch.setattr(preflight, "run_preflight", lambda s: preflight.CheckResult(ok=True, problems=[], repairs=[]))
+    launched = []
+    monkeypatch.setattr(process_manager, "launch", lambda s: launched.append(s))
+    monkeypatch.setattr(process_manager, "is_running", lambda d: False)
     win = MainWindow(config=cfg)
     try:
-        monkeypatch.setattr(preflight, "run_preflight", lambda s: preflight.CheckResult(ok=True, problems=[], repairs=[]))
-        launched = []
-        monkeypatch.setattr(process_manager, "launch", lambda s: launched.append(s))
+        launched.clear()
         win._known_running[server.id] = True  # was running before this health check
 
         win._on_health_check_finished([(server.id, False, None)])  # now it's not

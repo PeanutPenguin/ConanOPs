@@ -38,6 +38,7 @@ from ui.mod_recovery import ModRecoveryMixin
 from ui.web_actions import WebActionsMixin
 from ui.window.alerts import AlertsMixin
 from ui.window.backups import BackupsMixin
+from ui.window.finder import FinderMixin
 from ui.window.common import APP_INSTALL_DIR, _NotifyWorker, _sessions_path_for
 from ui.window.network import NetworkMixin
 from ui.window.power import PowerMixin
@@ -95,7 +96,7 @@ PAGE_HEADERS = {
 }
 
 
-class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
+class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
                  ModRecoveryMixin, WebActionsMixin):
     # From the Cloudflare tunnel's thread: (link or "", status text).
     web_tunnel_changed = Signal(str, str)
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self._disk_space_low_alerted: set = set()
         self._update_check_workers: Dict[str, CheckWorker] = {}
         self._update_apply_workers: Dict[str, UpdateWorker] = {}
+        self._files_repaired: set = set()  # server ids whose game files were repaired this crash streak
         self._manual_update_in_progress: set = set()  # server ids with a manual update (Updates page) running
         self._restore_workers: Dict[str, backup_runner.RestoreWorker] = {}
         self._firewall_workers: List[network_setup_runner.FirewallReconcileWorker] = []
@@ -399,6 +401,9 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self.web_control.api = WebApi(self, self._web_bridge)
         QTimer.singleShot(2_000, self._sync_web_tunnel)
         QTimer.singleShot(3_000, self._sync_discord_bot)
+        if not self.background:
+            # Servers already on this PC that ConanOps doesn't manage yet.
+            QTimer.singleShot(4_000, self._scan_for_servers)
         self.app_settings_page.is_busy_for_app_update = self._busy_reason_for_app_update
         self._app_update_timer = QTimer(self)
         self._app_update_timer.timeout.connect(self._maybe_check_app_update)
@@ -628,6 +633,10 @@ class MainWindow(QMainWindow, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMix
         self._load_active_server()
 
     def _on_add_server(self) -> None:
+        """Offers servers already on this PC first; otherwise the setup wizard."""
+        self._scan_for_servers(from_add_button=True)
+
+    def _add_new_server(self) -> None:
         server = self.config.add_server()
         if server is None:
             QMessageBox.information(self, "Server limit reached", "ConanOps supports up to 5 servers.")

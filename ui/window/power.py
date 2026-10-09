@@ -32,7 +32,7 @@ class PowerMixin:
         """Manual restart from the Dashboard: failures show as dialogs."""
         result = preflight.run_preflight(server)
         if not result.ok:
-            if self._offer_reinstall_if_files_missing(server):
+            if self._offer_reinstall_if_files_missing(server) or self._offer_file_fixes(server, result, "restart"):
                 return
             QMessageBox.warning(self, "Can't restart", "Pre-flight checks failed:\n\n" + "\n".join(result.problems))
             return
@@ -44,6 +44,9 @@ class PowerMixin:
         """Scheduled restart: failures go to alerts, never a blocking dialog
         that would sit unattended."""
         result = preflight.run_preflight(server)
+        if getattr(result, "files_missing", False) and self._repair_game_files(server, why="game files were missing before a scheduled restart",
+                                                             then_start=True, stop_first=True):
+            return
         if not result.ok:
             self._notify(server, "Scheduled restart skipped -- pre-flight checks failed:\n" + "\n".join(result.problems), title="Restart Failed")
             return
@@ -107,7 +110,7 @@ class PowerMixin:
             return  # Start button shouldn't even be visible in this case, but don't double-launch
         result = preflight.run_preflight(server)
         if not result.ok:
-            if self._offer_reinstall_if_files_missing(server):
+            if self._offer_reinstall_if_files_missing(server) or self._offer_file_fixes(server, result, "start"):
                 return
             QMessageBox.warning(self, "Can't start", "Pre-flight checks failed:\n\n" + "\n".join(result.problems))
             return
@@ -257,6 +260,7 @@ class PowerMixin:
         last_attempt = self._watchdog_last_attempt.get(server.id)
         if last_attempt is not None and now - last_attempt > self._WATCHDOG_STREAK_RESET_SECONDS:
             self._watchdog_attempts[server.id] = 0
+            self._files_repaired.discard(server.id)
         attempts = self._watchdog_attempts.get(server.id, 0)
         if attempts >= self._WATCHDOG_MAX_ATTEMPTS:
             # Out of restarts: if it has mods, test whether one is the cause.
@@ -273,6 +277,15 @@ class PowerMixin:
         attempt_num = attempts + 1
 
         result = preflight.run_preflight(server)
+        # Game files missing, or two plain restarts didn't help: have Steam check
+        # and re-download damaged or missing game files, once per streak.
+        if (getattr(result, "files_missing", False) or (result.ok and attempt_num >= 3)) and server.id not in self._files_repaired:
+            if need_stop_first:
+                self._expected_stop.add(server.id)
+                self._tracker_for(server).close_all_active()
+                self._clear_online(server.id)
+            self._repair_game_files(server, why=reason, then_start=True, stop_first=need_stop_first)
+            return
         if not result.ok:
             self._notify(
                 server,
@@ -361,6 +374,9 @@ class PowerMixin:
             if process_manager.is_running(server.install_dir):
                 continue  # already running somehow (e.g. survived from before this ConanOps session)
             result = preflight.run_preflight(server)
+            if getattr(result, "files_missing", False) and self._repair_game_files(
+                    server, why="game files were missing when starting it after a reboot", then_start=True):
+                continue
             if not result.ok:
                 self._notify(
                     server,
@@ -375,6 +391,88 @@ class PowerMixin:
                 self._known_running[server.id] = True
             except FileNotFoundError as e:
                 self._notify(server, f"Auto-resume couldn't start this server: {e}", title="Auto-Resume Failed")
+
+    # ------------------------------------------------ missing-file repair --
+    def _repair_game_files(self, server: ServerConfig, why: str, then_start: bool, stop_first: bool = False) -> bool:
+        """Has Steam check the server's game files and re-download anything
+        missing or damaged (SteamCMD validate). Never touches the world,
+        settings or mods. Starts the server afterwards if then_start."""
+        from update_runner import UpdateWorker
+        if self._is_update_busy(server) or server.id in self._automation_locked:
+            return False
+        self._files_repaired.add(server.id)
+        self._automation_locked.add(server.id)
+        self._notify(server, f"Checking the server's game files with Steam ({why}) -- anything missing or damaged "
+                             f"is downloaded again. Your world, settings and mods aren't touched.", title="Repairing Files")
+        worker = UpdateWorker(server.steamcmd_dir, server.install_dir, stop_server=server if stop_first else None)
+        self._update_apply_workers[server.id] = worker
+
+        def finished(res, srv=server):
+            self._update_apply_workers.pop(srv.id, None)
+            self._automation_locked.discard(srv.id)
+            self._expected_stop.discard(srv.id)
+            if not res.success:
+                self._notify(srv, "Couldn't repair the game files: " + (res.output or "SteamCMD failed").strip()[-300:],
+                             title="Repair Failed")
+                return
+            if not then_start:
+                self._notify(srv, "Game files checked and repaired.", title="Files Repaired")
+                return
+            check = preflight.run_preflight(srv)
+            if not check.ok:
+                self._notify(srv, "Repaired the game files, but the server still can't start:\n" + "\n".join(check.problems),
+                             title="Repair Done -- Still Not Starting")
+                return
+
+            def started(_r, sid=srv.id):
+                self._known_running[sid] = True
+                self._notify(srv, "Game files checked and repaired, and the server was started again.",
+                             title="Files Repaired")
+            self._run_op(lambda: process_manager.launch(srv), on_done=started,
+                         on_error=lambda e: self._notify(srv, f"Repaired the files, but starting failed: {e}",
+                                                         title="Start Failed"))
+        worker.finished_update.connect(finished)
+        self._retire_worker(worker)
+        worker.start()
+        return True
+
+    def _offer_file_fixes(self, server: ServerConfig, result, action: str) -> bool:
+        """Manual start/restart: offers the fix for missing game files or a
+        missing world save. True if it handled the situation."""
+        if getattr(result, "world_missing", False):
+            import backup_manager
+            backups = backup_manager.list_backups(server.backup_destination)
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("World save missing")
+            box.setText(f"The world save for \"{server.name}\" is missing. Starting now would create a brand-new, "
+                        f"empty world.\n\nThe latest backup is from {backups[0].when:%b %d, %I:%M %p}.")
+            restore = box.addButton("Restore Latest Backup", QMessageBox.AcceptRole)
+            fresh = box.addButton("Start a New World", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is restore:
+                self._handle_restore(server, backups[0])
+                self._notify(server, "Restoring the latest backup. Start the server once it's done.", title="Restoring")
+            elif box.clickedButton() is fresh:
+                server._allow_new_world = True
+                try:
+                    (self._handle_start if action == "start" else self._handle_restart)(server)
+                finally:
+                    server._allow_new_world = False
+            return True
+        if getattr(result, "files_missing", False):
+            answer = QMessageBox.question(
+                self, "Game files missing",
+                f"Some of \"{server.name}\"'s game files are missing or damaged.\n\nHave Steam check them and download "
+                f"what's missing, then start the server? Your world, settings and mods aren't touched.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if answer == QMessageBox.Yes:
+                self._files_repaired.discard(server.id)
+                if not self._repair_game_files(server, why="requested", then_start=True):
+                    QMessageBox.information(self, "Busy", "An update or another job is running for this server -- try again in a minute.")
+            return True
+        return False
 
     def _offer_reinstall_if_files_missing(self, server: ServerConfig) -> bool:
         """If a server's files are gone, offers to reinstall via the setup

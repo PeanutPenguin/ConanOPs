@@ -249,6 +249,8 @@ class AppConfig:
     discord_bot_token: str = ""
     discord_bot_channel_id: str = ""
     discord_bot_admin_ids: str = ""   # Discord user IDs allowed to !restart, comma-separated
+    # Server folders found on this PC that the person chose not to manage.
+    ignored_server_dirs: List[str] = field(default_factory=list)
 
     # ---------------------------------------------------------------- io --
     @staticmethod
@@ -358,6 +360,7 @@ class AppConfig:
             cfg.discord_bot_token = ""
         cfg.discord_bot_channel_id = str(raw.get("discord_bot_channel_id", "") or "")
         cfg.discord_bot_admin_ids = str(raw.get("discord_bot_admin_ids", "") or "")
+        cfg.ignored_server_dirs = [str(x) for x in raw.get("ignored_server_dirs", []) if x]
         if "alert_discord_url" in raw or "alert_ntfy_url" in raw:
             for attr in ("alert_discord_url", "alert_ntfy_url"):
                 try:
@@ -414,6 +417,7 @@ class AppConfig:
             "discord_bot_token": secrets_store.protect(self.discord_bot_token),
             "discord_bot_channel_id": self.discord_bot_channel_id,
             "discord_bot_admin_ids": self.discord_bot_admin_ids,
+            "ignored_server_dirs": self.ignored_server_dirs,
         }
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

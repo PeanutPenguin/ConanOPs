@@ -4,6 +4,7 @@ what it safely can and reports every repair so nothing is patched silently.
 """
 from __future__ import annotations
 
+import glob
 import os
 from dataclasses import dataclass, field
 from typing import List
@@ -24,6 +25,16 @@ class CheckResult:
     ok: bool
     problems: List[str] = field(default_factory=list)
     repairs: List[str] = field(default_factory=list)
+    files_missing: bool = False   # game files gone: a Steam file check can fix it
+    world_missing: bool = False   # world save gone but backups exist
+
+
+def _has_backups(server: ServerConfig) -> bool:
+    try:
+        import backup_manager
+        return bool(server.backup_destination and backup_manager.list_backups(server.backup_destination))
+    except Exception:  # noqa: BLE001 - a backup-folder problem must not block a start
+        return False
 
 
 def run_preflight(server: ServerConfig) -> CheckResult:
@@ -37,7 +48,20 @@ def run_preflight(server: ServerConfig) -> CheckResult:
         exe = process_manager.server_exe_path(server.install_dir)
         if not os.path.exists(exe):
             result.ok = False
+            result.files_missing = True
             result.problems.append(f"Server executable not found: {exe}")
+
+    # A missing world save makes the server quietly start a brand-new world.
+    # Only flagged when there's a backup to bring it back from; a one-time
+    # "start a new world" choice sets server._allow_new_world.
+    saved = os.path.join(server.install_dir, "ConanSandbox", "Saved")
+    if (os.path.isdir(server.install_dir) and not getattr(server, "_allow_new_world", False)
+            and not glob.glob(os.path.join(saved, "*.db")) and _has_backups(server)):
+        result.ok = False
+        result.world_missing = True
+        result.problems.append(
+            "The world save is missing, so the server would start a brand-new empty world. Restore the latest "
+            "backup (Server Settings → Backups), or start it from the app on the PC and choose \"Start a new world\".")
 
     # The log folder is created on first run, so a missing one is only noted.
     log_dir = os.path.join(server.install_dir, "ConanSandbox", "Saved", "Logs")
