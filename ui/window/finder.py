@@ -292,7 +292,7 @@ class FinderMixin:
                 dlg.blockSignals(True)
                 dlg.close()
                 dlg.deleteLater()
-            if skipped:
+            if skipped or getattr(self, "_closed", False):
                 return
             self._last_scan = result
             if result.found:

@@ -291,3 +291,23 @@ def test_scan_attaches_rivals_and_reports_managed_ones(tmp_path, monkeypatch):
     assert [f.install_dir for f in res.found] == [str(b)]
     assert sorted(r.name for r in res.found[0].rivals) == ["generic", "tb"]
     assert [r.name for r in res.managed_rivals["m1"]] == ["ta"]  # specific ones only, minus ignored
+
+
+def test_a_scan_finishing_after_close_opens_nothing(monkeypatch):
+    cfg = models.AppConfig()
+    win = _window(monkeypatch, cfg)
+    from ui.window import finder
+    offered = []
+    monkeypatch.setattr(win, "_offer_browse_or_new", lambda *a, **k: offered.append(1))
+    monkeypatch.setattr(finder, "run_scan", lambda *a, **k: finder.ScanResult())
+    win._closed = True
+    win._scan_for_servers(from_add_button=True)
+    from PySide6.QtWidgets import QApplication
+    import time
+    for _ in range(200):
+        QApplication.processEvents()
+        if win._find_worker is None:
+            break
+        time.sleep(0.01)
+    assert win._find_worker is None and offered == []
+    win.close()

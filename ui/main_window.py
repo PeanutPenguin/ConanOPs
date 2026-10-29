@@ -1150,6 +1150,7 @@ class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixi
             self.tray_icon.showMessage("ConanOps", "Still running in the background.", QSystemTrayIcon.Information, 3000)
             return
 
+        self._closed = True  # late background results (e.g. a server scan) must not open dialogs now
         # Backstop (e.g. tray Exit): cancel a running bisect and wait for it to
         # restore modlist.txt and the world snapshot.
         active_bisect = getattr(self.mods_page, "_active_bisect_dialog", None)
