@@ -246,20 +246,51 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
-def _processes() -> List[dict]:
-    """[{pid, name, cmdline, cwd, ppid, create_time}] for every process we can read."""
+def _wanted_name(name: str) -> bool:
+    low = (name or "").lower()
+    stem = os.path.splitext(low)[0].replace(" ", "").replace("-", "").replace("_", "")
+    return low in _SCRIPT_HOSTS or low == server_finder.EXE_NAME or "conan" in stem or any(
+        m in stem for m in _MANAGER_NAMES)
+
+
+def _fill_details(info: dict, proc) -> None:
     import psutil
-    out = []
-    for p in psutil.process_iter(["pid", "name", "cmdline", "ppid", "create_time"]):
+    for key, getter in (("cmdline", proc.cmdline), ("cwd", proc.cwd)):
         try:
-            info = dict(p.info)
-            try:
-                info["cwd"] = p.cwd()
-            except (psutil.Error, OSError):
-                info["cwd"] = ""
-            out.append(info)
+            info[key] = getter()
+        except (psutil.Error, OSError):
+            info[key] = [] if key == "cmdline" else ""
+
+
+def _processes() -> List[dict]:
+    """[{pid, name, cmdline, cwd, ppid, create_time}] for every process.
+    Uses its own Process objects rather than psutil.process_iter()'s shared
+    cache, so this scan can never hold a lock the GUI's process checks wait
+    on, and reads command lines only for processes that could matter."""
+    import psutil
+    out, by_pid = [], {}
+    for pid in psutil.pids():
+        try:
+            proc = psutil.Process(pid)
+            with proc.oneshot():
+                info = {"pid": pid, "name": proc.name(), "ppid": proc.ppid(), "create_time": proc.create_time(),
+                        "cmdline": [], "cwd": ""}
+            info["_proc"] = proc
         except (psutil.Error, OSError):
             continue
+        out.append(info)
+        by_pid[pid] = info
+    for info in out:
+        if _wanted_name(info["name"]):
+            _fill_details(info, info["_proc"])
+    # Whatever started a running server matters too, whatever it's called.
+    for info in out:
+        if (info["name"] or "").lower() == server_finder.EXE_NAME:
+            parent = by_pid.get(info["ppid"])
+            if parent and not parent["cmdline"]:
+                _fill_details(parent, parent["_proc"])
+    for info in out:
+        info.pop("_proc", None)
     return out
 
 

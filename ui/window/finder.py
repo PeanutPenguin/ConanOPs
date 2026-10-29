@@ -269,8 +269,8 @@ class FinderMixin:
         managed = {s.id: s.install_dir for s in self.config.servers if s.install_dir}
         ignored = [] if from_add_button else list(self.config.ignored_server_dirs)
         ignored_rivals = [] if from_add_button else list(self.config.ignored_rivals)
-        # Walking every drive is for when the person is waiting: "Add server" and a first run.
-        deep = from_add_button or not self.config.servers
+        # Walking every drive is for when the person asked and is waiting ("Add server").
+        deep = from_add_button
         worker = _FindWorker(managed, ignored, ignored_rivals, deep, parent=self)
         self._find_worker = worker
         waiting = None

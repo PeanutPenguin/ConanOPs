@@ -136,13 +136,24 @@ class RunningScan:
 def scan_running() -> RunningScan:
     import psutil
     out = RunningScan()
-    for p in psutil.process_iter(["name", "exe", "cmdline"]):
+    # Own Process objects, not process_iter()'s shared cache (see takeover._processes).
+    for pid in psutil.pids():
         try:
-            if (p.info.get("name") or "").lower() != EXE_NAME:
+            p = psutil.Process(pid)
+            if (p.name() or "").lower() != EXE_NAME:
                 continue
-            cmdline = p.info.get("cmdline") or []
-            install = _install_from_exe(p.info.get("exe") or "") or (
-                _install_from_exe(cmdline[0]) if cmdline else None)
+        except (psutil.Error, OSError):
+            continue  # gone already, or not ours to read: not a server we can see
+        try:
+            try:
+                exe = p.exe()
+            except (psutil.Error, OSError):
+                exe = ""
+            try:
+                cmdline = p.cmdline()
+            except (psutil.Error, OSError):
+                cmdline = []
+            install = _install_from_exe(exe) or (_install_from_exe(cmdline[0]) if cmdline else None)
             if install:
                 out.by_install[_norm(install)] = cmdline
             else:
