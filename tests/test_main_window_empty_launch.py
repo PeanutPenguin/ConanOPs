@@ -75,9 +75,9 @@ def test_dashboard_empty_state_add_button_creates_a_server(monkeypatch):
     monkeypatch.setattr(win, "_open_setup_wizard", lambda server: None)  # don't block on a real modal wizard
     try:
         assert cfg.servers == []
-        import server_finder
         from PySide6.QtWidgets import QApplication
-        monkeypatch.setattr(server_finder, "find_unmanaged", lambda *a, **k: [])  # nothing already on this PC
+        from ui.window import finder
+        monkeypatch.setattr(finder, "run_scan", lambda *a, **k: finder.ScanResult())  # nothing already on this PC
         offered = []
         # Nothing found: it asks "set up new, or find my existing one?"; pick "new".
         monkeypatch.setattr(win, "_offer_browse_or_new",
