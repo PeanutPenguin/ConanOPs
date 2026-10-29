@@ -6,8 +6,9 @@ scheduled backups, update checking, mod management, access control, RCON
 console, and alerts — with a first-run wizard that automates as much of
 the setup as is actually automatable.
 
-This document is the complete reference. `README.md` in the project root
-is the short version for getting started quickly.
+This document is the technical reference for people working on ConanOps.
+People using ConanOps should read [USER_GUIDE.md](USER_GUIDE.md) instead;
+some descriptions of the interface below date from earlier versions.
 
 ---
 

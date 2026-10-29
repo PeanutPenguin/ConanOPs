@@ -1,17 +1,19 @@
-ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the usual fiddling. Download **ConanOps-Setup** below and run it; if you already have ConanOps, it updates itself.
+ConanOps runs Conan Exiles dedicated servers on a Windows PC and handles their routine maintenance. To install it, download **ConanOps-Setup** below and run it; existing copies of ConanOps update themselves.
 
 ### New in this version
 
-- **Takes over servers already on your PC, completely.** ConanOps now finds servers in more places: running ones, every Steam and SteamCMD library (including renamed folders), folders your old scripts and scheduled tasks point at, and, when you click "Add server", folders deep inside every drive. Can't find yours? **Browse** to its folder.
-- **Switches off the old launchers.** Restart-loop .bat files, scheduled tasks, startup items, Windows services (like NSSM), monitor scripts and other server managers that also start or update the server are listed, and ConanOps switches them off so only it is in charge. Nothing is deleted: removing the server from ConanOps can turn them back on. If a service was running the server, ConanOps restarts it once under its own control.
-- **Keeps everything as it was.** Launch options (like -nosteam), the bind address, mods loaded from another Steam folder and non-Workshop mod files are all kept. RCON is turned on (ConanOps needs it to save the world before restarts) and a backup is made before anything changes.
-- **Safer removal.** Removing a server that was already on your PC no longer deletes its folder unless you tick the box, and never deletes a SteamCMD folder ConanOps didn't install. "Delete Everything" leaves those servers alone too.
-- **Fixes:** servers taken over by 1.0.10 got no backup folder and never backed up; they do now. Server name and password are read from the Engine.ini section Conan actually uses.
+- **Taking over existing servers.** ConanOps now finds servers in more locations: running servers, every Steam and SteamCMD library (including renamed folders), folders named by existing scripts and scheduled tasks, and, after **Add server** is selected, folders further down on every drive. A server that is not found can be selected with **Browse**.
+- **Other launchers are switched off.** Restart-loop batch files, scheduled tasks, startup items, Windows services (such as NSSM), monitoring scripts and other server managers that start or update the same server are listed and then switched off, so that ConanOps alone manages the server. Nothing is deleted, and removing the server from ConanOps can turn these launchers back on. If a Windows service was running the server, the server restarts once under ConanOps.
+- **Existing configuration is kept.** Launch options (for example `-nosteam`), the network address, mods stored in another Steam folder and mod files that do not come from the Steam Workshop are all preserved. RCON is turned on, since ConanOps uses it to save the world before restarts, and a backup is made before any change.
+- **Safer removal.** Removing a server that was on the PC before ConanOps no longer deletes its folder unless this is selected, and a SteamCMD folder that ConanOps did not install is never deleted. **Delete Everything** also leaves such servers in place.
+- **Corrections.** Servers taken over in version 1.0.10 were not given a backup folder and were therefore never backed up; this is fixed. The server name and password are now read from the section of Engine.ini that Conan Exiles uses.
+
+The [User Guide](https://github.com/PeanutPenguin/ConanOPs/blob/main/USER_GUIDE.md) describes every feature in detail.
 
 ### Requirements
 
-Windows 10 or 11 (64-bit), about 50 GB of free space, around 8 GB of RAM for a small group, and an internet connection.
+Windows 10 or 11 (64-bit), about 50 GB of free disk space, around 8 GB of RAM for a small group of players, and an internet connection.
 
-ConanOps isn't code-signed yet, so Windows may say "Windows protected your PC" – click **More info → Run anyway**.
+ConanOps is not yet code-signed, so Windows may display "Windows protected your PC". Select **More info**, then **Run anyway**.
 
-ConanOps isn't affiliated with Funcom or Valve. Conan Exiles is a trademark of Funcom.
+ConanOps is not affiliated with Funcom or Valve. Conan Exiles is a trademark of Funcom.
