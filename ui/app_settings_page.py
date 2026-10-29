@@ -1740,7 +1740,8 @@ class AppSettingsPage(QWidget):
             self, "Delete Everything?",
             "This stops and deletes every server, its files and backups (your world saves), "
             "SteamCMD, firewall rules, router port forwards and ConanOps itself, and undoes the "
-            "Windows changes ConanOps made. There is no undo.\n\n"
+            "Windows changes ConanOps made. Servers that were already on this PC before ConanOps "
+            "took them over are left where they are. There is no undo.\n\n"
             "Type DELETE to confirm:",
         )
         if ok and text.strip() == "DELETE" and self.on_delete_everything:

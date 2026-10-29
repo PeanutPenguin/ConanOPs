@@ -35,6 +35,13 @@ def build_launch_args(server: ServerConfig) -> list:
     ]
     if server.bind_ip:
         args.append(f"-MULTIHOME={server.bind_ip}")
+    # Kept from the launcher this server used before ConanOps: a map/URL
+    # argument must come straight after the exe, switches go last.
+    own = ("-port=", "-queryport=", "-maxplayers=", "-multihome=")
+    extra = [str(a) for a in (getattr(server, "extra_launch_args", None) or []) if str(a).strip()]
+    extra = [a for a in extra if a.lower() != "-log" and not a.lower().startswith(own)]
+    args[1:1] = [a for a in extra if not a.startswith("-")]
+    args += [a for a in extra if a.startswith("-")]
     return args
 
 

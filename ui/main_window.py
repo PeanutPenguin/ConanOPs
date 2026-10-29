@@ -401,6 +401,7 @@ class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixi
         self.web_control.api = WebApi(self, self._web_bridge)
         QTimer.singleShot(2_000, self._sync_web_tunnel)
         QTimer.singleShot(3_000, self._sync_discord_bot)
+        self._fix_adopted_servers()
         if not self.background:
             # Servers already on this PC that ConanOps doesn't manage yet.
             QTimer.singleShot(4_000, self._scan_for_servers)
@@ -652,13 +653,20 @@ class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixi
             return
 
         is_running = process_manager.is_running(server.install_dir) if server.install_dir else False
+        import cleanup
+        import server_finder
+        mine = server_finder.path_key(server.install_dir)
+        restorable = [r for r in self.config.takeover_records if mine and mine in (r.get("install_dirs") or [])]
         dialog = RemoveServerDialog(
             server.name, server.install_dir, server.backup_destination, is_running, parent=self,
+            adopted=cleanup.is_adopted(server), restorable=len(restorable),
         )
         if dialog.exec() != QDialog.Accepted:
             return
         delete_files = dialog.delete_files
         delete_backups = dialog.delete_backups
+        if restorable and dialog.restore_launchers:
+            self._restore_launchers(restorable)
 
         # The worker stops the server (saving the world) before deleting anything.
         if is_running:

@@ -347,4 +347,4 @@ class UpdatesMixin:
     def _handle_mods_changed(self, server: ServerConfig) -> None:
         self.config.save()
         if server.install_dir and server.steamcmd_dir:
-            mod_manager.write_modlist(server.install_dir, server.steamcmd_dir, server.mods)
+            mod_manager.write_modlist(server.install_dir, server.steamcmd_dir, server.mods, local=server.local_mods)

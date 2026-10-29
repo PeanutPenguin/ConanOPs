@@ -19,6 +19,8 @@ class RemoveServerDialog(QDialog):
         backup_destination: str,
         is_running: bool,
         parent=None,
+        adopted: bool = False,
+        restorable: int = 0,
     ):
         super().__init__(parent)
         self.setWindowTitle("Remove Server")
@@ -45,8 +47,14 @@ class RemoveServerDialog(QDialog):
                 " It's running -- it will be saved and stopped first."
                 if is_running else ""
             )
-            self.delete_files_cb = QCheckBox("Delete the server's files (the server, its SteamCMD and its folder)")
-            self.delete_files_cb.setChecked(True)
+            if adopted:
+                # It was on this PC before ConanOps: keep it unless asked, and never
+                # delete a SteamCMD ConanOps didn't install.
+                self.delete_files_cb = QCheckBox("Also delete the server's folder (it was on this PC before ConanOps)")
+                self.delete_files_cb.setChecked(False)
+            else:
+                self.delete_files_cb = QCheckBox("Delete the server's files (the server, its SteamCMD and its folder)")
+                self.delete_files_cb.setChecked(True)
             layout.addWidget(self.delete_files_cb)
             files_detail = QLabel(f"{install_dir}{running_note}")
             files_detail.setObjectName("Muted")
@@ -69,6 +77,14 @@ class RemoveServerDialog(QDialog):
             backups_detail.setContentsMargins(24, 0, 0, 8)
             layout.addWidget(backups_detail)
 
+        self.restore_cb: Optional[QCheckBox] = None
+        if restorable:
+            self.restore_cb = QCheckBox(
+                f"Turn back on the {restorable} old launcher{'s' if restorable != 1 else ''} ConanOps switched off "
+                f"when it took this server over")
+            self.restore_cb.setChecked(adopted)
+            layout.addWidget(self.restore_cb)
+
         steamcmd_note = QLabel(
             "Anything another server still uses (like a shared SteamCMD folder) is kept."
         )
@@ -89,6 +105,10 @@ class RemoveServerDialog(QDialog):
     @property
     def delete_files(self) -> bool:
         return self.delete_files_cb is not None and self.delete_files_cb.isChecked()
+
+    @property
+    def restore_launchers(self) -> bool:
+        return self.restore_cb is not None and self.restore_cb.isChecked()
 
     @property
     def delete_backups(self) -> bool:

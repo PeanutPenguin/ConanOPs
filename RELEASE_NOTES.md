@@ -2,9 +2,12 @@ ConanOps runs Conan Exiles dedicated servers on your own Windows PC without the 
 
 ### New in this version
 
-- **Finds servers already on your PC.** When ConanOps starts, and when you click "Add server", it looks for Conan Exiles servers that are already installed (running ones, Steam libraries and common folders) and offers to manage them. Nothing is reinstalled or reset: the world, settings, ports, passwords, RCON and mods are kept as they are.
-- **Repairs missing or damaged game files.** If the server's game files go missing, or the server keeps crashing after two restarts, ConanOps has Steam check the files and re-download anything missing or damaged, then starts it again. Your world, settings and mods aren't touched.
-- **Guards the world save.** If the world save is missing but you have backups, ConanOps won't quietly start a brand-new empty world. It alerts you, and Start offers "Restore Latest Backup" or "Start a New World".
+- **Takes over servers already on your PC, completely.** ConanOps now finds servers in more places: running ones, every Steam and SteamCMD library (including renamed folders), folders your old scripts and scheduled tasks point at, and, when you click "Add server", folders deep inside every drive. Can't find yours? **Browse** to its folder.
+- **Switches off the old launchers.** Restart-loop .bat files, scheduled tasks, startup items, Windows services (like NSSM), monitor scripts and other server managers that also start or update the server are listed, and ConanOps switches them off so only it is in charge. Nothing is deleted: removing the server from ConanOps can turn them back on. If a service was running the server, ConanOps restarts it once under its own control.
+- **Keeps everything as it was.** Launch options (like -nosteam), the bind address, mods loaded from another Steam folder and non-Workshop mod files are all kept. RCON is turned on (ConanOps needs it to save the world before restarts) and a backup is made before anything changes.
+- **Safer removal.** Removing a server that was already on your PC no longer deletes its folder unless you tick the box, and never deletes a SteamCMD folder ConanOps didn't install. "Delete Everything" leaves those servers alone too.
+- **Fixes:** servers taken over by 1.0.10 got no backup folder and never backed up; they do now. Server name and password are read from the Engine.ini section Conan actually uses.
+
 ### Requirements
 
 Windows 10 or 11 (64-bit), about 50 GB of free space, around 8 GB of RAM for a small group, and an internet connection.

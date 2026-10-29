@@ -91,6 +91,15 @@ class ServerConfig:
 
     # --- Mods (ordered; each entry {"id": "<workshop id>", "enabled": bool, "name": str}) ---
     mods: list = field(default_factory=list)
+    # modlist.txt lines that aren't Workshop mods (kept from a server that was
+    # already on the PC): {"line": raw line, "after": workshop id it followed, or ""}.
+    local_mods: list = field(default_factory=list)
+    # Launch arguments an earlier launcher used that ConanOps doesn't set itself.
+    extra_launch_args: list = field(default_factory=list)
+    # True: the server was already on this PC and ConanOps took it over, so its
+    # folder (and its SteamCMD) aren't ConanOps' to delete. None: saved by an
+    # older version -- cleanup.is_adopted() decides from where it lives.
+    adopted: Optional[bool] = None
 
     # --- Scheduler runtime state (persisted so it survives app restarts) ---
     last_backup_at: str = ""       # ISO timestamp of the last scheduled/auto backup
@@ -251,6 +260,10 @@ class AppConfig:
     discord_bot_admin_ids: str = ""   # Discord user IDs allowed to !restart, comma-separated
     # Server folders found on this PC that the person chose not to manage.
     ignored_server_dirs: List[str] = field(default_factory=list)
+    # Other launchers (takeover.Rival.key) the person chose to leave running.
+    ignored_rivals: List[str] = field(default_factory=list)
+    # What ConanOps switched off when taking servers over (takeover.restore() undoes these).
+    takeover_records: List[dict] = field(default_factory=list)
 
     # ---------------------------------------------------------------- io --
     @staticmethod
@@ -361,6 +374,8 @@ class AppConfig:
         cfg.discord_bot_channel_id = str(raw.get("discord_bot_channel_id", "") or "")
         cfg.discord_bot_admin_ids = str(raw.get("discord_bot_admin_ids", "") or "")
         cfg.ignored_server_dirs = [str(x) for x in raw.get("ignored_server_dirs", []) if x]
+        cfg.ignored_rivals = [str(x) for x in raw.get("ignored_rivals", []) if x]
+        cfg.takeover_records = [dict(x) for x in raw.get("takeover_records", []) if isinstance(x, dict)]
         if "alert_discord_url" in raw or "alert_ntfy_url" in raw:
             for attr in ("alert_discord_url", "alert_ntfy_url"):
                 try:
@@ -418,6 +433,8 @@ class AppConfig:
             "discord_bot_channel_id": self.discord_bot_channel_id,
             "discord_bot_admin_ids": self.discord_bot_admin_ids,
             "ignored_server_dirs": self.ignored_server_dirs,
+            "ignored_rivals": self.ignored_rivals,
+            "takeover_records": self.takeover_records,
         }
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -441,6 +458,7 @@ class AppConfig:
             n += 1
             candidate = f"{name} {n}"
         s = ServerConfig(name=candidate)
+        s.adopted = False
         s.ensure_gameplay_defaults()
         # RCON on by default: without it ConanOps can't ask the server to save
         # before stopping, so every stop would be a hard kill.

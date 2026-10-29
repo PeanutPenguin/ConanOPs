@@ -90,6 +90,17 @@ sidebar for a new one) to run the setup wizard, which:
    support UPnP (or has it disabled, which is common), the wizard shows
    the exact manual forwarding instructions and your public IP instead.
 
+**Already have a server?** ConanOps looks for Conan servers already on
+the PC (running ones, Steam/SteamCMD libraries, folders that old scripts,
+scheduled tasks or services point at, and on "+ Add server" a bounded
+walk of every drive), or you can **Browse** to one. Taking it over keeps
+the world, settings, ports, passwords, mods and launch options exactly as
+they are, makes a backup first, and switches off whatever else starts,
+restarts or updates it (restart-loop .bat files, scheduled tasks, startup
+items, services, monitor scripts) so ConanOps is the only manager. Nothing
+is deleted; removing the server from ConanOps can turn those back on.
+See `server_finder.py` and `takeover.py`.
+
 Config is stored at `~/ConanOps/config.json`. Per-server session history
 is at `~/ConanOps/sessions/<server-id>.json`.
 
@@ -307,6 +318,8 @@ conanops/
   scheduler.py                      background backup/restart timer
   rcon.py                             Source RCON protocol client
   mod_manager.py                       mod list + bisect helper
+  server_finder.py                     finds Conan servers already on the PC, reads their settings
+  takeover.py                          finds/switches off other launchers of a server (and undoes it)
   banlist_manager.py                    whitelist/ban bookkeeping + RCON enforcement
   webhooks.py                             Discord/ntfy alert sending
   applog.py                                rotating file logger (~/ConanOps/conanops.log)

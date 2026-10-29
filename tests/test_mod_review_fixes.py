@@ -413,7 +413,7 @@ def _run_real_worker(monkeypatch, ids, is_broken, max_rounds=None):
     monkeypatch.setattr(auto_bisect_runner.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(auto_bisect_runner.time, "sleep", clock.sleep)
     written = []
-    monkeypatch.setattr(mod_manager, "write_modlist", lambda i, s, m: written.append([dict(x) for x in m]))
+    monkeypatch.setattr(mod_manager, "write_modlist", lambda i, s, m, **k: written.append([dict(x) for x in m]))
     running = {"v": False}
     monkeypatch.setattr(process_manager, "is_running", lambda d: running["v"])
     monkeypatch.setattr(process_manager, "launch", lambda srv: running.__setitem__("v", True))

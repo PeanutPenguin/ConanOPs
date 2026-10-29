@@ -26,7 +26,7 @@ def modlist_writes(monkeypatch):
     install paths like /tmp/fake-install -- without this, running the
     suite would leave real folders behind there."""
     calls = []
-    monkeypatch.setattr(mod_manager, "write_modlist", lambda install_dir, steamcmd_dir, mods: calls.append((install_dir, [dict(m) for m in mods])))
+    monkeypatch.setattr(mod_manager, "write_modlist", lambda install_dir, steamcmd_dir, mods, **k: calls.append((install_dir, [dict(m) for m in mods])))
     return calls
 
 
@@ -78,6 +78,10 @@ def test_dashboard_empty_state_add_button_creates_a_server(monkeypatch):
         import server_finder
         from PySide6.QtWidgets import QApplication
         monkeypatch.setattr(server_finder, "find_unmanaged", lambda *a, **k: [])  # nothing already on this PC
+        offered = []
+        # Nothing found: it asks "set up new, or find my existing one?"; pick "new".
+        monkeypatch.setattr(win, "_offer_browse_or_new",
+                            lambda unreadable=0: (offered.append(True), win._add_new_server()))
         win.dashboard_page.empty_add_btn.click()
         for _ in range(200):  # the scan runs in the background first
             QApplication.processEvents()
@@ -85,7 +89,7 @@ def test_dashboard_empty_state_add_button_creates_a_server(monkeypatch):
                 break
             import time
             time.sleep(0.01)
-        assert len(cfg.servers) == 1
+        assert len(cfg.servers) == 1 and offered
     finally:
         win.close()
 
@@ -2028,7 +2032,7 @@ def test_post_update_mod_refresh_rewrites_modlist_before_relaunching(monkeypatch
     try:
         order = []
         modlist_writes.clear()
-        monkeypatch.setattr(mod_manager, "write_modlist", lambda i, s, m: order.append("modlist"))
+        monkeypatch.setattr(mod_manager, "write_modlist", lambda i, s, m, **k: order.append("modlist"))
         monkeypatch.setattr(process_manager, "launch", lambda srv: order.append("launch"))
 
         win._on_post_update_mod_refresh_finished(server, steamcmd.UpdateResult(True, "ok"), was_running=True)

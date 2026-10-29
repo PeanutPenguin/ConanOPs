@@ -48,7 +48,8 @@ class ServerRemovalWorker(QThread):
         try:
             if (self.delete_files or self.delete_backups) and not _stop_and_wait(s):
                 problems.append(f"{s.name} didn't stop in time, so some of its files may still be in use.")
-            plan = cleanup.server_paths(s, self.others)
+            # Ticking "delete files" is the person's explicit choice, adopted or not.
+            plan = cleanup.server_paths(s, self.others, include_adopted_files=True)
             program_dirs = [s.install_dir] if s.install_dir else []
             if not network_setup.remove_firewall_rules([s.id], legacy_names=[s.name], program_dirs=program_dirs):
                 problems.append("Its Windows Firewall rules weren't removed (the permission prompt was declined "

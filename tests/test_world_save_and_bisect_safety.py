@@ -93,7 +93,7 @@ def _worker_with_mocks(monkeypatch, ids, was_running=False, **kwargs):
     monkeypatch.setattr(process_manager, "is_running", proc.is_running)
     monkeypatch.setattr(process_manager, "launch", proc.launch)
     monkeypatch.setattr(process_manager, "graceful_stop", proc.graceful_stop)
-    monkeypatch.setattr(mod_manager, "write_modlist", lambda *a: None)
+    monkeypatch.setattr(mod_manager, "write_modlist", lambda *a, **k: None)
     monkeypatch.setattr(preflight, "run_preflight", lambda s: preflight.CheckResult(ok=True, problems=[], repairs=[]))
     monkeypatch.setattr(AutoBisectWorker, "_mod_file_exists", lambda self, mod_id: True)
     monkeypatch.setattr(AutoBisectWorker, "_snapshot_saved_dir", lambda self: None)

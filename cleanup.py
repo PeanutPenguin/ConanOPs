@@ -168,19 +168,34 @@ def sessions_file(server_id: str) -> str:
     return os.path.join(os.path.expanduser("~"), "ConanOps", "sessions", f"{server_id}.json")
 
 
-def server_paths(server, other_servers: Iterable) -> dict:
+def is_adopted(server) -> bool:
+    """True if the server was on this PC before ConanOps took it over. For
+    configs saved before ConanOps tracked that, a server outside ConanOps'
+    own folders counts as adopted, so nothing it didn't create is deleted."""
+    flag = getattr(server, "adopted", None)
+    if flag is not None:
+        return bool(flag)
+    return bool(server.install_dir) and not is_owned_location(server.install_dir)
+
+
+def server_paths(server, other_servers: Iterable, include_adopted_files: bool = False) -> dict:
     """{"files": [...], "backups": (folder, owned) or None, "always": [...]},
-    skipping paths other servers use. "always" goes even when files are kept."""
+    skipping paths other servers use. "always" goes even when files are kept.
+    An adopted server's folder is only listed with include_adopted_files,
+    and its SteamCMD only if ConanOps installed that SteamCMD itself."""
     others = list(other_servers)
+    adopted = is_adopted(server)
     other_paths = [p for o in others for p in (o.install_dir, o.steamcmd_dir, o.backup_destination) if p]
 
     def used_by_others(path: str) -> bool:
         return any(_within(op, path) or _within(path, op) for op in other_paths)
 
     files = []
-    if server.install_dir and not used_by_others(server.install_dir):
+    if server.install_dir and not used_by_others(server.install_dir) and (include_adopted_files or not adopted):
         files.append(server.install_dir)
-    if server.steamcmd_dir and not used_by_others(server.steamcmd_dir):
+    if server.steamcmd_dir and not used_by_others(server.steamcmd_dir) and (
+            not adopted or is_owned_location(server.steamcmd_dir)) and not (
+            adopted and server.install_dir and _within(server.install_dir, server.steamcmd_dir)):
         files.append(server.steamcmd_dir)
     # The per-server folder we created around them (<data>\<id>\).
     for p in (server.install_dir, server.steamcmd_dir):

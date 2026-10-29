@@ -538,7 +538,7 @@ class WebApi:
         for m in mods:
             it = known.get(m["id"])
             if steamcmd_dir:
-                downloaded = bool(mod_manager.find_workshop_pak(steamcmd_dir, m["id"]))
+                downloaded = mod_manager.has_pak(steamcmd_dir, m)
             else:
                 downloaded = None
             needs = [it.child_titles.get(c) or (known[c].title if c in known else c)

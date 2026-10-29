@@ -92,7 +92,7 @@ def _install_process(monkeypatch, running: bool = False) -> _FakeServerProcess:
 
 
 def _install_common_mocks(monkeypatch, worker=None):
-    monkeypatch.setattr(mod_manager, "write_modlist", lambda install_dir, steamcmd_dir, mods: None)
+    monkeypatch.setattr(mod_manager, "write_modlist", lambda install_dir, steamcmd_dir, mods, **k: None)
     _install_process(monkeypatch, running=bool(worker and worker.was_running))
     monkeypatch.setattr(preflight, "run_preflight", lambda s: preflight.CheckResult(ok=True, problems=[], repairs=[]))
     # No real .pak files exist on disk in this test environment --
@@ -560,7 +560,7 @@ def test_snapshot_taken_and_restored_around_a_real_run(monkeypatch, tmp_path):
 
     server = models.ServerConfig(id="s1", name="Chudville", install_dir=str(install_dir), steamcmd_dir=str(tmp_path / "sc"), bind_ip="127.0.0.1", query_port=27015)
     worker = AutoBisectWorker(server, _mods(["a"]), was_running=False)
-    monkeypatch.setattr(mod_manager, "write_modlist", lambda install_dir, steamcmd_dir, mods: None)
+    monkeypatch.setattr(mod_manager, "write_modlist", lambda install_dir, steamcmd_dir, mods, **k: None)
     proc = _install_process(monkeypatch, running=False)
     monkeypatch.setattr(preflight, "run_preflight", lambda s: preflight.CheckResult(ok=True, problems=[], repairs=[]))
     monkeypatch.setattr(AutoBisectWorker, "_mod_file_exists", lambda self, mod_id: True)

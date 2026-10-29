@@ -33,6 +33,12 @@ def workshop_pak_path(steamcmd_dir: str, workshop_id: str) -> str:
     )
 
 
+def has_pak(steamcmd_dir: str, mod: dict) -> bool:
+    """Whether the mod has a .pak to load (ConanOps' or the one from before)."""
+    return find_workshop_pak(steamcmd_dir, mod["id"]) is not None or bool(
+        mod.get("pak") and os.path.isfile(mod["pak"]))
+
+
 def find_workshop_pak(steamcmd_dir: str, workshop_id: str) -> Optional[str]:
     """Real path of a downloaded mod's .pak, or None if there isn't one yet."""
     content_dir = os.path.join(steamcmd_dir, "steamapps", "workshop", "content", str(WORKSHOP_APP_ID), str(workshop_id))
@@ -46,15 +52,31 @@ def find_workshop_pak(steamcmd_dir: str, workshop_id: str) -> Optional[str]:
     return sorted(paks)[0]
 
 
-def write_modlist(install_dir: str, steamcmd_dir: str, mods: List[dict]) -> None:
+def mod_pak(steamcmd_dir: str, mod: dict) -> str:
+    """The .pak to load for a Workshop mod: ConanOps' download, else the one
+    it pointed at before ConanOps took the server over, else the guess."""
+    real = find_workshop_pak(steamcmd_dir, mod["id"])
+    if real:
+        return real
+    earlier = mod.get("pak") or ""
+    if earlier and os.path.isfile(earlier):
+        return earlier
+    return workshop_pak_path(steamcmd_dir, mod["id"])
+
+
+def write_modlist(install_dir: str, steamcmd_dir: str, mods: List[dict], local: Optional[List[dict]] = None) -> None:
     """Writes modlist.txt with one .pak path per enabled mod, in order (real
-    path if downloaded, else the guessed one)."""
+    path if downloaded, else the guessed one). `local`: non-Workshop lines
+    kept from before ConanOps, each written back after the mod it followed."""
     path = modlist_path(install_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    lines = [
-        f"*{find_workshop_pak(steamcmd_dir, m['id']) or workshop_pak_path(steamcmd_dir, m['id'])}"
-        for m in mods if m.get("enabled", True)
-    ]
+    local = list(local or [])
+    placed = {m["id"] for m in mods}
+    lines = [x["line"] for x in local if not x.get("after") or x.get("after") not in placed]
+    for m in mods:
+        if m.get("enabled", True):
+            lines.append(f"*{mod_pak(steamcmd_dir, m)}")
+        lines += [x["line"] for x in local if x.get("after") == m["id"]]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + ("\n" if lines else ""))
 

@@ -346,7 +346,7 @@ class ModsPage(QWidget):
         else:
             self._set_status_note("", "")
         self._downloaded = {
-            m["id"]: (mod_manager.find_workshop_pak(self.server.steamcmd_dir, m["id"]) is not None)
+            m["id"]: mod_manager.has_pak(self.server.steamcmd_dir, m)
             for m in self.server.mods
         } if self.server.steamcmd_dir else {}
         self.list_widget.setUpdatesEnabled(False)

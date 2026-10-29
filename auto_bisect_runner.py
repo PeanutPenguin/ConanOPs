@@ -418,7 +418,8 @@ class AutoBisectWorker(QThread):
         return [dict(m, enabled=(m.get("enabled", True) and m["id"] not in culprit_set)) for m in self._original_mods]
 
     def _mod_file_exists(self, mod_id: str) -> bool:
-        return mod_manager.find_workshop_pak(self.server.steamcmd_dir, mod_id) is not None
+        mod = next((m for m in self._original_mods if m["id"] == mod_id), {"id": mod_id})
+        return mod_manager.has_pak(self.server.steamcmd_dir, mod)
 
     def _settle(self, outcome: BisectOutcome, round_cap_hit: bool = False) -> None:
         """The single exit path: stop the server, restore the world snapshot,
@@ -442,7 +443,8 @@ class AutoBisectWorker(QThread):
             )
             outcome.error = f"{outcome.error}\n\n{note}" if outcome.error else note
             outcome.mods = self._original_mods
-        mod_manager.write_modlist(self.server.install_dir, self.server.steamcmd_dir, outcome.mods)
+        mod_manager.write_modlist(self.server.install_dir, self.server.steamcmd_dir, outcome.mods,
+                                  local=getattr(self.server, "local_mods", None))
         self.mods = [dict(m) for m in outcome.mods]
         if self.was_running and restored:
             try:
@@ -482,7 +484,8 @@ class AutoBisectWorker(QThread):
             raise mod_manager.WorldSaveError(
                 "Couldn't reset the world save between tests (the previous server process may not have exited)"
             )
-        mod_manager.write_modlist(self.server.install_dir, self.server.steamcmd_dir, self.mods)
+        mod_manager.write_modlist(self.server.install_dir, self.server.steamcmd_dir, self.mods,
+                                  local=getattr(self.server, "local_mods", None))
 
         result = self._launch_and_wait(STARTUP_TIMEOUT_SECONDS)
         if result == "timeout" and not self._cancel_requested:
