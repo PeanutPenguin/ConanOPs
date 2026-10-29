@@ -287,7 +287,7 @@ def test_scan_attaches_rivals_and_reports_managed_ones(tmp_path, monkeypatch):
     monkeypatch.setattr(takeover, "scan", lambda known: rivals)
     monkeypatch.setattr(server_finder, "scan_running", lambda: server_finder.RunningScan())
     monkeypatch.setattr(server_finder, "candidate_dirs", lambda *a, **k: [str(a), str(b)])
-    res = finder.run_scan({"m1": str(a)}, [], [rivals[3].key], deep=False)
+    res = finder.run_scan_real({"m1": str(a)}, [], [rivals[3].key], deep=False)
     assert [f.install_dir for f in res.found] == [str(b)]
     assert sorted(r.name for r in res.found[0].rivals) == ["generic", "tb"]
     assert [r.name for r in res.managed_rivals["m1"]] == ["ta"]  # specific ones only, minus ignored

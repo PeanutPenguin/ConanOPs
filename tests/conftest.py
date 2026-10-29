@@ -75,6 +75,24 @@ def no_workshop_status_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_pc_scan(monkeypatch):
+    """MainWindow looks for servers and other launchers on the PC a few
+    seconds after it opens (and on "Add server"). Never let a test walk the
+    real drives, process list or scheduled tasks that way: on a CI runner
+    dozens of those overlapping scans starve the tests. Tests of the scan
+    itself call server_finder / takeover / finder.run_scan directly."""
+    try:
+        from ui.window import finder
+    except ImportError:  # PySide6 missing -- nothing to patch
+        yield
+        return
+    real = finder.run_scan
+    monkeypatch.setattr(finder, "run_scan", lambda *a, **k: finder.ScanResult())
+    finder.run_scan_real = real  # for tests that want the real thing on stubbed sources
+    yield
+
+
+@pytest.fixture(autouse=True)
 def server_ops_inline(monkeypatch):
     """Stops and restarts run on a worker thread in the real app (they
     wait for the world to save). Tests run them inline so assertions
