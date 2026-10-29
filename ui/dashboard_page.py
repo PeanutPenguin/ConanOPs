@@ -15,6 +15,10 @@ import process_manager
 from models import ServerConfig
 from ui.workers import keep_until_finished
 
+# Polls in flight, held here rather than only on the page: if a page is
+# destroyed mid-poll, Qt must not destroy a QThread that's still running.
+_POLLS_IN_FLIGHT: list = []
+
 
 class _DashboardPollWorker(QThread):
     """One dashboard poll (process scan, CPU/memory/uptime, A2S query) off the
@@ -425,6 +429,7 @@ class DashboardPage(QWidget):
             self.server.install_dir, self.server.bind_ip, self.server.query_port, cached_pid, cached_proc,
         )
         self._poll_worker.finished_poll.connect(self._on_poll_finished)
+        keep_until_finished(_POLLS_IN_FLIGHT, self._poll_worker)
         self._poll_worker.start()
 
     def _on_poll_finished(self, result: dict) -> None:

@@ -1151,6 +1151,15 @@ class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixi
             return
 
         self._closed = True  # late background results (e.g. a server scan) must not open dialogs now
+        try:
+            self.dashboard_page._poll_timer.stop()
+        except (AttributeError, RuntimeError):
+            pass
+        import server_finder
+        from ui.window import finder as _finder
+        server_finder.cancel_event.set()  # a drive scan stops at its next folder
+        for w in list(_finder.RUNNING_SCANS):
+            w.wait(3000)
         # Backstop (e.g. tray Exit): cancel a running bisect and wait for it to
         # restore modlist.txt and the world snapshot.
         active_bisect = getattr(self.mods_page, "_active_bisect_dialog", None)

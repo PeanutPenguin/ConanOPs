@@ -86,6 +86,8 @@ def no_real_pc_scan(monkeypatch):
     except ImportError:  # PySide6 missing -- nothing to patch
         yield
         return
+    import server_finder
+    server_finder.cancel_event.clear()  # an earlier test's window closing sets it
     real = finder.run_scan
     monkeypatch.setattr(finder, "run_scan", lambda *a, **k: finder.ScanResult())
     finder.run_scan_real = real  # for tests that want the real thing on stubbed sources

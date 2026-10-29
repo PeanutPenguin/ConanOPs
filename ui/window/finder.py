@@ -27,6 +27,9 @@ from models import MAX_SERVERS
 _log = applog.get_logger('ui.main_window')
 
 RESULT_NEVER = 2  # "Don't Ask Again"
+# Scans in flight, held at module level (not on the window) so a window
+# going away mid-scan never destroys a running QThread; closeEvent waits on these.
+RUNNING_SCANS: list = []
 RESULT_BROWSE = 3
 
 
@@ -271,7 +274,8 @@ class FinderMixin:
         ignored_rivals = [] if from_add_button else list(self.config.ignored_rivals)
         # Walking every drive is for when the person asked and is waiting ("Add server").
         deep = from_add_button
-        worker = _FindWorker(managed, ignored, ignored_rivals, deep, parent=self)
+        server_finder.cancel_event.clear()
+        worker = _FindWorker(managed, ignored, ignored_rivals, deep)
         self._find_worker = worker
         waiting = None
         if from_add_button and not getattr(self, "RUN_OPS_INLINE", False):
@@ -302,7 +306,8 @@ class FinderMixin:
             if result.managed_rivals:
                 self._offer_turn_off_managed(result.managed_rivals)
         worker.found.connect(done)
-        self._retire_worker(worker)
+        from ui.workers import keep_until_finished
+        keep_until_finished(RUNNING_SCANS, worker)
         worker.start()
 
     def _offer_browse_or_new(self, unreadable: int = 0) -> None:

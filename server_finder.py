@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import string
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
@@ -41,6 +42,9 @@ _BLOCKING_ARGS = ("usedir", "userdir", "saveddir", "savedir")
 DEEP_MAX_DEPTH = 6
 DEEP_MAX_DIRS = 80_000
 DEEP_MAX_SECONDS = 25.0
+# Set when ConanOps closes, so a scan in progress stops quickly.
+cancel_event = threading.Event()
+
 _SKIP_DIR_NAMES = {
     "windows", "$recycle.bin", "system volume information", "recovery", "perflogs", "$windows.~bt",
     "$windows.~ws", "$winreagent", "windowsapps", "winsxs", "appdata", "node_modules", ".git", ".svn",
@@ -275,7 +279,7 @@ def deep_walk(roots: Iterable[str], max_depth: int = DEEP_MAX_DEPTH, max_dirs: i
     queue = [(r, 0) for r in roots]
     seen = 0
     deadline = time.monotonic() + max_seconds
-    while queue and seen < max_dirs and time.monotonic() < deadline:
+    while queue and seen < max_dirs and time.monotonic() < deadline and not cancel_event.is_set():
         path, depth = queue.pop(0)
         seen += 1
         try:
@@ -520,6 +524,8 @@ def find_unmanaged(managed_dirs: List[str], ignored_dirs: List[str] = (), extra_
             running = RunningScan()
     seen, out = set(), []
     for d in list(running.by_install) + candidate_dirs(extra_roots, deep=deep, hints=hints):
+        if cancel_event.is_set():
+            break
         nd = _norm(d)
         if nd in seen or nd in skip:
             continue
