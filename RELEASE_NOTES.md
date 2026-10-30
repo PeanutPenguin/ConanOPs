@@ -11,6 +11,11 @@ This version reorganises ConanOps so that it is easier to use. No settings are r
 - **Shorter, plainer text.** Explanations are shorter, technical terms are replaced or explained, and errors such as a failed mod-status check are described in ordinary words.
 - **The web version** keeps its current layout in this release.
 
+### Also included (from 1.0.12 and 1.0.13, which were not released separately)
+
+- **Check for Problems** tests whether the server can be seen from the internet, reads the server's logs and crash reports to explain why it would not start or crashed, and offers a fix button for most problems. Crash alerts include the most likely cause.
+- **Firewall.** ConanOps adds a firewall rule for the server program itself, so Windows should no longer ask whether to allow it, and removes leftover rules when uninstalled or when everything is deleted.
+
 The [User Guide](https://github.com/PeanutPenguin/ConanOPs/blob/main/USER_GUIDE.md) describes every feature in detail.
 
 ### Requirements
