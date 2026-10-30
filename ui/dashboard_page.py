@@ -108,20 +108,15 @@ def _repolish(widget) -> None:
 
 
 class AutomationTile(QFrame):
-    """One Automation tile: badge, name, On/Off pill, and a Change button."""
+    """One Automation tile: name, On/Off pill, and a Change button."""
 
-    def __init__(self, key: str, name: str, mark: str, tint: str, parent=None):
+    def __init__(self, key: str, name: str, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")
         self.key = key
         row = QHBoxLayout(self)
-        row.setContentsMargins(14, 12, 12, 12)
+        row.setContentsMargins(16, 12, 12, 12)
         row.setSpacing(12)
-        badge = QLabel(mark)
-        badge.setFixedSize(36, 36)
-        badge.setAlignment(Qt.AlignCenter)
-        badge.setStyleSheet(f"background-color: #2f2f2f; border-radius: 8px; color: {tint}; font-weight: 700; font-size: 12px;")
-        row.addWidget(badge)
         col = QVBoxLayout()
         col.setSpacing(4)
         self.name_label = QLabel(name)
@@ -144,16 +139,32 @@ class AutomationTile(QFrame):
         _repolish(self.state_label)
 
 
-# (key, name, badge letters, badge tint) -- key is what set_automation()
-# and on_open_automation use.
+# (key, name) -- key is what set_automation() and on_open_automation use.
 AUTOMATION_TILES = [
-    ("restart", "Scheduled restarts", "RS", "#f0a66a"),
-    ("updates", "Auto-update", "UP", "#7fb2ff"),
-    ("backups", "Backups", "BK", "#5fd38a"),
-    ("watchdog", "Crash watchdog", "WD", "#f28b80"),
-    ("alerts", "Discord & ntfy alerts", "DC", "#a99cff"),
-    ("ddns", "Dynamic DNS", "DN", "#f0b54a"),
+    ("restart", "Daily restart"),
+    ("updates", "Game updates"),
+    ("backups", "Backups"),
+    ("watchdog", "Restart if it crashes"),
+    ("alerts", "Alerts"),
+    ("ddns", "Fixed web address"),
 ]
+ADVANCED_TILES = {"ddns"}
+
+# This PC's public address, shared by every dashboard: (address or "", when looked up).
+_PUBLIC_IP = {"ip": "", "at": 0.0}
+_PUBLIC_IP_TTL = 30 * 60
+
+
+class _PublicIpWorker(QThread):
+    found = Signal(str)
+
+    def run(self) -> None:
+        try:
+            import network_setup
+            ip = network_setup.get_public_ip(timeout=4.0) or ""
+        except Exception:  # noqa: BLE001 - offline: show the local address instead
+            ip = ""
+        self.found.emit(ip)
 
 
 class NoticeBar(QFrame):
@@ -212,6 +223,7 @@ class DashboardPage(QWidget):
         self.title_label.setObjectName("PageTitle")
         self.status_label = QLabel("UNKNOWN")
         self.status_label.setObjectName("PillOff")
+        self.status_label.hide()  # see _set_status
         self.uptime_label = QLabel("")
         self.uptime_label.setObjectName("Dim")
         top.addWidget(self.title_label)
@@ -221,6 +233,13 @@ class DashboardPage(QWidget):
 
         self.connect_label = QLabel("")
         self.connect_label.setObjectName("Muted")
+        self.connect_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.copy_address_btn = QPushButton("Copy")
+        self.copy_address_btn.setToolTip("Copy the address friends type into Direct Connect")
+        self.copy_address_btn.clicked.connect(self._copy_address)
+        self.get_fixed_host = None  # set by MainWindow: callable() -> "name.duckdns.org" or ""
+        self._address = ""
+        self._ip_worker = None
         self.setup_btn = QPushButton("Set Up Server…")
         self.setup_btn.setObjectName("PrimaryButton")
         self.setup_btn.clicked.connect(self._handle_setup)
@@ -229,10 +248,12 @@ class DashboardPage(QWidget):
         self.start_btn.clicked.connect(self._handle_start)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self._handle_stop)
+        self.start_btn.setObjectName("PrimaryButton")  # the one main action while stopped
         self.restart_btn = QPushButton("Restart")
-        self.restart_btn.setObjectName("PrimaryButton")  # the mockup's main action
         self.restart_btn.clicked.connect(self._handle_restart)
         top.addWidget(self.connect_label)
+        top.addWidget(self.copy_address_btn)
+        top.addSpacing(8)
         top.addWidget(self.setup_btn)
         top.addWidget(self.start_btn)
         top.addWidget(self.stop_btn)
@@ -272,8 +293,8 @@ class DashboardPage(QWidget):
         auto_grid = QGridLayout()
         auto_grid.setSpacing(12)
         self.automation_tiles: dict = {}
-        for i, (key, name, mark, tint) in enumerate(AUTOMATION_TILES):
-            tile = AutomationTile(key, name, mark, tint)
+        for i, (key, name) in enumerate(AUTOMATION_TILES):
+            tile = AutomationTile(key, name)
             tile.open_btn.clicked.connect(lambda _=False, k=key: self._open_automation(k))
             auto_grid.addWidget(tile, i // 3, i % 3)
             self.automation_tiles[key] = tile
@@ -343,6 +364,9 @@ class DashboardPage(QWidget):
             self.on_open_automation(key)
 
     def _set_status(self, text: str, kind: str) -> None:
+        # Online/Offline is shown once, in the window header; this pill only
+        # appears for states the header doesn't cover ("Not set up", ...).
+        self.status_label.setVisible(kind == "warn")
         if self.status_label.text() == text:
             return  # polled every 2 s -- don't restyle when nothing changed
         self.status_label.setText(text)
@@ -357,7 +381,7 @@ class DashboardPage(QWidget):
         self.content.show()
         self.server = server
         self.title_label.setText(server.name)
-        self.connect_label.setText(f"{server.bind_ip or '(no ip)'}:{server.game_port}")
+        self._show_address()
         self.log_view.clear()
         self.setup_btn.setVisible(not bool(server.install_dir))
         # Starting guess; the next poll sets the real state.
@@ -375,12 +399,62 @@ class DashboardPage(QWidget):
         self.status_label.setText("")
         self.uptime_label.setText("")
         self.connect_label.setText("")
+        self.copy_address_btn.hide()
+        self._address = ""
 
     def _apply_running_state(self, running: bool) -> None:
+        """Stopped: one Start button. Running: Restart and Stop."""
         has_install = bool(self.server and self.server.install_dir)
         self.start_btn.setVisible(has_install and not running)
         self.stop_btn.setVisible(has_install and running)
-        self.restart_btn.setVisible(has_install)
+        self.restart_btn.setVisible(has_install and running)
+
+    def set_advanced(self, on: bool) -> None:
+        for key in ADVANCED_TILES:
+            tile = self.automation_tiles.get(key)
+            if tile is not None:
+                tile.setVisible(on)
+
+    # ---------------------------------------------------------- address --
+    def _show_address(self) -> None:
+        """"Friends connect to: <address>:<port>", from the fixed web address,
+        the public IP, or (offline) this PC's address on the home network."""
+        server = self.server
+        if not server or not server.install_dir:
+            self.connect_label.setText("")
+            self.copy_address_btn.hide()
+            self._address = ""
+            return
+        host = (self.get_fixed_host() if callable(self.get_fixed_host) else "") or _PUBLIC_IP["ip"]
+        if host:
+            self._address = f"{host}:{server.game_port}"
+            self.connect_label.setText(f"Friends connect to {self._address}")
+        else:
+            local = server.bind_ip or ""
+            self._address = f"{local}:{server.game_port}" if local else ""
+            self.connect_label.setText(f"On your network: {self._address}" if local else "")
+        self.copy_address_btn.setVisible(bool(self._address))
+        if time.time() - _PUBLIC_IP["at"] > _PUBLIC_IP_TTL and self._ip_worker is None:
+            _PUBLIC_IP["at"] = time.time()  # one lookup at a time, even if it fails
+            from ui.workers import keep_running_past_owner
+            worker = _PublicIpWorker()
+            self._ip_worker = worker
+
+            def found(ip, w=worker):
+                self._ip_worker = None
+                if ip:
+                    _PUBLIC_IP["ip"] = ip
+                    self._show_address()
+            worker.found.connect(found)
+            keep_running_past_owner(worker)
+            worker.start()
+
+    def _copy_address(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        if self._address:
+            QApplication.clipboard().setText(self._address)
+            self.copy_address_btn.setText("Copied")
+            QTimer.singleShot(1500, lambda: self.copy_address_btn.setText("Copy"))
 
     def _handle_restart(self) -> None:
         if self.server and self.on_restart:

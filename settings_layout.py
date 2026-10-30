@@ -84,3 +84,27 @@ def short_help(text: str) -> str:
         if 0 < i < 140:
             return text[: i + 1]
     return text if len(text) <= 140 else text[:137].rstrip() + "…"
+
+
+# ------------------------------------------------- the app's own layout --
+# The desktop app (1.0.14) shows fewer sections, each led by presets, with the
+# individual settings in Advanced mode. The web version keeps SECTIONS above.
+DESKTOP_SECTIONS: List[Tuple[str, str, str, str, List[str]]] = [
+    ("server", "Server", "", "Name, password and who can do what.", ["identity", "network", "alerts"]),
+    ("gameplay", "Gameplay", "", "Pick a play style. Every individual setting is in Advanced.", GAMEPLAY_PAGES),
+    ("automation", "Automation", "", "Backups, the daily restart and game updates.", ["backups", "restart"]),
+    ("diagnostics", "Check for Problems", "",
+     "Why a server won't start or can't be reached, with a fix for each problem.", []),
+]
+DESKTOP_SECTION_KEYS = [s[0] for s in DESKTOP_SECTIONS]
+_DESKTOP_ALIASES = {page: key for key, _l, _g, _b, pages in DESKTOP_SECTIONS for page in pages}
+_DESKTOP_ALIASES.update({"updates": "automation", "gameplay": "gameplay", "identity": "server",
+                         "network": "server", "alerts": "server", "backups": "automation",
+                         "restart": "automation", "diagnostics": "diagnostics"})
+
+
+def desktop_section_for(key: str) -> str:
+    """The desktop section that shows a settings page or an older section key."""
+    if key in DESKTOP_SECTION_KEYS:
+        return key
+    return _DESKTOP_ALIASES.get(key, DESKTOP_SECTION_KEYS[0])

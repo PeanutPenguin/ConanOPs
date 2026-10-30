@@ -176,6 +176,9 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.dashboard_page.on_setup = self._open_setup_wizard
         self.dashboard_page.on_add_server = self._on_add_server
         self.dashboard_page.on_open_automation = self._open_automation_settings
+        self.dashboard_page.get_fixed_host = lambda: (
+            f"{self.config.duckdns_domain}.duckdns.org"
+            if self.config.duckdns_domain and self.config.duckdns_token else "")
         self.dashboard_page.on_start_anyway = lambda: (self.config.get_active() and self._handle_start(self.config.get_active()))
         self.dashboard_page.on_enable_rcon = self._enable_rcon_for_active
         self.dashboard_page.automation_tiles["watchdog"].open_btn.hide()  # follows Start/Stop, nothing to configure
@@ -261,9 +264,18 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         pages_by_key = {k: p for k, _l, p in settings_entries}
         self.settings_gameplay = GameplaySection(
             [(k, settings_layout.category_title(k), pages_by_key[k]) for k in settings_layout.GAMEPLAY_PAGES])
-        section_widgets = {"gameplay": self.settings_gameplay, "updates": self.updates_page}
-        sections = [(key, label, heading, blurb, section_widgets.get(key) or pages_by_key[key])
-                    for key, label, heading, blurb, _pages in settings_layout.SECTIONS]
+        # Shown as four sections led by presets (ui/server_sections.py); the
+        # individual settings appear in Advanced mode.
+        from ui.server_sections import ServerSections
+        self.server_sections = ServerSections(
+            identity=self.settings_identity_page, network=self.settings_network_page,
+            rcon=self.settings_alerts_page, gameplay_section=self.settings_gameplay,
+            backups=self.settings_backups_page, restart=self.settings_restart_page,
+            updates_page=self.updates_page, diagnostics=self.diagnostics_page,
+            all_pages=[p for k, _l, p in settings_entries if k != "diagnostics"],
+            request_advanced=lambda: self.set_advanced_mode(True),
+        )
+        sections = self.server_sections.entries()
         backups_list = self.settings_backups_page.backups_widget
         search_extras = [
             ("updates", "Install new server builds automatically", "", self.updates_page.auto_update_check),
@@ -275,8 +287,12 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             ("backups", "Import an external backup / restore", "", backups_list.import_btn),
             ("diagnostics", "Run Diagnostics", "", self.diagnostics_page.run_btn),
         ]
+        search_extras = [(settings_layout.desktop_section_for(sec), label, help_text, w)
+                         for sec, label, help_text, w in search_extras]
         self.settings_container = SettingsContainer(
-            sections, pages=[(k, p) for k, _l, p in settings_entries if k != "diagnostics"], extras=search_extras)
+            sections, pages=[(k, p) for k, _l, p in settings_entries if k != "diagnostics"], extras=search_extras,
+            section_for=settings_layout.desktop_section_for)
+        self.settings_container.on_need_advanced = lambda: self.set_advanced_mode(True)
 
         self.players_tabs = TabbedPage([("players", "Players", self.players_page),
                                         ("access", "Access (whitelist & bans)", self.access_page)])
@@ -301,6 +317,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             on_delete_app_only=self._handle_delete_app_only,
             on_delete_everything=self._handle_delete_everything,
         )
+        self.server_sections.bind_mod_recovery(self.app_settings_page.mod_recovery_combo)
+        self.app_settings_page.on_request_advanced = lambda: self.set_advanced_mode(True)
 
         self.pages = {
             "dashboard": self.dashboard_page,
@@ -341,6 +359,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         content_layout.addWidget(self._build_header())
         content_layout.addWidget(self.stack, 1)
         layout.addWidget(content, 1)
+        self._apply_mode()
 
         self._chrome_timer = QTimer(self)
         self._chrome_timer.timeout.connect(self._refresh_chrome)
@@ -517,8 +536,49 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.header_lock_btn.setAccessibleName("App PIN")
         self.header_lock_btn.clicked.connect(lambda: self._open_set_pin_dialog())
         row.addWidget(self.header_lock_btn, 0, Qt.AlignVCenter)
+        # Simple shows presets; Advanced shows every setting (and Console, PIN lock, ...).
+        self.mode_switch = QFrame()
+        self.mode_switch.setObjectName("ModeSwitch")
+        self.mode_switch.setAccessibleName("How much to show")
+        ms = QHBoxLayout(self.mode_switch)
+        ms.setContentsMargins(3, 3, 3, 3)
+        ms.setSpacing(2)
+        self.simple_btn = QPushButton("Simple")
+        self.advanced_btn = QPushButton("Advanced")
+        for btn, adv in ((self.simple_btn, False), (self.advanced_btn, True)):
+            btn.setObjectName("ModeButton")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, a=adv: self.set_advanced_mode(a))
+            ms.addWidget(btn)
+        self.simple_btn.setToolTip("Show presets and the settings most people change")
+        self.advanced_btn.setToolTip("Show every individual setting, plus Console and the less-used options")
+        row.addWidget(self.mode_switch, 0, Qt.AlignVCenter)
         self._current_nav = "dashboard"
         return header
+
+    # ------------------------------------------------------------- mode --
+    def advanced(self) -> bool:
+        return bool(getattr(self.config, "advanced_mode", False))
+
+    def set_advanced_mode(self, on: bool) -> None:
+        """Simple or Advanced, everywhere at once (saved for next time)."""
+        if self.config.advanced_mode != on:
+            self.config.advanced_mode = on
+            self.config.save()
+        self._apply_mode()
+
+    def _apply_mode(self) -> None:
+        on = self.advanced()
+        self.simple_btn.setChecked(not on)
+        self.advanced_btn.setChecked(on)
+        self.header_lock_btn.setVisible(on or self.config.app_lock_enabled)
+        self.server_sections.set_advanced(on)
+        self.app_settings_page.set_advanced(on)
+        self.sidebar.set_advanced(on)
+        self.dashboard_page.set_advanced(on)
+        if not on and getattr(self, "_current_nav", "") == "console":
+            self._on_nav_selected("dashboard")
 
     def _refresh_header(self) -> None:
         if not hasattr(self, "header_title"):
@@ -570,10 +630,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
                 f"{pending} -- it installs on its own if automatic updates are on, or install it now."
                 if pending and not active.update_hold else "")
             self.dashboard_page.rcon_notice.set_notice(
-                "RCON is off for this server, so ConanOps can't ask it to save before stopping it. "
-                "Every stop, restart and update is a hard shutdown that loses anything since the last "
-                "autosave, and can damage the world if it lands mid-save." if not active.rcon_enabled else ""
+                "Remote commands (RCON) are off, so ConanOps can't save the world before stopping the server. "
+                "Anything since the last autosave can be lost." if not active.rcon_enabled else ""
             )
+            self.dashboard_page._show_address()
         self._refresh_header()
 
     def _automation_states(self, server: ServerConfig) -> dict:
@@ -584,8 +644,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         return {
             "restart": (server.restart_enabled,
                         f"Daily {server.restart_start}–{server.restart_end}" if server.restart_enabled else "Off"),
-            "updates": (server.auto_update,
-                        f"Checks {hours(server.auto_update_check_interval_hours)}" if server.auto_update else "Off"),
+            "updates": (server.auto_update, "Installs by itself" if server.auto_update else "Tells you first"),
             "backups": (server.backup_interval_hours > 0,
                         f"{hours(server.backup_interval_hours).capitalize()} · keep {server.backup_daily_keep}"
                         if server.backup_interval_hours > 0 else "Off"),
@@ -601,7 +660,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             self.settings_container._select("updates")
         elif key == "ddns":
             self._on_nav_selected("app")
-            self.app_settings_page.show_section("ddns")
+            self.app_settings_page.show_section("remote")
+        elif key == "watchdog":
+            self._on_nav_selected("app")
+            self.app_settings_page.show_section("run")
         elif key == "alerts":
             self._on_nav_selected("app")
             self.app_settings_page.show_section("alerts")

@@ -38,7 +38,7 @@ ConanOps does not replace Conan Exiles, Steam or the router. It is not affiliate
 - Around 8 GB of RAM for a small group of players. Large or heavily modded servers need more.
 - An internet connection. A graphics card is not required.
 
-Players outside the host's home network can connect only if two further conditions are met. The router must either support UPnP (which ConanOps uses to open the ports automatically) or have the ports forwarded by hand, and the internet provider must assign the connection a public IP address. Some providers place customers behind shared addresses (often called CGNAT), in which case outside players cannot connect directly. The Diagnostics page (Section 7) checks for this.
+Players outside the host's home network can connect only if two further conditions are met. The router must either support UPnP (which ConanOps uses to open the ports automatically) or have the ports forwarded by hand, and the internet provider must assign the connection a public IP address. Some providers place customers behind shared addresses (often called CGNAT), in which case outside players cannot connect directly. **Server Settings → Check for Problems** (Section 7) checks for this.
 
 ## 3. Installation
 
@@ -46,9 +46,9 @@ Players outside the host's home network can connect only if two further conditio
 2. Run the file. Administrator rights are not needed; ConanOps installs to `C:\ConanOps`.
 3. Because ConanOps is not yet code-signed, Windows may show the message "Windows protected your PC". Select **More info**, then **Run anyway**.
 
-After the first server has been set up, ConanOps shows a short tour of the Dashboard. The tour can be replayed later from **App Settings → Keep Running → Show the Dashboard Tour**.
+After the first server has been set up, ConanOps shows a short tour of the Dashboard. The tour can be replayed later from **App Settings → Run Automatically → Show the Dashboard Tour** (in Advanced mode).
 
-At several points Windows asks for permission to make a change, for example when ConanOps adds firewall rules or installs the Microsoft Visual C++ runtime that the server requires. Each of these prompts should be accepted. Hosts who prefer not to see them can turn on **App Settings → Keep Running → Run with admin rights**, which requires one confirmation and then runs ConanOps with administrator rights from that point on.
+At several points Windows asks for permission to make a change, for example when ConanOps adds firewall rules or installs the Microsoft Visual C++ runtime that the server requires. Each of these prompts should be accepted. Hosts who prefer not to see them can turn on **Run with admin rights** under **App Settings → Run Automatically** (in Advanced mode), which requires one confirmation and then runs ConanOps with administrator rights from that point on.
 
 ## 4. Setting up a new server
 
@@ -95,30 +95,38 @@ The same check is made for servers ConanOps already manages. If another program 
 
 ## 6. The main window
 
-The sidebar lists the configured servers, each with a status indicator and player count, and the main pages: **Dashboard**, **Players**, **Mods**, **Console** and **Server Settings**, followed by **App Settings**. Every page except App Settings refers to the server currently selected in the sidebar.
+The sidebar lists the configured servers, each with a status indicator and player count, and the main pages: **Dashboard**, **Players**, **Mods** and **Server Settings**, followed by **App Settings**. Every page except App Settings refers to the server currently selected in the sidebar.
 
-**Dashboard.** Shows whether the server is online, the address players connect to, processor and memory use, server frame rate, the players currently online and recent log output. The **Start**, **Stop** and **Restart** buttons are here. A restart warns players in-game and saves the world before the server stops.
+### 6.1 Simple and Advanced
 
-**Players.** Lists every player who has joined, with total playtime and number of sessions. The history is kept across restarts. Players who are online can be kicked or banned. The access tab holds the whitelist and ban list, which take SteamID64 numbers; whitelist-only mode admits listed players only. Bans apply immediately if RCON is on, otherwise at the next restart.
+The switch at the top right of the window chooses how much ConanOps shows. **Simple**, the default, shows presets (Section 7) and the settings most hosts change. **Advanced** also shows every individual setting under each preset, the **Console** page, ports, remote commands (RCON), the fixed web address, the Discord bot, the PIN lock and the Steam Workshop key. The choice is remembered. Nothing is lost by switching: Advanced only shows more, and settings changed there remain in force in Simple mode. When a search finds a setting that exists only in Advanced, ConanOps switches to Advanced to show it.
+
+### 6.2 The pages
+
+**Dashboard.** Shows the address friends connect to (with a **Copy** button), processor and memory use, server frame rate, the automatic tasks, the players currently online and recent log output. Whether the server is online is shown once, at the top of the window. While the server is stopped there is a single **Start** button; while it runs, **Restart** and **Stop**. A restart warns players in-game and saves the world before the server stops.
+
+**Players.** Lists every player who has joined, with total playtime and number of sessions. The history is kept across restarts. Players who are online can be kicked or banned. The access tab holds the whitelist and ban list, which take SteamID64 numbers; whitelist-only mode admits listed players only. Bans apply immediately if remote commands (RCON) are on, otherwise at the next restart.
 
 **Mods.** See Section 8.
 
-**Console.** Sends RCON commands directly to the running server and shows the replies. It is available once RCON is turned on.
+**Console** (Advanced). Sends remote commands directly to the running server and shows the replies.
 
 **Server Settings** and **App Settings.** See Sections 7 and 11. Both have a search box that covers every setting.
 
 ## 7. Server Settings
 
-Server Settings is divided into sections. Each shows the most commonly changed settings first; the remainder are under **More options**. Changes are held as pending until **Apply** is selected, and **Discard** returns to the last applied values. Most changes take effect the next time the server restarts, since Conan Exiles reads its settings only at start-up.
+Most groups of settings start with a few **presets**: named choices such as *Standard*, *Frequent* or *Light* backups, each with a one-line description, and one marked *Recommended*. Selecting a preset sets all the settings in that group. The **?** next to a group's title explains it in more detail. In Advanced mode the individual settings appear under the presets; changing one of them marks the group **Custom**, unless the new values happen to match another preset.
 
-- **Server Identity.** Message of the day, admin password, PvP, BattlEye, community type, region and related options.
-- **Network & Ports.** Server name, password, game and query ports, and player limit. ConanOps detects port conflicts and can suggest a free port. The less common options include the network address and **Repair Networking**, which re-creates the firewall rules and router forwards.
-- **Gameplay.** All gameplay settings that Funcom's own settings screen offers, grouped by category (progression, day and night, survival, combat, harvesting, crafting, building and decay, chat, purge, and pets). The most frequently changed settings are listed first. Numeric sliders mark the last applied value, so the extent of a change remains visible while editing.
-- **Backups.** How often backups run, how many are kept, where they are stored, and whether a backup is made before each update. The saved backups are also listed here (Section 9).
-- **Restart Schedule.** A daily restart window, ideally in the quietest hours. The restart happens only when no one is online; if players remain online for the whole window, that day's restart is skipped.
-- **Server Updates.** See Section 10.
-- **RCON.** Turns RCON on or off and sets its port and password.
-- **Diagnostics.** Checks the common reasons a server will not start or cannot be reached from outside, and explains each problem. Problems are listed first, and most have a button that fixes them, for example **Repair Networking**, **Use Free Ports**, **Repair Game Files**, **Turn On RCON** or **Restore Latest Backup**; Diagnostics runs again once the fix is complete. Nothing is changed unless such a button is selected. Three of the checks need further explanation:
+Changes are held as pending until **Save** is selected in the bar that appears at the top, and **Discard** returns to the last saved values. Most changes take effect the next time the server restarts, since Conan Exiles reads its settings only at start-up. Server Settings has four sections.
+
+- **Server.** The server type (*PvE*, *PvE-Conflict* or *PvP*), the server name, its password and the player limit. The ports are shown only if they clash with another program or server, together with a button that picks free ones. Advanced adds the ports, every other general setting (message of the day, admin password, BattlEye, region and so on), the network address, **Repair Networking**, and the remote-commands (RCON) settings.
+- **Gameplay.** A play style: *Official* (Funcom's standard settings), *Relaxed*, *Boosted* or *Hardcore*, which set the rates for experience, gathering and crafting, the damage players take, hunger and thirst, and whether abandoned bases decay. Advanced shows every gameplay setting that Funcom's own settings screen offers, grouped by category. Numeric sliders mark the last saved value, so the extent of a change remains visible while editing.
+- **Automation.** Four groups of presets:
+  - *Backups*: *Standard* (every 6 hours), *Frequent* (every 2 hours) or *Light* (once a day), with the number of copies kept. The saved backups are listed below (Section 9).
+  - *Daily restart*: in the *Quietest hours* found in the server's player history, in the *Early morning*, or *Never*. The restart happens only when no one is online; if players remain online for the whole window, that day's restart is skipped.
+  - *Game updates*: *Automatic* or *Tell me* (Section 10).
+  - *If a mod stops a server starting*: *Wait for a fix*, *Start without it* or *Just tell me* (Section 8). This choice applies to all servers.
+- **Check for Problems.** Checks the common reasons a server will not start or cannot be reached from outside, and explains each problem. Problems are listed first, and most have a button that fixes them, for example **Repair Networking**, **Use Free Ports**, **Repair Game Files**, **Turn On RCON** or **Restore Latest Backup**; the check runs again once the fix is complete. Nothing is changed unless such a button is selected. Three of the checks need further explanation:
   - *Reachable from the internet.* While the server is running, ConanOps asks Steam whether it lists the server at the PC's public address, and sends a test query to that address. A server that Steam does not list after several minutes of running is very probably unreachable. A listing is a good sign but not conclusive, because some routers let Steam's replies through without a port forward; the result therefore also takes the router check into account. A friend connecting from outside remains the most reliable test.
   - *Server log.* ConanOps reads the server's latest log, its crash reports and its mod list, and explains in plain language why the server would not start or crashed, for example a missing mod file, a crash inside a particular mod, a port in use, insufficient memory or a damaged world save. Errors it does not recognise are quoted as the server reported them.
   - *Repeated crashes.* A server that has crashed several times in the last 24 hours is reported, together with the most likely cause.
@@ -138,7 +146,7 @@ Mods often stop working after a major game update until their authors rebuild th
 
 The world is protected during all of these tests: it is copied beforehand and restored afterwards, so test restarts do not change it.
 
-If a mod stops a server from starting while no one is present, ConanOps can respond in one of three ways, chosen under **App Settings → Keep Running**. It can find the mod and keep the server stopped until the mod's author releases a fix, then start the server again without intervention; this keeps everything the mod added to the world. It can find the mod and start the server without it, which brings players back sooner but deletes that mod's buildings and items (a backup is made first). Or it can simply send an alert.
+If a mod stops a server from starting while no one is present, ConanOps can respond in one of three ways, chosen under **Server Settings → Automation**. It can find the mod and keep the server stopped until the mod's author releases a fix, then start the server again without intervention; this keeps everything the mod added to the world. It can find the mod and start the server without it, which brings players back sooner but deletes that mod's buildings and items (a backup is made first). Or it can simply send an alert.
 
 ## 9. Backups and restoring
 
@@ -152,18 +160,23 @@ If the world save is missing but backups exist, ConanOps does not start the serv
 
 ## 10. Updates
 
-**Server updates.** Under **Server Settings → Server Updates**, ConanOps shows the installed build and checks Steam for a newer one. When automatic updates are on, it installs a new build once no one is online: it backs up the server, downloads the update and restarts the server. Scheduled restarts also check for an update first. Funcom's patch notes are shown where available, and updates that appear to be major engine changes are marked, since these are the ones most likely to break mods.
+**Server updates.** Under **Server Settings → Automation**, ConanOps shows the installed build and checks Steam for a newer one. With the *Automatic* preset it installs a new build once no one is online: it backs up the server, downloads the update and restarts the server. Scheduled restarts also check for an update first. With *Tell me*, ConanOps checks every few hours, sends an alert, and offers **Back Up & Update Now**. Funcom's patch notes are shown where available, and updates that appear to be major engine changes are marked, since these are the ones most likely to break mods.
 
 ConanOps also repairs missing or damaged game files. If the server program is missing, or the server keeps crashing after two automatic restarts, it asks Steam to verify the files, downloads anything missing and starts the server again. The world, settings and mods are not affected.
 
-**ConanOps updates.** Under **App Settings → Updates**, ConanOps can check for new versions of itself and install them. Each download is verified before installation, and the previous version is kept, so that if the new version fails to start, the earlier one is restored automatically.
+**ConanOps updates.** Under **App Settings → Updates & Uninstall**, the presets *Automatic*, *Ask me first* and *Only when I check* decide how ConanOps updates itself; the servers keep running while it does. Each download is verified before installation, and the previous version is kept, so that if the new version fails to start, the earlier one is restored automatically.
 
 ## 11. Unattended operation
 
-The options under **App Settings → Startup** and **App Settings → Keep Running** allow servers to run for long periods without attention.
+**App Settings → Run Automatically** decides whether servers keep running without anyone at the PC. Three presets are offered:
+
+- *Hands-off* (recommended): ConanOps starts with Windows, reopens itself if it closes or crashes, keeps the PC awake while a server runs, and lets Windows restart for updates only between 4 and 6 AM, when nobody is online.
+- *While I'm signed in*: ConanOps starts with Windows and keeps the PC awake, but Windows restarts for updates whenever it chooses.
+- *Only when I open it*: servers run only while ConanOps is open.
+
+Windows may ask for permission once when a preset changes its update hours. In Advanced mode the individual options appear below the presets:
 
 - **Start ConanOps when I sign into Windows**, optionally minimised to the tray.
-- **Keep my servers running when nobody is signed into Windows.** A background task starts ConanOps without a window when the PC boots and checks every two minutes that it is still running. Opening ConanOps normally takes over from the background copy without stopping the servers.
 - **Reopen ConanOps if it closes or crashes.** Quitting from the tray icon is respected until ConanOps is next opened.
 - **Run with admin rights**, which removes the Windows permission prompts.
 - **Keep this PC awake while a server is running.** Sleep is blocked only while a server runs; Windows power settings are not changed.
@@ -171,19 +184,19 @@ The options under **App Settings → Startup** and **App Settings → Keep Runni
 
 In addition, ConanOps restarts a server that crashes, rechecks the router's port forwards every hour (many routers lose them when they restart), and resumes servers that were running before the PC restarted. A server stopped deliberately with **Stop** stays stopped, including after a restart of the PC.
 
-A PIN can be required when ConanOps opens (**App Settings → PIN Lock**). For hosts whose public address changes, **App Settings → Dynamic DNS** keeps a free DuckDNS address pointed at the PC, so players can use a fixed name instead of a changing number.
+In Advanced mode, a PIN can be required when ConanOps opens (**App Settings → PIN Lock**), and **App Settings → Remote Access** offers a fixed web address: a free DuckDNS name that keeps pointing at the PC when its public address changes, so players can use a name instead of a changing number. The Dashboard then shows that name as the address to connect to.
 
 ## 12. Alerts and Discord
 
 Under **App Settings → Alerts**, ConanOps can send notifications to a Discord channel (through a webhook) and to the ntfy phone app. Alerts are sent when a server crashes, is updated, has a mod problem, fails a backup, and in similar situations. **Send Test** confirms that the address is correct. ConanOps can also keep a live status message for each server in the Discord channel.
 
-A Discord bot can be added in the same section. Anyone in the channel can type `!status` to see each server's status and who is online. People on an allowed list can type `!restart`, or `!restart` followed by a server's name, to warn players, save and restart. `!help` lists the commands.
+In Advanced mode, a Discord bot can be added in the same section. Anyone in the channel can type `!status` to see each server's status and who is online. People on an allowed list can type `!restart`, or `!restart` followed by a server's name, to warn players, save and restart. `!help` lists the commands.
 
 ## 13. The web version
 
-The web version lets the host check and control the servers from a phone or another computer. It is turned on under **App Settings → Web Version**, where a password of at least eight characters must be set. The page is then available on the home network through the link shown; if Windows blocks it, **Allow Through Firewall** adds the necessary rule.
+The web version lets the host check and control the servers from a phone or another computer. It is turned on under **App Settings → Remote Access** with one of three presets: *Off*, *On my Wi-Fi* or *From anywhere*. A password of at least eight characters must be set; ConanOps asks for one when the web version is first turned on. The page is then available on the home network through the link shown; if Windows blocks it, **Allow Through Firewall** adds the necessary rule.
 
-The option **Also let me use it from anywhere** creates a secure link through Cloudflare's free tunnel service. The link changes whenever the tunnel reconnects; the current link is shown in App Settings and is sent to the ntfy alert topic when it changes.
+*From anywhere* creates a secure link through Cloudflare's free tunnel service. The link changes whenever the tunnel reconnects; the current link is shown in App Settings and is sent to the ntfy alert topic when it changes.
 
 Most of what the PC application offers is available from the web version. For safety, the following can only be done at the PC: adding or deleting servers, deleting ConanOps, changing the web password and turning the outside link on or off. Changes that require a Windows permission prompt are queued and offered the next time someone uses ConanOps at the PC.
 
@@ -196,17 +209,17 @@ Most of what the PC application offers is available from the web version. For sa
 - The server's backups can be kept or deleted.
 - If ConanOps switched off other launchers when it took the server over, it offers to turn them back on.
 
-**Uninstalling.** **App Settings → Delete ConanOps** offers two choices. **Uninstall ConanOps (Keep My Data)** removes the program and the firewall rules Windows created for it, but keeps servers, worlds and backups in `C:\ConanOps\data`, so a later reinstallation finds them again. **Delete Everything** also stops and deletes every server, its backups and SteamCMD, and reverses the Windows changes ConanOps made; servers that were on the PC before ConanOps are left in place. It also removes the firewall rules Windows created for ConanOps itself and for servers whose folders no longer exist; the rules for the game, and for servers that are kept, are not touched. Because this cannot be undone, it must be confirmed by typing DELETE. ConanOps can also be uninstalled through Windows' list of installed apps, which keeps the data folder.
+**Uninstalling.** **App Settings → Updates & Uninstall** offers two choices. **Uninstall ConanOps (Keep My Data)** removes the program and the firewall rules Windows created for it, but keeps servers, worlds and backups in `C:\ConanOps\data`, so a later reinstallation finds them again. **Delete Everything** also stops and deletes every server, its backups and SteamCMD, and reverses the Windows changes ConanOps made; servers that were on the PC before ConanOps are left in place. It also removes the firewall rules Windows created for ConanOps itself and for servers whose folders no longer exist; the rules for the game, and for servers that are kept, are not touched. Because this cannot be undone, it must be confirmed by typing DELETE. ConanOps can also be uninstalled through Windows' list of installed apps, which keeps the data folder.
 
 ## 15. Troubleshooting
 
-**The server does not start, or keeps crashing.** ConanOps runs checks before each start and names the specific problem, such as missing files, a port in use or a missing Visual C++ runtime. **Server Settings → Diagnostics** gives a fuller report, including the cause recorded in the server's own logs, and offers a fix where one exists. Crash alerts also state the most likely cause.
+**The server does not start, or keeps crashing.** ConanOps runs checks before each start and names the specific problem, such as missing files, a port in use or a missing Visual C++ runtime. **Server Settings → Check for Problems** gives a fuller report, including the cause recorded in the server's own logs, and offers a fix where one exists. Crash alerts also state the most likely cause.
 
-**Friends cannot connect.** Run Diagnostics while the server is running; the *Reachable from the internet* result shows whether Steam can see the server from outside. The most common causes are a router without UPnP (forward the game and query ports by hand, using the numbers shown under Network & Ports), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again). Players connecting from the same home network should use the local address shown on the Dashboard.
+**Friends cannot connect.** Run **Check for Problems** while the server is running; the *Reachable from the internet* result shows whether Steam can see the server from outside. The most common causes are a router without UPnP (forward the game and query ports by hand, using the port numbers shown under **Server Settings → Server** in Advanced mode), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again). Players on the same home network should connect to the PC's address on that network.
 
 **The server stopped working after a game update.** This is usually caused by mods that have not yet been rebuilt for the new version. Use **Fix Mod Problems** (Section 8), or wait for ConanOps' automatic mod recovery if it is enabled.
 
-**Windows asks whether to allow ConanSandboxServer.** This prompt comes from Windows Defender Firewall, not from the server. Because ConanOps adds a firewall rule for the server program during setup, it should not normally appear. If it does, select **Allow access**. Selecting **Cancel** makes Windows create rules that block the server, so that friends cannot connect; **Repair Networking** under Network & Ports switches those rules off again.
+**Windows asks whether to allow ConanSandboxServer.** This prompt comes from Windows Defender Firewall, not from the server. Because ConanOps adds a firewall rule for the server program during setup, it should not normally appear. If it does, select **Allow access**. Selecting **Cancel** makes Windows create rules that block the server, so that friends cannot connect; **Repair Networking** (under **Server Settings → Server** in Advanced mode, or offered by Check for Problems) switches those rules off again.
 
 **The servers were offline after Windows restarted.** Check that **Use my sign-in info to automatically finish setting up after an update** is on in Windows (App Settings shows a warning when it is off), or turn on **Keep my servers running when nobody is signed into Windows**.
 

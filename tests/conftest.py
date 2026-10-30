@@ -107,3 +107,33 @@ def server_ops_inline(monkeypatch):
         return
     monkeypatch.setattr(MainWindow, "RUN_OPS_INLINE", True)
     yield
+
+
+@pytest.fixture(autouse=True)
+def free_windows_after_each_test():
+    """Tests create a MainWindow each; Qt signal connections hold its Python
+    methods, so it's never garbage-collected until its C++ side is deleted.
+    Delete every leftover top-level window after each test so the suite's
+    memory stays flat (it otherwise grew ~30 MB per window)."""
+    yield
+    try:
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    app = QApplication.instance()
+    if app is None:
+        return
+    for w in app.topLevelWidgets():
+        if getattr(w, "_closed", None) is not None or type(w).__name__ == "MainWindow":
+            w._really_quit = True
+        try:
+            w.hide()
+            w.deleteLater()
+        except RuntimeError:
+            continue
+    for _ in range(2):
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        app.processEvents()
+    import gc
+    gc.collect()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QFrame, QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox,
@@ -17,6 +17,8 @@ from ui.workers import keep_until_finished
 
 
 class UpdatesPage(QWidget):
+    settings_shown = Signal()  # the auto-update controls were refreshed from the saved settings
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.server: Optional[ServerConfig] = None
@@ -71,7 +73,7 @@ class UpdatesPage(QWidget):
         build_lay.addWidget(self.build_state_label, 0, Qt.AlignLeft)
         build_lay.addStretch(1)
 
-        _f, auto_lay = tile("Auto-update")
+        self.auto_tile, auto_lay = tile("Auto-update")
         self.auto_update_check = QCheckBox("Install new builds automatically")
         self.auto_update_check.toggled.connect(self._on_auto_update_toggled)
         auto_lay.addWidget(self.auto_update_check)
@@ -98,6 +100,7 @@ class UpdatesPage(QWidget):
         auto_note.setObjectName("Dim")
         auto_note.setWordWrap(True)
         root.addWidget(auto_note)
+        self.auto_note = auto_note
 
         self.pending_frame = QFrame()
         self.pending_frame.setObjectName("Card")
@@ -121,6 +124,7 @@ class UpdatesPage(QWidget):
         history_title = QLabel("Update History")
         history_title.setObjectName("SectionTitle")
         root.addWidget(history_title)
+        self.history_title = history_title
         self.history_table = QTableWidget(0, 3)
         self.history_table.setHorizontalHeaderLabels(["When", "Change", "Result"])
         self.history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -183,6 +187,12 @@ class UpdatesPage(QWidget):
         self.interval_spin.blockSignals(True)
         self.interval_spin.setValue(self.server.auto_update_check_interval_hours)
         self.interval_spin.blockSignals(False)
+        self.settings_shown.emit()
+
+    def set_simple(self, simple: bool) -> None:
+        """Simple mode: the build and any waiting update; the preset above covers the rest."""
+        for w in (self.auto_tile, self.auto_note, self.history_title, self.history_table):
+            w.setVisible(not simple)
 
     def _on_auto_update_toggled(self, on: bool) -> None:
         if self.server:

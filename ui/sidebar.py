@@ -12,6 +12,9 @@ from models import ServerConfig, MAX_SERVERS
 import version
 from ui import assets
 
+# Shown only in Advanced mode.
+ADVANCED_NAV = {"console"}
+
 # (key, label, icon) in display order, grouped into sidebar sections.
 NAV_SECTIONS = [
     ("Manage", [
@@ -88,6 +91,7 @@ class Sidebar(QWidget):
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
+        self._nav_buttons_by_key: dict = {}
         for section, items in NAV_SECTIONS:
             root.addSpacing(8)
             root.addWidget(_section_label(section))
@@ -101,6 +105,7 @@ class Sidebar(QWidget):
                 btn.clicked.connect(lambda _=False, k=key: self.nav_selected.emit(k))
                 self._nav_group.addButton(btn)
                 root.addWidget(btn)
+                self._nav_buttons_by_key[key] = btn
         root.addStretch(1)
 
         info = QFrame()
@@ -128,6 +133,9 @@ class Sidebar(QWidget):
         self.power_btn.setEnabled(False)
         root.addSpacing(6)
         root.addWidget(self.power_btn)
+        # The Dashboard's Start/Stop is the one place to start a server (1.0.14);
+        # the button stays (hidden) for anything that drives it directly.
+        self.power_btn.hide()
 
         self._server_buttons: dict[str, QPushButton] = {}
         self._server_rows: dict[str, QWidget] = {}
@@ -135,6 +143,13 @@ class Sidebar(QWidget):
         self._server_state: dict = {}
         self._power_state = "unset"
         self._server_players: dict[str, QLabel] = {}
+
+    def set_advanced(self, on: bool) -> None:
+        """Console (and any other Advanced page) shows only in Advanced mode."""
+        for key in ADVANCED_NAV:
+            btn = self._nav_buttons_by_key.get(key)
+            if btn is not None:
+                btn.setVisible(on)
 
     def set_power_state(self, running: Optional[bool]) -> None:
         """Bottom button: Stop when running, Start when not, disabled with no server."""

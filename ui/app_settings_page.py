@@ -171,9 +171,7 @@ class AppSettingsPage(QWidget):
         theme_layout.addWidget(theme_title)
 
         theme_note = QLabel(
-            f"Colors and fonts are stored in a plain JSON file at:\n{theme_file_path()}\n"
-            "Edit it by hand (or share/drop in someone else's file) and restart ConanOps, "
-            "or use the controls below and hit Apply."
+            f"Change the colors and fonts below, then click Apply Theme. They're saved in {theme_file_path()}."
         )
         theme_note.setObjectName("Dim")
         theme_note.setWordWrap(True)
@@ -214,7 +212,7 @@ class AppSettingsPage(QWidget):
         startup_layout.addWidget(startup_title)
 
         startup_note = QLabel(
-            "Open ConanOps automatically when you sign into Windows, so your servers come back after a restart."
+            "Open ConanOps when you sign into Windows, so servers come back after a restart."
         )
         startup_note.setObjectName("Dim")
         startup_note.setWordWrap(True)
@@ -278,9 +276,8 @@ class AppSettingsPage(QWidget):
         self.keep_alive_checkbox.toggled.connect(self._on_keep_alive_toggled)
         ul.addWidget(self.keep_alive_checkbox)
         ka_note = QLabel(
-            "While you're signed in, a small Windows task checks every minute and reopens ConanOps (quietly, "
-            "in the tray) if it stopped, so backups, updates and crash restarts keep happening. Choosing Quit "
-            "from the tray icon still closes it for good until you open it again."
+            "Checks every minute and reopens ConanOps in the tray if it stopped. Quit from the tray icon still "
+            "closes it for good."
         )
         ka_note.setObjectName("Dim")
         ka_note.setWordWrap(True)
@@ -306,8 +303,7 @@ class AppSettingsPage(QWidget):
         self.keep_awake_checkbox.toggled.connect(self._on_keep_awake_toggled)
         ul.addWidget(self.keep_awake_checkbox)
         awake_note = QLabel(
-            "Stops Windows from going to sleep on its own while a server runs (your power settings aren't "
-            "changed). It can't stop the sleep button or a laptop lid closing."
+            "Stops Windows sleeping while a server runs. Your power settings aren't changed."
         )
         awake_note.setObjectName("Dim")
         awake_note.setWordWrap(True)
@@ -331,13 +327,8 @@ class AppSettingsPage(QWidget):
         self.update_start_edit.editingFinished.connect(self._on_update_window_changed)
         self.update_end_edit.editingFinished.connect(self._on_update_window_changed)
         upd_note = QLabel(
-            "When Windows needs to restart after updates, ConanOps waits for this window and for everyone to "
-            "log off, saves and stops your servers, restarts the PC, and starts the servers again afterwards. "
-            "It also sets Windows' \"active hours\" so Windows itself avoids restarting outside this window "
-            "(Windows allows at most 18 active hours, so with a short window it may still pick a nearby hour). "
-            "Servers come back after the restart once ConanOps starts again -- turn on starting with Windows, "
-            "and Windows' \"Use my sign-in info to automatically finish setting up after an update\" so it "
-            "signs back in by itself."
+            "When Windows needs to restart for updates, ConanOps waits for this window and for everyone to log "
+            "off, saves and stops the servers, restarts the PC and starts the servers again."
         )
         upd_note.setObjectName("Dim")
         upd_note.setWordWrap(True)
@@ -355,7 +346,8 @@ class AppSettingsPage(QWidget):
         self.sign_in_settings_btn.hide()
 
         mod_row = QHBoxLayout()
-        mod_row.addWidget(QLabel("If a mod stops a server from starting:"))
+        self.mod_recovery_label = QLabel("If a mod stops a server from starting:")
+        mod_row.addWidget(self.mod_recovery_label)
         self.mod_recovery_combo = QComboBox()
         self.mod_recovery_combo.addItem("Find it, keep the server stopped and wait for a fix", "wait")
         self.mod_recovery_combo.addItem("Find it and start without it (its items are removed)", "start_without")
@@ -374,6 +366,9 @@ class AppSettingsPage(QWidget):
         mod_note.setObjectName("Dim")
         mod_note.setWordWrap(True)
         ul.addWidget(mod_note)
+        # Shown as a preset under Server Settings > Automation since 1.0.14; the combo keeps the value.
+        for w in (self.mod_recovery_label, self.mod_recovery_combo, mod_note):
+            w.hide()
 
         tour_row = QHBoxLayout()
         self.tour_btn = QPushButton("Show the Dashboard Tour")
@@ -401,12 +396,9 @@ class AppSettingsPage(QWidget):
         workshop_layout.addWidget(workshop_title)
 
         workshop_note = QLabel(
-            'Lets the Mods tab search/browse the Workshop instead of needing a mod\'s ID typed in by '
-            'hand. Needs your own free Steam Web API key -- ConanOps can\'t ship one built in (sharing '
-            'one key across everyone who has ConanOps would blow through Steam\'s rate limit almost '
-            'immediately, and publishing a personal key like that is against Steam\'s own terms). Get '
-            'one at <a href="https://steamcommunity.com/dev/apikey">steamcommunity.com/dev/apikey</a> '
-            '-- takes under a minute, just needs you to be signed into Steam.'
+            'Lets the Mods page search the Workshop and check mods for updates. Needs your own free Steam Web '
+            'API key from <a href="https://steamcommunity.com/dev/apikey">steamcommunity.com/dev/apikey</a> '
+            '(sign into Steam; it takes a minute).'
         )
         workshop_note.setObjectName("Dim")
         workshop_note.setWordWrap(True)
@@ -421,8 +413,7 @@ class AppSettingsPage(QWidget):
         workshop_layout.addWidget(self.steam_api_key_edit)
 
         cutoff_label = QLabel(
-            "Mods count as updated for the current game patch if they were updated on or after this "
-            "date (YYYY-MM-DD). Change it when a new patch requires mods to be rebuilt."
+            "Mods updated on or after this date (YYYY-MM-DD) count as up to date for the current game patch."
         )
         cutoff_label.setObjectName("Dim")
         cutoff_label.setWordWrap(True)
@@ -444,16 +435,14 @@ class AppSettingsPage(QWidget):
         duckdns_layout.setContentsMargins(20, 16, 20, 16)
         duckdns_layout.setSpacing(10)
 
-        duckdns_title = QLabel("Dynamic DNS")
+        duckdns_title = QLabel("Fixed web address (DuckDNS)")
         duckdns_title.setObjectName("PageTitle")
         duckdns_layout.addWidget(duckdns_title)
 
         duckdns_note = QLabel(
-            'Keeps a DuckDNS domain pointed at this PC\'s current public IP -- useful if your '
-            'internet provider doesn\'t give you a static one, since players\' saved server entries '
-            'would otherwise silently break whenever it changes. Free account at '
-            '<a href="https://www.duckdns.org">duckdns.org</a> -- sign in, add a domain, and copy '
-            'your token from the same page.'
+            'A name like yourserver.duckdns.org that always points to this PC, even when your internet '
+            'address changes. Free at <a href="https://www.duckdns.org">duckdns.org</a>: add a domain and '
+            'copy your token.'
         )
         duckdns_note.setObjectName("Dim")
         duckdns_note.setWordWrap(True)
@@ -489,10 +478,8 @@ class AppSettingsPage(QWidget):
         lock_layout.addWidget(lock_title)
 
         lock_note = QLabel(
-            "Optional. When on, ConanOps asks for this PIN before it opens -- it has full "
-            "RCON access and can ban players, force restarts, and apply updates, so this is "
-            "meant to stop a glance at an unlocked screen, not a determined attacker. "
-            "Off by default; you can turn it on or off at any time, here or from the tray icon."
+            "Asks for a PIN before ConanOps opens. It stops someone at an unlocked PC, not a determined "
+            "attacker."
         )
         lock_note.setObjectName("Dim")
         lock_note.setWordWrap(True)
@@ -517,14 +504,12 @@ class AppSettingsPage(QWidget):
         web_layout.setContentsMargins(20, 16, 20, 16)
         web_layout.setSpacing(10)
 
-        web_title = QLabel("Web Version")
+        web_title = QLabel("Web version")
         web_title.setObjectName("PageTitle")
         web_layout.addWidget(web_title)
 
         web_note = QLabel(
-            "Use ConanOps from a browser on your phone or another computer -- dashboards, start/stop, "
-            "players, console, backups, updates, mods and server settings. Deleting things and adding "
-            "servers stay in this app. Everyone signs in with the password below."
+            "Everyone signs in with this password. Adding and deleting servers stays in this app."
         )
         web_note.setObjectName("Dim")
         web_note.setWordWrap(True)
@@ -566,6 +551,7 @@ class AppSettingsPage(QWidget):
         web_layout.addLayout(link_row)
 
         self.web_remote_checkbox = QCheckBox("Also let me use it from anywhere (secure link through Cloudflare)")
+        self.web_remote_note = None
         self.web_remote_checkbox.setChecked(self.config.web_remote_enabled)
         self.web_remote_checkbox.toggled.connect(self._on_web_remote_toggled)
         web_layout.addWidget(self.web_remote_checkbox)
@@ -579,13 +565,13 @@ class AppSettingsPage(QWidget):
         remote_row.addWidget(self.copy_remote_btn)
         web_layout.addLayout(remote_row)
         remote_note = QLabel(
-            "Works on mobile data, with no router changes and your home address hidden -- Cloudflare's free "
-            "tunnel carries it over HTTPS. The link changes whenever it reconnects; ConanOps sends the new one "
-            "to your ntfy phone alerts if you use them (never to Discord, where players might see it). Anyone with the link still needs the password."
+            "Works on mobile data with no router changes, through Cloudflare's free secure tunnel. The link "
+            "changes when it reconnects; the new one is sent to your ntfy phone alerts (never to Discord)."
         )
         remote_note.setObjectName("Dim")
         remote_note.setWordWrap(True)
         web_layout.addWidget(remote_note)
+        self.web_remote_note = remote_note
         self.web_tunnel = None
         self.on_web_remote_changed = None
         self.on_web_password_changed = None
@@ -652,11 +638,11 @@ class AppSettingsPage(QWidget):
         update_layout.addWidget(self.auto_install_updates_checkbox)
         for w in (self.check_updates_btn, self.auto_check_updates_checkbox, self.auto_install_updates_checkbox):
             w.setVisible(online)
+        self._online_updates = online
 
         file_note = QLabel(
-            "Or install from an update file you've downloaded yourself. Either way, ConanOps backs up the "
-            "current version first, closes and reopens itself to finish, and puts the old version back "
-            "automatically if the new one won't start."
+            "Or install from an update file you've downloaded. The current version is kept and put back if the "
+            "new one won't start."
         )
         file_note.setObjectName("Dim")
         file_note.setWordWrap(True)
@@ -708,9 +694,7 @@ class AppSettingsPage(QWidget):
         delete_layout.addWidget(self.delete_app_only_btn)
 
         keep_note = QLabel(
-            "Removes ConanOps' own program files only. Your servers' install folders, "
-            "SteamCMD folders, backups, and Windows Firewall rules are left exactly as they "
-            "are -- reinstalling ConanOps later will find them again."
+            "Removes the program only. Servers, worlds and backups stay, and a reinstall finds them again."
         )
         keep_note.setObjectName("Dim")
         keep_note.setWordWrap(True)
@@ -722,9 +706,8 @@ class AppSettingsPage(QWidget):
         delete_layout.addWidget(self.delete_everything_btn)
 
         everything_note = QLabel(
-            "Puts this PC back the way it was before ConanOps: every server and its files, SteamCMD, "
-            "backups, firewall rules, router port forwards, the startup entry, Windows Update hours, "
-            "temporary files and ConanOps itself. This deletes your world saves -- there is no undo."
+            "Removes every server ConanOps installed, their worlds and backups, and every change ConanOps made "
+            "to Windows. There is no undo."
         )
         everything_note.setObjectName("Dim")
         everything_note.setWordWrap(True)
@@ -749,9 +732,8 @@ class AppSettingsPage(QWidget):
         title = QLabel("Alerts")
         title.setObjectName("PageTitle")
         lay.addWidget(title)
-        intro = QLabel("Get told when a server crashes, updates, finds a broken mod, a backup fails and more -- in a "
-                       "Discord channel, as phone notifications through ntfy, or both. These are for all your "
-                       "servers; every alert says which server it's about.")
+        intro = QLabel("Get told when a server crashes, a backup fails or a mod breaks -- in a Discord channel, on "
+                       "your phone through the ntfy app, or both. Every alert names its server.")
         intro.setObjectName("Dim")
         intro.setWordWrap(True)
         lay.addWidget(intro)
@@ -792,8 +774,14 @@ class AppSettingsPage(QWidget):
             lay, webhooks.test_ntfy, self.alert_ntfy_edit)
         self.alert_ntfy_guide = FoldOutGuide(*alert_guides.NTFY)
         lay.addWidget(self.alert_ntfy_guide)
-        # Discord commands: a bot that answers !status and !restart.
-        lay.addWidget(QLabel(""))
+        # Discord commands: a bot that answers !status and !restart (Advanced mode).
+        card_lay = lay
+        self.discord_bot_box = QWidget()
+        self.discord_bot_box.setObjectName("TransparentRow")
+        lay = QVBoxLayout(self.discord_bot_box)  # field() below adds to whatever `lay` is now
+        lay.setContentsMargins(0, 10, 0, 0)
+        lay.setSpacing(10)
+        card_lay.addWidget(self.discord_bot_box)
         bot_title = QLabel("Discord commands")
         bot_title.setObjectName("SectionTitle")
         lay.addWidget(bot_title)
@@ -819,6 +807,7 @@ class AppSettingsPage(QWidget):
         lay.addWidget(self.discord_bot_problem_label)
         self.discord_bot_guide = FoldOutGuide(*alert_guides.DISCORD_BOT)
         lay.addWidget(self.discord_bot_guide)
+        lay = card_lay
 
         self.alert_error_label = QLabel("")
         self.alert_error_label.setObjectName("ErrorText")
@@ -917,22 +906,73 @@ class AppSettingsPage(QWidget):
         self._on_alert_links_changed()
 
     # ---------------------------------------------------------- sections --
-    # (key, label, group heading or "") in the order the cards are built. Shared with the web UI.
+    # (key, label, group heading or "") as listed. Since 1.0.14 there are five,
+    # led by presets; PIN Lock and Steam Workshop show in Advanced mode only.
     SECTIONS = [
-        ("startup", "Startup", "Running"),
-        ("keep", "Keep Running", ""),
-        ("web", "Web Version", "Remote Access"),
-        ("ddns", "Dynamic DNS", ""),
-        ("alerts", "Alerts", "Integrations"),
+        ("run", "Run Automatically", ""),
+        ("remote", "Remote Access", ""),
+        ("alerts", "Alerts", ""),
+        ("appearance", "Appearance", ""),
+        ("updates", "Updates & Uninstall", ""),
+        ("lock", "PIN Lock", "Advanced"),
         ("workshop", "Steam Workshop", ""),
-        ("appearance", "Appearance", "ConanOps"),
-        ("lock", "PIN Lock", ""),
-        ("updates", "Updates", ""),
-        ("delete", "Delete ConanOps", ""),
     ]
+    ADVANCED_SECTIONS = {"lock", "workshop"}
+    # Older section keys (used by links elsewhere in the app) -> where that card is now.
+    SECTION_ALIASES = {"startup": "run", "keep": "run", "web": "remote", "ddns": "remote", "delete": "updates"}
     _CARD_ORDER = ["appearance", "startup", "keep", "workshop", "alerts", "ddns", "lock", "web", "updates", "delete"]
 
+    def _build_presets(self, by_key: dict) -> dict:
+        """Preset pickers for the sections, bound to this page's own controls."""
+        import presets
+        from ui.preset_group import PresetBinding, PresetGroup
+        self.run_preset = PresetGroup(presets.RUN, details_elsewhere=True)
+        run_boxes = {"start_with_windows": self.start_with_windows_checkbox, "keep_alive": self.keep_alive_checkbox,
+                     "keep_awake": self.keep_awake_checkbox, "update_window": self.update_restart_checkbox}
+        self.remote_preset = PresetGroup(presets.REMOTE)
+        remote_boxes = {"web_on": self.web_control_checkbox, "web_remote": self.web_remote_checkbox}
+        self.app_updates_preset = PresetGroup(presets.APP_UPDATES)
+        update_boxes = {"auto_check": self.auto_check_updates_checkbox,
+                        "auto_install": self.auto_install_updates_checkbox}
+
+        def reader(boxes):
+            return lambda: {k: b.isChecked() for k, b in boxes.items()}
+
+        def writer(boxes):
+            def write(values: dict) -> None:
+                for k, b in boxes.items():  # in order: e.g. the web version before its outside link
+                    if k in values and b.isChecked() != bool(values[k]):
+                        b.setChecked(bool(values[k]))
+            return write
+
+        def write_remote(values: dict) -> None:
+            writer(remote_boxes)(values)
+            if values.get("web_on") and not self.config.web_password_hash:
+                self._set_web_password()  # nobody can sign in without one
+        self._preset_bindings = [
+            PresetBinding(self.run_preset, reader(run_boxes), writer(run_boxes),
+                          [b.toggled for b in run_boxes.values()]),
+            PresetBinding(self.remote_preset, reader(remote_boxes), write_remote,
+                          [b.toggled for b in remote_boxes.values()]),
+            PresetBinding(self.app_updates_preset, reader(update_boxes), writer(update_boxes),
+                          [b.toggled for b in update_boxes.values()]),
+        ]
+        for picker in (self.run_preset, self.remote_preset, self.app_updates_preset):
+            picker.advanced_requested.connect(lambda: self.on_request_advanced and self.on_request_advanced())
+        # (widget, shown only in Advanced) per section, top to bottom.
+        return {
+            "run": [(self.run_preset, False), (by_key["startup"], True), (by_key["keep"], True)],
+            "remote": [(self.remote_preset, False), (by_key["web"], False), (by_key["ddns"], True)],
+            "alerts": [(by_key["alerts"], False)],
+            "appearance": [(by_key["appearance"], False)],
+            "updates": [(self.app_updates_preset, False), (by_key["updates"], False), (by_key["delete"], False)],
+            "lock": [(by_key["lock"], False)],
+            "workshop": [(by_key["workshop"], False)],
+        }
+
     def _build_sections(self, cards: list) -> None:
+        self.on_request_advanced = None  # set by MainWindow
+        self._advanced = False
         # A search box over every App Settings section, like Server Settings.
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("SettingsSearch")
@@ -958,14 +998,18 @@ class AppSettingsPage(QWidget):
         self._section_stack = QStackedWidget()
         self._section_buttons: dict = {}
         self._section_pages: dict = {}
+        self._section_headings: dict = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
         by_key = dict(zip(self._CARD_ORDER, cards))
+        self._section_items = self._build_presets(by_key)
+        self._section_cards: dict = {}
         for key, label, heading in self.SECTIONS:
             if heading:
                 h = QLabel(heading)
                 h.setObjectName("SectionLabel")
                 nav.addWidget(h)
+                self._section_headings[key] = h
             btn = QPushButton(label.replace("&", "&&"))
             btn.setObjectName("NavButton")
             btn.setCheckable(True)
@@ -979,14 +1023,16 @@ class AppSettingsPage(QWidget):
             inner = QWidget()
             col = QVBoxLayout(inner)
             col.setContentsMargins(0, 0, 8, 0)
-            col.addWidget(by_key[key])
+            col.setSpacing(14)
+            for widget, _adv in self._section_items[key]:
+                col.addWidget(widget)
             col.addStretch(1)
             scroll.setWidget(inner)
             self._section_stack.addWidget(scroll)
             self._section_pages[key] = scroll
+            self._section_cards[key] = inner
         nav.addStretch(1)
         self._section_group = group
-        self._section_cards = by_key
         self._results_page = QWidget()
         rl = QVBoxLayout(self._results_page)
         rl.setContentsMargins(0, 0, 8, 0)
@@ -1005,7 +1051,32 @@ class AppSettingsPage(QWidget):
         body.addWidget(nav_box)
         body.addWidget(self._section_stack, 1)
         self._root_layout.addLayout(body, 1)
-        self.show_section("startup")
+        self.set_advanced(False)
+        self.show_section("run")
+
+    def set_advanced(self, on: bool) -> None:
+        """Simple mode shows the presets; Advanced shows every option and section."""
+        self._advanced = on
+        for items in self._section_items.values():
+            for widget, adv_only in items:
+                if adv_only:
+                    widget.setVisible(on)
+        for picker in (self.run_preset, self.remote_preset, self.app_updates_preset):
+            picker.set_advanced(on)
+        # The presets cover these switches in Simple mode.
+        for w in (self.web_control_checkbox, self.web_remote_checkbox, self.web_remote_note,
+                  self.discord_bot_box):
+            if w is not None:
+                w.setVisible(on)
+        for w in (self.auto_check_updates_checkbox, self.auto_install_updates_checkbox):
+            w.setVisible(on and self._online_updates)
+        self.app_updates_preset.setVisible(self._online_updates)
+        for key in self.ADVANCED_SECTIONS:
+            self._section_buttons[key].setVisible(on)
+            if key in self._section_headings:
+                self._section_headings[key].setVisible(on)
+        if not on and getattr(self, "_last_section", "") in self.ADVANCED_SECTIONS:
+            self.show_section("run")
 
     def _build_search_index(self) -> list:
         from PySide6.QtWidgets import QAbstractButton
@@ -1029,7 +1100,7 @@ class AppSettingsPage(QWidget):
     def _on_search(self, text: str) -> None:
         q = " ".join(text.lower().split())
         if not q:
-            self.show_section(self.current_section() or "startup")
+            self.show_section(self.current_section() or "run")
             return
         if self._search_index is None:
             self._search_index = self._build_search_index()
@@ -1072,6 +1143,8 @@ class AppSettingsPage(QWidget):
         self.search_edit.clear()
         self.search_edit.blockSignals(False)
         self.show_section(key)
+        if not widget.isVisibleTo(self._section_cards[key]) and callable(self.on_request_advanced):
+            self.on_request_advanced()  # it's one of the Advanced options
         from PySide6.QtCore import QTimer
 
         def reveal():
@@ -1081,8 +1154,11 @@ class AppSettingsPage(QWidget):
         QTimer.singleShot(0, reveal)
 
     def show_section(self, key: str) -> None:
+        key = self.SECTION_ALIASES.get(key, key)
         if key not in self._section_pages:
             return
+        if key in self.ADVANCED_SECTIONS and not self._advanced and callable(self.on_request_advanced):
+            self.on_request_advanced()
         self._last_section = key
         if getattr(self, "search_edit", None) is not None and self.search_edit.text():
             self.search_edit.blockSignals(True)
@@ -1217,10 +1293,9 @@ class AppSettingsPage(QWidget):
             state = (" ConanOps is running with admin rights now." if proc_utils.is_admin()
                      else " It takes effect the next time ConanOps starts.")
         self.admin_mode_note.setText(
-            "Windows asks for permission once. After that ConanOps starts itself with admin rights, so firewall "
-            "changes and Windows' update hours never wait for someone to click \"Yes\" -- including from the web "
-            "version. Trade-off: anything that can change files in ConanOps' folder could also get admin rights "
-            "this way." + state)
+            "Windows asks once; after that, firewall and update-hour changes never wait for someone to click "
+            "\"Yes\". Trade-off: anything that can change files in ConanOps' folder could also get admin rights."
+            + state)
 
     def show_admin_mode_problem(self, text: str) -> None:
         self.admin_mode_problem_label.setText(text)

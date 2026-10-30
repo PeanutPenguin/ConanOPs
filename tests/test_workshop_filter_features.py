@@ -442,7 +442,11 @@ def test_mods_tab_all_clear_message(qapp):
 def test_mods_tab_shows_lookup_errors(qapp):
     page, _ = _page_with([{"id": "1", "name": "Fresh", "enabled": True}])
     page._on_mod_status("s1", swa.DetailsResult(ok=False, error="Steam is down"))
-    assert "Steam is down" in page.mod_status_label.text()
+    assert page.mod_status_label.text().startswith("Couldn't check your mods")  # plain words, not the raw error
+    page._on_mod_status("s1", swa.DetailsResult(
+        ok=False, error="Steam Workshop lookup failed: <urlopen error Tunnel connection failed: 403 Forbidden>"))
+    text = page.mod_status_label.text()
+    assert "Couldn't reach Steam" in text and "urlopen" not in text
 
 
 def test_mods_tab_auto_checks_only_when_enabled_and_once_per_server(qapp, monkeypatch):

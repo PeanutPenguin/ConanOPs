@@ -83,7 +83,7 @@ def test_start_stop_visibility_toggles_with_running_state():
     page._apply_running_state(running=False)
     assert page.start_btn.isVisibleTo(page) is True
     assert page.stop_btn.isVisibleTo(page) is False
-    assert page.restart_btn.isVisibleTo(page) is True
+    assert page.restart_btn.isVisibleTo(page) is False  # stopped: Start is the one action
 
 
 def test_no_start_stop_restart_for_a_server_that_is_not_set_up_yet():

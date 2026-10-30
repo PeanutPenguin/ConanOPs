@@ -304,6 +304,7 @@ conanops/
   mod_manager.py                       mod list + bisect helper
   server_finder.py                     finds Conan servers already on the PC, reads their settings
   takeover.py                          finds/switches off other launchers of a server (and undoes it)
+  presets.py                           named choices for groups of settings (Simple mode)
   banlist_manager.py                    whitelist/ban bookkeeping + RCON enforcement
   webhooks.py                             Discord/ntfy alert sending
   applog.py                                rotating file logger (~/ConanOps/conanops.log)

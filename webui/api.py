@@ -247,7 +247,7 @@ class WebApi:
             states = w._automation_states(s)
             from ui.dashboard_page import AUTOMATION_TILES
             tiles = [{"key": key, "name": name, "on": bool(states.get(key, (False, ""))[0]),
-                      "detail": states.get(key, (False, ""))[1]} for key, name, _mark, _tint in AUTOMATION_TILES]
+                      "detail": states.get(key, (False, ""))[1]} for key, name in AUTOMATION_TILES]
             log = list(getattr(w, "_web_logs", {}).get(sid, ()))[-200:]
             status = dict(getattr(w, "_web_status", {}).get(sid, {}) or {})
             rec = getattr(s, "mod_recovery", {}) or {}

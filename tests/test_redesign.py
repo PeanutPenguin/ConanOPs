@@ -276,11 +276,11 @@ def test_custom_accent_buttons_stay_readable():
     assert 1.05 / (_luminance(fill) + 0.05) >= 4.5
 
 
-def test_dashboard_restart_is_the_primary_button():
+def test_dashboard_start_is_the_one_main_button_while_stopped():
     from ui.dashboard_page import DashboardPage
     page = DashboardPage()
-    assert page.restart_btn.objectName() == "PrimaryButton"
-    assert page.start_btn.objectName() != "PrimaryButton"
+    assert page.start_btn.objectName() == "PrimaryButton"
+    assert page.restart_btn.objectName() != "PrimaryButton"
 
 
 def test_mod_switch_updates_in_place_without_rebuilding_or_selecting():
@@ -328,7 +328,7 @@ def test_timer_refreshes_skip_unchanged_widgets(monkeypatch):
     assert len(polished) == count          # unchanged: no restyle
     assert dot.property("running") is True
 
-    tile = AutomationTile("restart", "Scheduled restarts", "RS", "#fff")
+    tile = AutomationTile("restart", "Daily restart")
     tile.set_state(True, "Daily")
     label_before = tile.state_label.text()
     tile.state_label.setText("sentinel")

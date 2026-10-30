@@ -24,6 +24,18 @@ from ui.auto_bisect_dialog import AutoBisectDialog
 from ui.workers import keep_until_finished
 
 
+def _friendly_status_error(error: str) -> str:
+    """A plain sentence for a failed mod-status check (the raw error goes to the log)."""
+    low = (error or "").lower()
+    if "key" in low and ("invalid" in low or "403" in low or "forbidden" in low or "unauthor" in low):
+        return ("Couldn't check your mods for updates: Steam didn't accept the Steam Web API key. Check it "
+                "under App Settings > Steam Workshop (Advanced).")
+    if any(w in low for w in ("urlopen", "timed out", "timeout", "connection", "forbidden", "403", "name resolution",
+                              "unreachable", "network")):
+        return "Couldn't reach Steam to check your mods for updates. Check the internet connection and try again."
+    return "Couldn't check your mods for updates right now. Try again in a few minutes."
+
+
 class ModsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -241,6 +253,8 @@ class ModsPage(QWidget):
             self._mod_status_error.pop(server_id, None)
         else:
             self._mod_status_error[server_id] = result.error
+            import applog
+            applog.get_logger(__name__).info(f"Mod status check failed: {result.error}")
         self._refresh()
 
     def _row_color(self, mod: dict, known, server_ids: set) -> str:
@@ -339,7 +353,7 @@ class ModsPage(QWidget):
         error = self._mod_status_error.get(self.server.id)
         server_ids = {m["id"] for m in self.server.mods}
         if error:
-            self._set_status_note(f"Couldn't check mod status: {error}", "warn")
+            self._set_status_note(_friendly_status_error(error), "warn")
         elif known is not None:
             summary = self._status_summary(known)
             self._set_status_note(summary, "ok" if summary.startswith("✓") else "warn")

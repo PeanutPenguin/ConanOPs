@@ -54,17 +54,17 @@ def test_sidebar_has_six_entries_and_keeps_servers(win):
 def test_old_pages_still_open_where_they_moved(win):
     win._on_nav_selected("updates")
     assert win.stack.currentWidget() is win.settings_container
-    assert win.settings_container.current_section() == "updates"
+    assert win.settings_container.current_section() == "automation"  # 1.0.14: updates live under Automation
     win._on_nav_selected("access")
     assert win.stack.currentWidget() is win.players_tabs
     assert win.players_tabs.current_tab() == "access"
     win._open_automation_settings("updates")
-    assert win.settings_container.current_section() == "updates"
+    assert win.settings_container.current_section() == "automation"
 
 
 def test_every_gameplay_setting_shown_once_with_its_slider(win):
     from ui.ghost_slider import GhostSlider
-    section = win.settings_gameplay
+    section = win.settings_container.sections["gameplay"]  # the play-style presets, then every setting
     pages = [win.settings_rates_page, *win.gameplay_pages.values()]
     seen = set()
     for page in pages:

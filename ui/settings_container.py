@@ -30,8 +30,12 @@ def _norm(text: str) -> str:
 
 class SettingsContainer(QWidget):
     def __init__(self, entries: List[Tuple], parent=None, pages: Optional[List[Tuple[str, QWidget]]] = None,
-                 extras: Optional[List[Tuple[str, str, str, QWidget]]] = None):
+                 extras: Optional[List[Tuple[str, str, str, QWidget]]] = None, section_for=None):
         super().__init__(parent)
+        # Which section shows a page key (the app's layout differs from the web's).
+        self._section_for = section_for or settings_layout.section_for
+        # Called when search lands on a setting only shown in Advanced mode.
+        self.on_need_advanced = None
         sections = []
         for e in entries:
             if len(e) == 5:
@@ -206,7 +210,7 @@ class SettingsContainer(QWidget):
 
     def _section_of_page(self, page) -> str:
         key = next((k for k, p in self.pages.items() if p is page), "")
-        return self._section_labels.get(settings_layout.section_for(key), getattr(page, "page_title", key))
+        return self._section_labels.get(self._section_for(key), getattr(page, "page_title", key))
 
     def apply_all(self) -> None:
         """Applies every page's pending changes. A page whose can_apply() is
@@ -227,7 +231,7 @@ class SettingsContainer(QWidget):
     # -------------------------------------------------------- navigation --
     def _select(self, key: str) -> None:
         if key not in self.sections:
-            key = settings_layout.section_for(key)
+            key = self._section_for(key)
         if key not in self.sections:
             return
         self._current = key
@@ -246,6 +250,9 @@ class SettingsContainer(QWidget):
         """Opens a section at one setting: unfolds it, scrolls to it, focuses it."""
         self._select(section_key)
         open_folds_around(widget)
+        holder = self.sections.get(self._current)
+        if holder is not None and not widget.isVisibleTo(holder) and callable(self.on_need_advanced):
+            self.on_need_advanced()  # the setting lives in Advanced: show it
 
         def reveal():
             w = widget.parentWidget()
@@ -261,7 +268,7 @@ class SettingsContainer(QWidget):
         from webui.fields import _help_for, _label_for
         index = []
         for page_key, page in self.pages.items():
-            section = settings_layout.section_for(page_key)
+            section = self._section_for(page_key)
             for name, w in getattr(page, "_fields", {}).items():
                 label = _label_for(w) or name
                 where = [self._section_labels.get(section, "")]

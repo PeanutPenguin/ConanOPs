@@ -395,6 +395,27 @@ def build_stylesheet(palette: ThemePalette = DEFAULT_PALETTE) -> str:
         border-radius: 0; text-align: left; padding: 10px 16px; color: {TEXT}; }}
     QLabel#SearchResultName {{ color: {TEXT}; font-weight: 600; background: transparent; }}
     QPushButton#SearchResult:hover {{ background: {_mix(PANEL, ACCENT, 0.08)}; }}
+    QPushButton#PresetCard {{ background: {SUNK}; border: 2px solid {BORDER}; border-radius: 10px;
+        text-align: left; padding: 0; min-height: 88px; }}
+    QPushButton#PresetCard:hover {{ border-color: {_mix(BORDER, ACCENT, 0.5)}; }}
+    QPushButton#PresetCard:checked {{ background: {_mix(SUNK, ACCENT, 0.14)}; border-color: {ACCENT}; }}
+    QPushButton#PresetCard:focus {{ border-color: {ACCENT_TEXT}; }}
+    QLabel#PresetName {{ color: {TEXT}; font-weight: 600; font-size: 14px; background: transparent; }}
+    QLabel#PresetSummary {{ color: {MUTED}; font-size: 13px; background: transparent; }}
+    QLabel#PresetRecommended {{ color: {GREEN}; font-size: 11px; font-weight: 600; background: transparent; }}
+    QLabel#CustomBadge {{ color: {ACCENT_TEXT}; border: 1px solid {_mix(BORDER, ACCENT, 0.6)}; border-radius: 6px;
+        padding: 1px 8px; font-size: 12px; background: transparent; }}
+    QPushButton#HelpButton {{ min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px; padding: 0;
+        border-radius: 12px; border: 1px solid {_shade(BORDER, 1.4)}; background: transparent; color: {MUTED};
+        font-size: 12px; font-weight: 600; }}
+    QPushButton#HelpButton:checked, QPushButton#HelpButton:hover {{ color: {ACCENT_TEXT}; border-color: {ACCENT_TEXT}; }}
+    QPushButton#LinkButton {{ background: transparent; border: none; color: {ACCENT_TEXT}; padding: 0;
+        min-height: 0; text-align: left; font-size: 13px; }}
+    QPushButton#LinkButton:hover {{ text-decoration: underline; }}
+    QPushButton#ModeButton {{ background: transparent; border: none; border-radius: 7px; padding: 6px 14px;
+        min-height: 0; color: {MUTED}; font-size: 13px; font-weight: 600; }}
+    QPushButton#ModeButton:checked {{ background: {FILL}; color: #ffffff; }}
+    QFrame#ModeSwitch {{ background: {SUNK}; border: 1px solid {BORDER}; border-radius: 10px; }}
     QFrame#SaveBar {{ background: {_mix(PANEL, ACCENT, 0.12)}; border: 1px solid {_mix(BORDER, ACCENT, 0.4)};
         border-radius: 10px; }}
     QFrame#TabStrip {{ background: transparent; border-bottom: 1px solid {_shade(BORDER, 0.92)}; }}

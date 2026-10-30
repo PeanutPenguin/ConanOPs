@@ -32,6 +32,12 @@ class SettingsNetworkPage(SettingsPageBase):
         self.on_repair_network = None
         self._build_form()
 
+    def set_simple(self, simple: bool) -> None:
+        """Simple mode: name, password and player limit; ports only when they clash."""
+        self._simple = simple
+        self.more.setVisible(not simple)
+        self.ports_box.setVisible(not simple or self._has_conflict)
+
     def can_apply(self) -> bool:
         # Block Apply on conflicts so they're fixed now, not at launch.
         return not (self._has_conflict or self._bind_error or self._name_error)
@@ -68,9 +74,17 @@ class SettingsNetworkPage(SettingsPageBase):
         self.form_layout.addLayout(_row("Server Password", "Leave blank for a public server.", pw_wrap))
         self.register_field("password", self.password_edit, lambda w: w.text(), lambda w, v: w.setText(v), self.password_edit.textChanged)
 
+        # Ports: shown in Advanced mode, or in Simple mode only when there's a conflict to fix.
+        self.ports_box = QFrame()
+        self.ports_box.setObjectName("TransparentRow")
+        ports_layout = QVBoxLayout(self.ports_box)
+        ports_layout.setContentsMargins(0, 0, 0, 0)
+        ports_layout.setSpacing(18)
+        self.form_layout.addWidget(self.ports_box)
+        self._simple = False
         self.game_port_spin = QSpinBox()
         self.game_port_spin.setRange(1024, 65534)  # game port + 1 must also be a valid port
-        self.form_layout.addLayout(_row(
+        ports_layout.addLayout(_row(
             "Game Port",
             "The UDP port players connect to directly. Changing it disconnects everyone until they reconnect on the new port.",
             self.game_port_spin,
@@ -92,7 +106,7 @@ class SettingsNetworkPage(SettingsPageBase):
         )
         query_col.addWidget(self.conflict_label)
         query_col.addWidget(self.fix_port_btn)
-        self.form_layout.addLayout(query_col)
+        ports_layout.addLayout(query_col)
         self.register_field("query_port", self.query_port_spin, lambda w: w.value(), lambda w, v: w.setValue(v), self.query_port_spin.valueChanged)
 
         self.game_port_spin.valueChanged.connect(self._check_port_conflict)
@@ -231,6 +245,7 @@ class SettingsNetworkPage(SettingsPageBase):
         query_conflict = overlap or query in reserved or not live_free(query)
         conflict = game_conflict or query_conflict
         self._has_conflict = conflict
+        self.ports_box.setVisible(not self._simple or conflict)
 
         self.conflict_label.setVisible(conflict)
         self.fix_port_btn.setVisible(conflict)

@@ -225,6 +225,9 @@ class AppConfig:
     mod_recovery_mode: str = "wait"
     # The one-time dashboard tour (ui/tour.py) has been shown.
     tour_done: bool = False
+    # Advanced mode shows every individual setting, Console and the less-used
+    # App Settings; Simple (the default) shows presets.
+    advanced_mode: bool = False
     handle_update_restarts: bool = False
     update_restart_start: str = "04:00"
     update_restart_end: str = "06:00"
@@ -348,6 +351,7 @@ class AppConfig:
             admin_mode_enabled=raw.get("admin_mode_enabled", False),
             mod_recovery_mode=raw.get("mod_recovery_mode", "wait"),
             tour_done=raw.get("tour_done", False),
+            advanced_mode=bool(raw.get("advanced_mode", False)),
             handle_update_restarts=raw.get("handle_update_restarts", False),
             update_restart_start=raw.get("update_restart_start", "04:00"),
             update_restart_end=raw.get("update_restart_end", "06:00"),
@@ -414,6 +418,7 @@ class AppConfig:
             "admin_mode_enabled": self.admin_mode_enabled,
             "mod_recovery_mode": self.mod_recovery_mode,
             "tour_done": self.tour_done,
+            "advanced_mode": self.advanced_mode,
             "handle_update_restarts": self.handle_update_restarts,
             "update_restart_start": self.update_restart_start,
             "update_restart_end": self.update_restart_end,

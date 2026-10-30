@@ -82,6 +82,7 @@ class SettingsBackupsPage(SettingsPageBase):
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         self.form_layout.addWidget(divider)
+        self.divider = divider
 
         self.backups_widget = BackupsPage(embedded=True)
         self.form_layout.addWidget(self.backups_widget)
