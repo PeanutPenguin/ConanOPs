@@ -19,7 +19,7 @@ import diagnostics_runner
 import network_setup
 import network_utils
 from models import ServerConfig
-from ui.workers import keep_until_finished
+from ui.workers import keep_running_past_owner, keep_until_finished
 
 # Status -> (pill object name, pill text); colors come from the theme.
 _STATUS_PILL = {
@@ -189,7 +189,8 @@ class DiagnosticsPage(QWidget):
         self._last_server = server  # so the port-forwarding guide button knows which server's ports/IP to show
 
         reserved_ports = self.get_reserved_ports()
-        self._worker = diagnostics_runner.DiagnosticsWorker(server, reserved_ports=reserved_ports, parent=self)
+        self._worker = diagnostics_runner.DiagnosticsWorker(server, reserved_ports=reserved_ports)
+        keep_running_past_owner(self._worker)
         self._worker.finished_diagnostics.connect(self._on_diagnostics_finished)
         worker = self._worker
         keep_until_finished(self._retiring_workers, worker)
@@ -289,7 +290,8 @@ class DiagnosticsPage(QWidget):
                 self.done.emit(outcome)
 
         self.last_run_label.setText("Installing the Visual C++ runtime… (click Yes if Windows asks)")
-        self._vc_worker = _VcWorker(self)
+        self._vc_worker = _VcWorker()
+        keep_running_past_owner(self._vc_worker)
 
         def finished(outcome):
             self._vc_worker = None
@@ -318,7 +320,8 @@ class DiagnosticsPage(QWidget):
         server = self._last_server
         # Router and public-IP lookups run off the GUI thread.
         import network_setup_runner
-        self._guide_worker = network_setup_runner.GuideInfoWorker(server.bind_ip or None, parent=self)
+        self._guide_worker = network_setup_runner.GuideInfoWorker(server.bind_ip or None)
+        keep_running_past_owner(self._guide_worker)
 
         def show(info, srv=server):
             self._guide_worker = None

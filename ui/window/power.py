@@ -200,10 +200,13 @@ class PowerMixin:
     def _start_health_check(self) -> None:
         if self._health_worker is not None:
             return  # a previous check is still running -- skip this tick rather than overlap
-        self._health_worker = health_check_runner.HealthCheckWorker(list(self.config.servers), parent=self)
+        # No Qt parent: a window freed mid-check must not destroy a running thread.
+        self._health_worker = health_check_runner.HealthCheckWorker(list(self.config.servers))
         self._health_worker.finished_check.connect(self._on_health_check_finished)
         worker = self._health_worker
         keep_until_finished(self._retiring_workers, worker)
+        from ui.workers import keep_running_past_owner
+        keep_running_past_owner(worker)
         self._health_worker.start()
 
     def _on_health_check_finished(self, results: list) -> None:

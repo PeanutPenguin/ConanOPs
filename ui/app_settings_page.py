@@ -31,7 +31,7 @@ import update_runner
 import version
 import applog
 import web_control
-from ui.workers import keep_until_finished
+from ui.workers import keep_running_past_owner, keep_until_finished
 
 _log = applog.get_logger(__name__)
 
@@ -1141,8 +1141,9 @@ class AppSettingsPage(QWidget):
 
     # ------------------------------------------------------- unattended --
     def _run_call(self, fn, on_done) -> None:
-        worker = _CallWorker(fn, parent=self)
+        worker = _CallWorker(fn)
         self._call_workers.append(worker)
+        keep_running_past_owner(worker)
         worker.finished_call.connect(on_done)
         worker.finished.connect(lambda w=worker: self._call_workers.remove(w) if w in self._call_workers else None,
                                 Qt.QueuedConnection)
@@ -1432,9 +1433,10 @@ class AppSettingsPage(QWidget):
         self.check_updates_btn.setEnabled(False)
         if not automatic or self._available_release is None:
             self.app_update_status.setText("Checking for updates…")
-        worker = update_runner.AppUpdateCheckWorker(self)
+        worker = update_runner.AppUpdateCheckWorker()
         self._app_update_check_worker = worker
         keep_until_finished(self._retiring_workers, worker)
+        keep_running_past_owner(worker)
         worker.finished_check.connect(lambda info, err, a=automatic: self._on_update_checked(info, err, a))
         worker.start()
 
@@ -1492,9 +1494,10 @@ class AppSettingsPage(QWidget):
         self.app_update_progress.setRange(0, 0)
         self.app_update_progress.show()
         self.app_update_status.setText(f"Downloading ConanOps {info.version}…")
-        worker = update_runner.AppUpdateInstallWorker(info, self.install_dir, parent=self)
+        worker = update_runner.AppUpdateInstallWorker(info, self.install_dir)
         self._app_update_install_worker = worker
         keep_until_finished(self._retiring_workers, worker)
+        keep_running_past_owner(worker)
         worker.progress.connect(self._on_online_update_progress)
         worker.finished_update.connect(self._on_online_update_finished)
         worker.start()
@@ -1566,10 +1569,11 @@ class AppSettingsPage(QWidget):
         self.update_now_btn.setText("Updating…")
 
         # Off the GUI thread: a frozen window invites a force-close mid-copy.
-        self._self_update_worker = SelfUpdateWorker(self._update_zip_path, self.install_dir, parent=self)
+        self._self_update_worker = SelfUpdateWorker(self._update_zip_path, self.install_dir)
         self._self_update_worker.finished_update.connect(self._on_self_update_finished)
         worker = self._self_update_worker
         keep_until_finished(self._retiring_workers, worker)
+        keep_running_past_owner(worker)
         self._self_update_worker.start()
 
     def _on_self_update_finished(self, result) -> None:

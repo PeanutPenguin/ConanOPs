@@ -4,6 +4,17 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 
 
+# Workers held here outlive the window or page that started them, so closing
+# (and Python freeing) a window mid-run never destroys a running QThread --
+# Qt aborts the whole process when that happens.
+IN_FLIGHT: list = []
+
+
+def keep_running_past_owner(worker) -> None:
+    """For workers created without a Qt parent: held until they finish."""
+    keep_until_finished(IN_FLIGHT, worker)
+
+
 def keep_until_finished(holder: list, worker) -> None:
     """Keeps `worker` referenced (in `holder`) until its thread has really
     finished, so Qt never destroys a QThread that's still running.
