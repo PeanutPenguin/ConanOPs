@@ -39,6 +39,7 @@ from ui.web_actions import WebActionsMixin
 from ui.window.alerts import AlertsMixin
 from ui.window.backups import BackupsMixin
 from ui.window.finder import FinderMixin
+from ui.window.diagnostic_fixes import DiagnosticFixesMixin
 from ui.window.common import APP_INSTALL_DIR, _NotifyWorker, _sessions_path_for
 from ui.window.network import NetworkMixin
 from ui.window.power import PowerMixin
@@ -96,7 +97,7 @@ PAGE_HEADERS = {
 }
 
 
-class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
+class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
                  ModRecoveryMixin, WebActionsMixin):
     # From the Cloudflare tunnel's thread: (link or "", status text).
     web_tunnel_changed = Signal(str, str)
@@ -217,6 +218,7 @@ class MainWindow(QMainWindow, FinderMixin, PowerMixin, UpdatesMixin, BackupsMixi
         self.diagnostics_page = DiagnosticsPage(
             get_active_server=self._active, get_reserved_ports=self._reserved_ports_for_active,
         )
+        self.diagnostics_page.on_fix = self._diagnostics_fix
 
         # One GenericSettingsPage per remaining ini_field_specs category.
         self.gameplay_pages: dict = {}

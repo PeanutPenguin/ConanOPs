@@ -692,12 +692,9 @@ class WebApi:
         results = diag.run_diagnostics(server, reserved_ports=reserved)
         actions = {}
         for r in results:
-            if r.status == diag.STATUS_OK:
-                continue
-            if r.title == "Router UPnP":
-                actions[r.title] = "port_guide"
-            elif r.title == diag.VC_RUNTIME_TITLE:
-                actions[r.title] = "install_vc"
+            # The web version offers the fixes it can run from afar; the rest are in the app on the PC.
+            if r.status != diag.STATUS_OK and getattr(r, "fix", "") in (diag.FIX_PORT_GUIDE, diag.FIX_INSTALL_VC):
+                actions[r.title] = r.fix
         n_err = sum(1 for r in results if r.status == diag.STATUS_ERROR)
         n_warn = sum(1 for r in results if r.status == diag.STATUS_WARNING)
         summary = ("No issues found." if not n_err and not n_warn else

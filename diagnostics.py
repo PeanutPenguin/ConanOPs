@@ -27,6 +27,29 @@ STATUS_ERROR = "error"
 
 VC_RUNTIME_TITLE = "Visual C++ runtime"
 AUTO_SIGN_IN_TITLE = "Sign back in after updates"
+INTERNET_TITLE = "Reachable from the internet"
+LOG_OK_TITLE = "Server log"
+
+# One-click fixes the Diagnostics page offers for a result (DiagnosticResult.fix).
+FIX_SETUP = "setup"
+FIX_INSTALL_STEAMCMD = "install_steamcmd"
+FIX_REPAIR_FILES = "repair_files"
+FIX_INSTALL_VC = "install_vc"
+FIX_SIGN_IN = "sign_in"
+FIX_FREE_PORT = "free_port"
+FIX_REPAIR_NETWORK = "repair_network"
+FIX_PORT_GUIDE = "port_guide"
+FIX_START = "start"
+FIX_RESTART = "restart"
+FIX_ENABLE_RCON = "enable_rcon"
+FIX_RESTORE_BACKUP = "restore_backup"
+FIX_BACKUP_FOLDER = "backup_folder"
+FIX_DOWNLOAD_MODS = "download_mods"
+FIX_FIND_BAD_MOD = "fix_mods"
+FIX_DISABLE_BATTLEYE = "disable_battleye"
+
+# Steam lists a new server within a few minutes of it starting.
+STEAM_LISTING_GRACE_SECONDS = 5 * 60
 
 # Below the error threshold, backups and update downloads are likely to fail.
 LOW_DISK_SPACE_ERROR_GB = 1.0
@@ -39,6 +62,7 @@ class DiagnosticResult:
     status: str  # STATUS_OK / STATUS_WARNING / STATUS_ERROR
     message: str
     detail: str = ""  # technical detail, shown on hover
+    fix: str = ""     # a FIX_* action the page offers as a button, or ""
 
 
 def _check_writable(path: str, label: str, results: List[DiagnosticResult]) -> None:
@@ -105,6 +129,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             "No install folder is configured for this server yet. Run the setup wizard "
             "(Dashboard, \"Set Up Server\") before anything else here will matter.",
             detail="server.install_dir is empty in ConanOps' saved configuration for this server.",
+            fix=FIX_SETUP,
         ))
         return results  # nothing else is meaningful to check yet
 
@@ -114,6 +139,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             f"The configured install folder doesn't exist: {server.install_dir} "
             f"-- it may have been moved or deleted. Re-run the setup wizard to reinstall.",
             detail=f"os.path.isdir(\"{server.install_dir}\") returned False.",
+            fix=FIX_SETUP,
         ))
         return results
 
@@ -123,10 +149,11 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
     if server.steamcmd_dir and not steamcmd.is_steamcmd_installed(server.steamcmd_dir):
         results.append(DiagnosticResult(
             "SteamCMD", STATUS_ERROR,
-            f"SteamCMD isn't installed at {server.steamcmd_dir}. Go to Updates and click "
-            f"Update Now to install it, or re-run the setup wizard.",
+            f"SteamCMD isn't installed at {server.steamcmd_dir}. ConanOps needs it to update the server "
+            f"and download mods.",
             detail=f"steamcmd.is_steamcmd_installed(\"{server.steamcmd_dir}\") returned False -- "
                     f"steamcmd.exe wasn't found in that folder.",
+            fix=FIX_INSTALL_STEAMCMD,
         ))
     else:
         results.append(DiagnosticResult(
@@ -139,19 +166,21 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         results.append(DiagnosticResult(
             "Server files", STATUS_ERROR,
             f"The server executable isn't present at {exe_path}. The server files may not "
-            f"have finished downloading -- go to Updates and click Update Now.",
+            f"have finished downloading, or may have been damaged.",
             detail=f"os.path.exists(\"{exe_path}\") returned False.",
+            fix=FIX_REPAIR_FILES,
         ))
     else:
         state = steamcmd.get_install_state(server.install_dir)
         if state is not None and state != 4:
             results.append(DiagnosticResult(
                 "Server files", STATUS_WARNING,
-                f"SteamCMD reports the install isn't fully complete (state {state}). "
-                f"Go to Updates and click Update Now to finish or repair it.",
+                f"SteamCMD reports the install isn't fully complete (state {state}). Having Steam check the "
+                f"files finishes or repairs it.",
                 detail=f"Read from the appmanifest .acf file's StateFlags in {server.install_dir}\\steamapps. "
                         f"4 means fully installed; anything else means an update, validation, or download "
                         f"is incomplete or was interrupted.",
+                fix=FIX_REPAIR_FILES,
             ))
         else:
             results.append(DiagnosticResult(
@@ -167,6 +196,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             "start. Click the button below to install it.",
             detail="No VC++ 2015-2022 x64 runtime registry entry, and vcruntime140.dll / vcruntime140_1.dll / "
                    "msvcp140.dll aren't all in System32.",
+            fix=FIX_INSTALL_VC,
         ))
     elif rt.state == vcredist.STATUS_OUTDATED:
         results.append(DiagnosticResult(
@@ -175,6 +205,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             f"start or crashes on launch, install the latest one with the button below.",
             detail=f"Installed {rt.version_text}; ConanOps treats "
                    f"{'.'.join(map(str, vcredist.MIN_VERSION))} or newer as current.",
+            fix=FIX_INSTALL_VC,
         ))
     elif rt.state == vcredist.STATUS_OK:
         results.append(DiagnosticResult(
@@ -190,6 +221,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             "your servers stay down until someone signs in. Turn on \"Use my sign-in info to automatically "
             "finish setting up after an update\" (button below).",
             detail="UserARSO OptOut = 1 for this account.",
+            fix=FIX_SIGN_IN,
         ))
     elif sign_in == windows_update.AUTO_SIGN_IN_BLOCKED:
         results.append(DiagnosticResult(
@@ -210,6 +242,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             "\"Use my sign-in info to automatically finish setting up after an update\" is on (button below) -- "
             "otherwise servers stay down after an update restart until someone signs in.",
             detail="No UserARSO OptOut value for this account; Windows' default applies.",
+            fix=FIX_SIGN_IN,
         ))
 
     # ------------------------------------------------------------- network --
@@ -217,15 +250,17 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         results.append(DiagnosticResult(
             "Ports", STATUS_ERROR,
             "Game port and Query port are set to the same number -- they need to be "
-            "different. Fix this on the Network & Ports settings tab.",
+            "different.",
             detail=f"Both are set to {server.game_port}.",
+            fix=FIX_FREE_PORT,
         ))
     elif server.query_port == server.game_port + 1:
         results.append(DiagnosticResult(
             "Ports", STATUS_ERROR,
             f"The Query port ({server.query_port}) is the port right above the Game port, which the "
-            f"server also uses for itself. Pick a different Query port on the Network & Ports settings tab.",
+            f"server also uses for itself, so the two clash.",
             detail=f"Game port {server.game_port} implies {server.game_port + 1} is also bound by the server.",
+            fix=FIX_FREE_PORT,
         ))
     else:
         results.append(DiagnosticResult(
@@ -244,10 +279,11 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         if port in reserved_ports:
             results.append(DiagnosticResult(
                 f"{label} port ({port})", STATUS_ERROR,
-                f"Port {port} is also used by another configured ConanOps server. "
-                f"Change one of them on the Network & Ports settings tab.",
+                f"Port {port} is also used by another configured ConanOps server, so only one of them "
+                f"can run at a time.",
                 detail=f"Port {port}/UDP appears in the reserved-ports set built from every OTHER "
                         f"configured server's Game/Game+1/Query ports.",
+                fix=FIX_FREE_PORT,
             ))
         elif not running and not network_utils.is_udp_port_free(port):
             results.append(DiagnosticResult(
@@ -257,6 +293,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
                 f"until that's freed up.",
                 detail=f"network_utils.is_udp_port_free({port}) returned False while this server's own "
                         f"process wasn't running (so it can't be this server holding it).",
+                fix=FIX_FREE_PORT,
             ))
         else:
             results.append(DiagnosticResult(
@@ -276,6 +313,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
                 f"right now, that mismatch may be why it isn't reachable.",
                 detail=f"Configured: {server.bind_ip}. Currently detected local IPv4 addresses: "
                         f"{', '.join(sorted(local_ips)) or '(none detected)'}.",
+                fix=FIX_REPAIR_NETWORK,
             ))
         else:
             results.append(DiagnosticResult(
@@ -288,6 +326,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             "Bind IP", STATUS_WARNING,
             "No bind IP is configured yet -- one gets auto-detected the next time the server starts.",
             detail="server.bind_ip is empty in ConanOps' saved configuration for this server.",
+            fix=FIX_REPAIR_NETWORK,
         ))
 
     # Listed just before the firewall rules, which depend on it.
@@ -327,9 +366,9 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             results.append(DiagnosticResult(
                 f"Firewall rule: {r.message}", STATUS_ERROR,
                 "No active Windows Firewall rule for this port -- incoming connections are likely blocked. "
-                "Click \"Repair Networking\" on the Network & Ports settings tab to add it (click Yes if "
-                "Windows asks for permission).",
+                "Repair Networking adds it (click Yes if Windows asks for permission).",
                 detail=f"No enabled inbound allow rule named '{rn}' in the '{network_setup.RULE_GROUP}' group.",
+                fix=FIX_REPAIR_NETWORK,
             ))
 
     env = network_setup.firewall_environment(process_manager.server_exe_path(server.install_dir))
@@ -339,9 +378,9 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
                 "Firewall: server program blocked", STATUS_ERROR,
                 "Windows Firewall has a rule BLOCKING the Conan server program itself -- usually created "
                 "when the \"allow this app?\" popup was dismissed the first time the server started. A "
-                "block rule overrides ConanOps' allow rules. Click \"Repair Networking\" on the Network & "
-                "Ports settings tab to turn it off.",
+                "block rule overrides ConanOps' allow rules. Repair Networking turns it off.",
                 detail="Enabled inbound block rule(s) for the server exe: " + ", ".join(env["block_rules"]),
+                fix=FIX_REPAIR_NETWORK,
             ))
         if env["third_party"]:
             names = ", ".join(env["third_party"])
@@ -366,21 +405,24 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         f"port), and {server.query_port}, forwarded to this PC's local IP "
         f"({server.bind_ip or '(not yet detected)'})"
     )
+    forward_state = "no_upnp"  # what the router check found, for the internet check
     if device is not None:
         missing = []
         for label, port in fw_ports:
             entry = network_setup.get_port_mapping(device, port, "UDP")
             if not entry or (server.bind_ip and entry.get("NewInternalClient") not in ("", server.bind_ip)):
                 missing.append(port)
+        forward_state = "missing" if missing else "ok"
         if missing:
             results.append(DiagnosticResult(
                 "Router UPnP", STATUS_WARNING,
                 f"Your router supports automatic forwarding, but port(s) {', '.join(map(str, missing))} "
-                f"aren't forwarded to this PC. Click \"Repair Networking\" on the Network & Ports settings "
-                f"tab, or forward {manual_text} manually.",
+                f"aren't forwarded to this PC. Repair Networking asks the router again; otherwise forward "
+                f"{manual_text} manually.",
                 detail=f"UPnP control URL {device.control_url} ({device.service_type}); "
                        f"GetSpecificPortMappingEntry found no mapping to {server.bind_ip or 'this PC'} for: "
                        f"{', '.join(map(str, missing))}.",
+                fix=FIX_REPAIR_NETWORK,
             ))
         else:
             results.append(DiagnosticResult(
@@ -393,6 +435,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             external_ip and public_ip and external_ip != public_ip
         )
         if double_nat:
+            forward_state = "double_nat"
             results.append(DiagnosticResult(
                 "Double NAT / CGNAT", STATUS_ERROR,
                 f"Your router's own internet address ({external_ip}) isn't your public address "
@@ -412,7 +455,11 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             detail="SSDP M-SEARCH for an InternetGatewayDevice (sent from the server's LAN adapter) got no "
                    "usable response -- either UPnP is disabled in the router's settings, or the router "
                    "doesn't support it at all.",
+            fix=FIX_PORT_GUIDE,
         ))
+
+    if running:
+        results.append(_check_internet(server, pid, public_ip, forward_state))
 
     # -------------------------------------------------------- runtime state --
     if running:
@@ -441,15 +488,27 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
     else:
         results.append(DiagnosticResult(
             "Running state", STATUS_WARNING,
-            "The server isn't currently running. If you expected it to be, check the "
-            "Dashboard for a Start/Restart button, or the Console tab for anything logged "
-            "before it stopped.",
+            "The server isn't currently running. If you expected it to be, the server log check below "
+            "explains why it stopped when the reason is known. Start it to also test whether players on "
+            "the internet can see it.",
             detail=f"process_manager.find_running_pid(\"{server.install_dir}\") found no matching process.",
+            fix=FIX_START,
         ))
         if server.rcon_enabled:
             results.append(DiagnosticResult(
                 "RCON", STATUS_WARNING, "Can't check RCON -- the server isn't currently running."
             ))
+    if not server.rcon_enabled:
+        results.append(DiagnosticResult(
+            "RCON", STATUS_WARNING,
+            "RCON is off, so ConanOps can't ask the server to save before stopping it or warn players before "
+            "a restart -- every stop is a hard stop, which can lose the last few minutes of play.",
+            detail="server.rcon_enabled is False.",
+            fix=FIX_ENABLE_RCON,
+        ))
+
+    # --------------------------------------------------------- server logs --
+    results += _check_logs(server, running, pid)
 
     # -------------------------------------------------------------- backups --
     # The backup source; a missing Saved folder is why backups fail silently.
@@ -462,10 +521,11 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
             f"itself the first time the server actually starts up, so if it's never been "
             f"started successfully, start it and check back here or on the Console tab. If "
             f"it HAS been started before, this usually means the configured install folder "
-            f"doesn't match where the server is actually running from -- check it above, or "
+            f"doesn't match where the server is actually running from -- check the install folder results, or "
             f"use \"Open Server Folder\" on the Server Identity settings tab to see what's "
             f"really there.",
             detail=f"os.path.isdir(\"{saved}\") returned False.",
+            fix=FIX_RESTORE_BACKUP if _has_backups(server) else "",
         ))
     else:
         results.append(DiagnosticResult(
@@ -497,9 +557,9 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
     else:
         results.append(DiagnosticResult(
             "Backup folder", STATUS_WARNING,
-            "No backup destination is configured yet -- set one on the Backups settings "
-            "tab so scheduled and pre-update backups can actually run.",
+            "No backup destination is configured yet, so scheduled and pre-update backups can't run.",
             detail="server.backup_destination is empty in ConanOps' saved configuration for this server.",
+            fix=FIX_BACKUP_FOLDER,
         ))
 
     return results
@@ -519,17 +579,160 @@ def _check_rcon(server: ServerConfig) -> DiagnosticResult:
     except rcon.RconAuthError:
         return DiagnosticResult(
             "RCON", STATUS_ERROR,
-            f"RCON connected on port {server.rcon_port}, but authentication failed -- the RCON "
-            f"password configured in ConanOps doesn't match the server's. Check it on the RCON & "
-            f"Alerts settings tab.",
+            f"RCON connected on port {server.rcon_port}, but authentication failed -- the server is still "
+            f"using an older RCON password. ConanOps gives the server its current password each time it "
+            f"starts, so restarting it fixes this.",
             detail=f"TCP connect to 127.0.0.1:{server.rcon_port} succeeded, but SERVERDATA_AUTH_RESPONSE "
                     f"indicated the password was rejected.",
+            fix=FIX_RESTART,
         )
     except rcon.RconError as e:
         return DiagnosticResult(
             "RCON", STATUS_ERROR,
             f"Couldn't connect to RCON on port {server.rcon_port}: {e}. Backups that checkpoint the "
             f"world save via RCON before copying it, and any RCON-based alerts, won't work until "
-            f"this is fixed.",
+            f"this is fixed. If RCON was only just turned on or its port changed, restarting the server "
+            f"applies it.",
             detail=f"TCP connect to 127.0.0.1:{server.rcon_port} raised: {e}",
+            fix=FIX_RESTART,
         )
+
+
+def _has_backups(server: ServerConfig) -> bool:
+    try:
+        return bool(server.backup_destination and backup_manager.list_backups(server.backup_destination))
+    except OSError:
+        return False
+
+
+def _process_age(pid: Optional[int]) -> Optional[float]:
+    """Seconds the process has been running, or None if unknown."""
+    if pid is None:
+        return None
+    try:
+        import psutil
+        import time
+        return max(0.0, time.time() - psutil.Process(pid).create_time())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _check_internet(server: ServerConfig, pid: Optional[int], public_ip: Optional[str],
+                    forward_state: str) -> DiagnosticResult:
+    """Whether the running server can be seen from outside this PC (steam_visibility.py)."""
+    import steam_visibility
+    title = INTERNET_TITLE
+    address = f"{public_ip}:{server.game_port}" if public_ip else ""
+    extra = [str(a).lower() for a in (getattr(server, "extra_launch_args", None) or [])]
+    if not public_ip:
+        return DiagnosticResult(
+            title, STATUS_WARNING,
+            "Couldn't find this PC's public internet address, so the outside check couldn't run. Check the "
+            "internet connection and run Diagnostics again.",
+            detail="api.ipify.org gave no answer.",
+        )
+    hairpin = steam_visibility.answers_on_public_address(public_ip, server.query_port)
+    if "-nosteam" in extra:
+        if hairpin:
+            return DiagnosticResult(
+                title, STATUS_OK,
+                f"The router passed a test connection on your public address to the server, so the port forward "
+                f"works. The server is started with -nosteam, so it isn't in Steam's server list; friends join "
+                f"with the address {address}.",
+                detail=f"A2S_INFO to {public_ip}:{server.query_port} was answered.",
+            )
+        return DiagnosticResult(
+            title, STATUS_WARNING,
+            f"The server is started with -nosteam, so Steam's server list can't be used to check it from "
+            f"outside. The reliable test is a friend outside your network connecting to {address}.",
+            detail="-nosteam is in the server's launch options.",
+        )
+    listing = steam_visibility.steam_listing(public_ip, server.game_port, server.query_port)
+    detail = (f"Steam GetServersAtAddress for {public_ip}: {listing.state}"
+              + (f" ({listing.error})" if listing.error else "")
+              + (f"; entry {listing.match}" if listing.match else
+                 f"; {len(listing.entries)} other server(s) at that address" if listing.entries else "")
+              + f". A2S_INFO to {public_ip}:{server.query_port} (NAT loopback): "
+              + ("answered" if hairpin else "no answer") + f". Router check: {forward_state}.")
+    if hairpin:
+        listed = (" Steam also lists it, so it shows up in the in-game server browser."
+                  if listing.state == steam_visibility.LISTED else "")
+        return DiagnosticResult(
+            title, STATUS_OK,
+            f"The router passed a test connection on your public address to the server, so the port forward "
+            f"works and friends can connect to {address}.{listed}",
+            detail=detail,
+        )
+    if listing.state == steam_visibility.UNKNOWN:
+        return DiagnosticResult(
+            title, STATUS_WARNING,
+            "Couldn't ask Steam whether it can see the server (Steam didn't answer). Run Diagnostics again in a "
+            f"few minutes. The reliable test is a friend outside your network connecting to {address}.",
+            detail=detail,
+        )
+    if listing.state == steam_visibility.LISTED:
+        if forward_state == "ok":
+            return DiagnosticResult(
+                title, STATUS_OK,
+                f"Steam lists the server at your public address, and your router forwards all three ports to "
+                f"this PC. Friends should be able to find it in the server browser or connect to {address}.",
+                detail=detail,
+            )
+        why = {
+            "missing": "the router isn't forwarding all of its ports",
+            "double_nat": "there's a second router or carrier-grade NAT in front of this one",
+            "no_upnp": "ConanOps can't read your router's port forwards",
+        }.get(forward_state, "the port forward couldn't be confirmed")
+        return DiagnosticResult(
+            title, STATUS_WARNING,
+            f"Steam lists the server at your public address, so it is online and registered with Steam. That "
+            f"alone doesn't prove players can join: some routers let Steam's replies back in without a port "
+            f"forward, and {why}. The reliable test is a friend outside your network connecting to {address}.",
+            detail=detail,
+            fix=FIX_REPAIR_NETWORK if forward_state == "missing" else FIX_PORT_GUIDE if forward_state == "no_upnp" else "",
+        )
+    age = _process_age(pid)
+    if age is not None and age < STEAM_LISTING_GRACE_SECONDS:
+        return DiagnosticResult(
+            title, STATUS_WARNING,
+            "Steam doesn't list the server yet. Servers usually appear a few minutes after starting -- run "
+            "Diagnostics again in a few minutes.",
+            detail=detail + f" Server has been running {age:.0f} s.",
+        )
+    hint = ""
+    if listing.entries:
+        ports = ", ".join(str(e.get("gameport") or str(e.get("addr", "")).rsplit(":", 1)[-1]) for e in listing.entries[:3])
+        hint = (f" Steam does list other servers at your address (port {ports}), so the connection itself works; "
+                f"check that this server's ports match the ones forwarded on your router.")
+    cause = {
+        "missing": " The router isn't forwarding all of its ports (see the Router UPnP result).",
+        "double_nat": " There's a second router or carrier-grade NAT in front of this one (see the Double NAT / CGNAT result).",
+        "no_upnp": " Check that the ports are forwarded on your router.",
+    }.get(forward_state, " Check the firewall and router results.")
+    return DiagnosticResult(
+        title, STATUS_ERROR,
+        f"Steam can't see the server at your public address ({public_ip}). Players on the internet can't find "
+        f"it in the server browser, and most likely can't connect to it either.{cause}{hint}",
+        detail=detail,
+        fix=FIX_REPAIR_NETWORK if forward_state in ("missing", "ok") else FIX_PORT_GUIDE if forward_state == "no_upnp" else "",
+    )
+
+
+def _check_logs(server: ServerConfig, running: bool, pid: Optional[int]) -> List[DiagnosticResult]:
+    """The server's own log, crash reports and mod list (log_doctor.py)."""
+    import log_doctor
+    import time
+    age = _process_age(pid) if running else None
+    started_at = time.time() - age if age is not None else 0.0
+    try:
+        findings = log_doctor.examine(server.install_dir, server.mods, running=running, started_at=started_at)
+    except Exception as e:  # noqa: BLE001 - never lose the other checks over this
+        return [DiagnosticResult(LOG_OK_TITLE, STATUS_WARNING, f"Couldn't read the server's logs: {e}")]
+    if findings:
+        return [DiagnosticResult(f.title, f.status, f.message, detail=f.detail, fix=f.fix) for f in findings]
+    if log_doctor.latest_log(server.install_dir):
+        return [DiagnosticResult(
+            LOG_OK_TITLE, STATUS_OK, "No known problems in the server's latest log or crash reports.",
+            detail=f"Read {log_doctor.latest_log(server.install_dir)} and {log_doctor.crashes_dir(server.install_dir)}.",
+        )]
+    return []

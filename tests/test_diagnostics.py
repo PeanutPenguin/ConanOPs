@@ -78,6 +78,11 @@ def _fast_network_defaults(monkeypatch):
     monkeypatch.setattr(network_setup, "get_external_ip", lambda device, timeout=5.0: "203.0.113.1")
     monkeypatch.setattr(network_setup, "firewall_environment",
                         lambda exe_path="": {"checked": True, "block_rules": [], "third_party": []})
+    # The outside check never reaches Steam or the network in tests.
+    import steam_visibility
+    monkeypatch.setattr(steam_visibility, "answers_on_public_address", lambda ip, port, timeout=2.0: False)
+    monkeypatch.setattr(steam_visibility, "steam_listing",
+                        lambda ip, gp, qp, timeout=6.0: steam_visibility.SteamListing(steam_visibility.UNKNOWN))
     import windows_update
     monkeypatch.setattr(windows_update, "auto_sign_in_status", lambda: windows_update.AUTO_SIGN_IN_ON)
 
@@ -249,7 +254,8 @@ def test_fully_healthy_server_has_no_errors(tmp_path, monkeypatch):
     # "Running state" is expected to be a warning here since nothing is
     # actually launched in this test -- that's fine/normal, not an error.
     non_ok = _titles_with_status(results, diagnostics.STATUS_WARNING)
-    assert non_ok == ["Running state"]
+    # RCON is off on this test server, which is now flagged (it's on for every server ConanOps sets up).
+    assert non_ok == ["Running state", "RCON"]
 
 
 def test_diagnostics_never_writes_to_disk(tmp_path):
@@ -389,14 +395,16 @@ def test_upnp_handles_undetectable_public_ip_gracefully(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ RCON --
 
-def test_rcon_not_checked_when_disabled(tmp_path, monkeypatch):
+def test_rcon_off_is_flagged_with_a_fix_instead_of_checked(tmp_path, monkeypatch):
     server = _make_installed_server(tmp_path)
     server.rcon_enabled = False
     monkeypatch.setattr("network_utils.list_local_ipv4s", lambda: {"127.0.0.1"})
 
     results = diagnostics.run_diagnostics(server)
 
-    assert not any(r.title == "RCON" for r in results)
+    rcon = [r for r in results if r.title == "RCON"]
+    assert len(rcon) == 1 and rcon[0].status == diagnostics.STATUS_WARNING
+    assert rcon[0].fix == diagnostics.FIX_ENABLE_RCON
 
 
 def test_rcon_warns_when_enabled_but_server_not_running(tmp_path, monkeypatch):
@@ -639,3 +647,89 @@ def test_auto_sign_in_row(tmp_path, monkeypatch, state, expected):
     monkeypatch.setattr(windows_update, "auto_sign_in_status", lambda: state)
     r = next(x for x in diagnostics.run_diagnostics(server) if x.title == diagnostics.AUTO_SIGN_IN_TITLE)
     assert r.status == expected
+
+
+# ------------------------------------------------- outside check (1.0.13) --
+
+def _running(monkeypatch, age=3600.0):
+    import process_manager
+    import network_utils
+    monkeypatch.setattr(process_manager, "find_running_pid", lambda install_dir: 4242)
+    monkeypatch.setattr(network_utils, "query_a2s_info", lambda ip, port, timeout=2.0: {"name": "x"})
+    monkeypatch.setattr(diagnostics, "_process_age", lambda pid: age)
+    monkeypatch.setattr("network_utils.list_local_ipv4s", lambda: {"127.0.0.1"})
+
+
+def _internet(results):
+    return next(r for r in results if r.title == diagnostics.INTERNET_TITLE)
+
+
+def test_not_listed_on_steam_is_an_error_with_a_fix(tmp_path, monkeypatch):
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    _running(monkeypatch)
+    monkeypatch.setattr(steam_visibility, "steam_listing", lambda ip, gp, qp, timeout=6.0: steam_visibility.SteamListing(
+        steam_visibility.NOT_LISTED, entries=[{"addr": "203.0.113.1:27016", "gameport": 7777}]))
+    r = _internet(diagnostics.run_diagnostics(server))
+    assert r.status == diagnostics.STATUS_ERROR and "203.0.113.1" in r.message
+    assert "other servers" in r.message and r.fix == diagnostics.FIX_PORT_GUIDE  # no UPnP router in this test
+
+
+def test_not_listed_yet_right_after_start_is_only_a_warning(tmp_path, monkeypatch):
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    _running(monkeypatch, age=60)
+    monkeypatch.setattr(steam_visibility, "steam_listing", lambda *a, **k: steam_visibility.SteamListing(
+        steam_visibility.NOT_LISTED))
+    r = _internet(diagnostics.run_diagnostics(server))
+    assert r.status == diagnostics.STATUS_WARNING and "few minutes" in r.message
+
+
+def test_listed_without_a_confirmed_forward_is_not_called_reachable(tmp_path, monkeypatch):
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    _running(monkeypatch)
+    monkeypatch.setattr(steam_visibility, "steam_listing", lambda *a, **k: steam_visibility.SteamListing(
+        steam_visibility.LISTED, match={"gameport": server.game_port}))
+    r = _internet(diagnostics.run_diagnostics(server))
+    assert r.status == diagnostics.STATUS_WARNING and "doesn't prove" in r.message
+
+
+def test_listed_with_router_forwarding_is_ok(tmp_path, monkeypatch):
+    import network_setup
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    _running(monkeypatch)
+    monkeypatch.setattr(network_setup, "discover_igd", lambda timeout=3.0, local_ip=None: network_setup.UpnpDevice(
+        control_url="http://192.168.1.1/control", service_type="urn:schemas-upnp-org:service:WANIPConnection:1"))
+    monkeypatch.setattr(steam_visibility, "steam_listing", lambda *a, **k: steam_visibility.SteamListing(
+        steam_visibility.LISTED, match={"gameport": server.game_port}))
+    r = _internet(diagnostics.run_diagnostics(server))
+    assert r.status == diagnostics.STATUS_OK
+
+
+def test_answer_on_public_address_proves_the_forward(tmp_path, monkeypatch):
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    _running(monkeypatch)
+    monkeypatch.setattr(steam_visibility, "answers_on_public_address", lambda ip, port, timeout=2.0: True)
+    r = _internet(diagnostics.run_diagnostics(server))
+    assert r.status == diagnostics.STATUS_OK and f"203.0.113.1:{server.game_port}" in r.message
+
+
+def test_no_outside_check_when_stopped(tmp_path, monkeypatch):
+    server = _make_installed_server(tmp_path)
+    monkeypatch.setattr("network_utils.list_local_ipv4s", lambda: {"127.0.0.1"})
+    results = diagnostics.run_diagnostics(server)
+    assert not any(r.title == diagnostics.INTERNET_TITLE for r in results)
+    assert next(r for r in results if r.title == "Running state").fix == diagnostics.FIX_START
+
+
+def test_log_findings_show_up_with_their_fix(tmp_path, monkeypatch):
+    server = _make_installed_server(tmp_path)
+    monkeypatch.setattr("network_utils.list_local_ipv4s", lambda: {"127.0.0.1"})
+    logs = tmp_path / "server" / "ConanSandbox" / "Saved" / "Logs"
+    logs.mkdir()
+    (logs / "ConanSandbox.log").write_text("[x][  0]LogNet: Error: Unable to bind socket to port 17777\n")
+    r = next(x for x in diagnostics.run_diagnostics(server) if x.title == "Port already in use")
+    assert r.status == diagnostics.STATUS_ERROR and r.fix == diagnostics.FIX_FREE_PORT and "17777" in r.detail

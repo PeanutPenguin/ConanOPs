@@ -29,6 +29,27 @@ _STATUS_PILL = {
 }
 
 
+# Button text for each fix a result can offer (diagnostics.FIX_*).
+FIX_LABELS = {
+    diagnostics.FIX_SETUP: "Run Setup",
+    diagnostics.FIX_INSTALL_STEAMCMD: "Install SteamCMD",
+    diagnostics.FIX_REPAIR_FILES: "Repair Game Files",
+    diagnostics.FIX_INSTALL_VC: "Install Visual C++ Runtime",
+    diagnostics.FIX_SIGN_IN: "Open Sign-in Settings",
+    diagnostics.FIX_FREE_PORT: "Use Free Ports",
+    diagnostics.FIX_REPAIR_NETWORK: "Repair Networking",
+    diagnostics.FIX_PORT_GUIDE: "View Port Forwarding Guide",
+    diagnostics.FIX_START: "Start Server",
+    diagnostics.FIX_RESTART: "Restart Server",
+    diagnostics.FIX_ENABLE_RCON: "Turn On RCON",
+    diagnostics.FIX_RESTORE_BACKUP: "Restore Latest Backup",
+    diagnostics.FIX_BACKUP_FOLDER: "Set Up Backup Folder",
+    diagnostics.FIX_DOWNLOAD_MODS: "Download Mods",
+    diagnostics.FIX_FIND_BAD_MOD: "Fix Mod Problems",
+    diagnostics.FIX_DISABLE_BATTLEYE: "Turn Off BattlEye",
+}
+
+
 def _result_row(result: diagnostics.DiagnosticResult, on_guide: Optional[Callable[[], None]] = None,
                 action_label: str = "View Port Forwarding Guide") -> QFrame:
     row = QFrame()
@@ -62,8 +83,9 @@ def _result_row(result: diagnostics.DiagnosticResult, on_guide: Optional[Callabl
     message.setContentsMargins(28, 0, 0, 0)
     layout.addWidget(message)
 
+    row.fix_button = None
     if on_guide is not None:
-        # Only for a failed "Router UPnP" result: port forwarding needs a walkthrough.
+        # The result's one-click fix.
         guide_row = QHBoxLayout()
         guide_row.setContentsMargins(28, 4, 0, 0)
         guide_btn = QPushButton(action_label)
@@ -71,6 +93,7 @@ def _result_row(result: diagnostics.DiagnosticResult, on_guide: Optional[Callabl
         guide_row.addWidget(guide_btn)
         guide_row.addStretch(1)
         layout.addLayout(guide_row)
+        row.fix_button = guide_btn
 
     if result.detail:
         # Set on each child too: Qt children don't inherit a parent's tooltip.
@@ -91,6 +114,10 @@ class DiagnosticsPage(QWidget):
         self._result_rows: list = []
         self._worker: Optional[diagnostics_runner.DiagnosticsWorker] = None
         self._last_server: Optional[ServerConfig] = None
+        # fn(action, server, done) from MainWindow for fixes that act on the app;
+        # done(rerun=True) when the fix has finished.
+        self.on_fix: Optional[Callable] = None
+        self._fix_buttons: list = []
         # Keeps finished workers referenced until QThread.finished fires
         # ("QThread: Destroyed while thread is still running").
         self._retiring_workers: list = []
@@ -116,10 +143,10 @@ class DiagnosticsPage(QWidget):
         root.addLayout(header)
 
         note = QLabel(
-            "Checks common reasons a server won't start or can't be reached -- missing "
-            "files, port conflicts, a stale network address, an unwritable backup folder -- "
-            "and tells you what to do about each one. Read-only: this never changes "
-            "anything on its own."
+            "Checks the common reasons a server won't start or can't be reached -- missing "
+            "files, port conflicts, the firewall and router, whether Steam can see the server "
+            "from the internet, and what the server's own logs say went wrong -- and explains "
+            "each problem. Nothing is changed unless you click a fix button."
         )
         note.setObjectName("Dim")
         note.setWordWrap(True)
@@ -173,16 +200,15 @@ class DiagnosticsPage(QWidget):
         self.run_btn.setEnabled(True)
         self.run_btn.setText("Run Diagnostics")
 
-        for result in results:
-            needs_guide = result.title == "Router UPnP" and result.status != diagnostics.STATUS_OK
-            on_guide = self._open_port_forwarding_guide if needs_guide else None
-            label = "View Port Forwarding Guide"
-            if result.title == diagnostics.AUTO_SIGN_IN_TITLE and result.status != diagnostics.STATUS_OK:
-                import windows_update
-                on_guide, label = windows_update.open_sign_in_settings, "Open Sign-in Settings"
-            if result.title == diagnostics.VC_RUNTIME_TITLE and result.status != diagnostics.STATUS_OK:
-                on_guide, label = self._install_vc_runtime, "Install Visual C++ Runtime"
-            row = _result_row(result, on_guide=on_guide, action_label=label)
+        # Problems first, so the fix buttons are where the eye lands.
+        order = {diagnostics.STATUS_ERROR: 0, diagnostics.STATUS_WARNING: 1, diagnostics.STATUS_OK: 2}
+        self._fix_buttons = []
+        for result in sorted(results, key=lambda r: order.get(r.status, 3)):
+            fix = getattr(result, "fix", "") if result.status != diagnostics.STATUS_OK else ""
+            on_guide = self._fix_callback(fix) if fix in FIX_LABELS else None
+            row = _result_row(result, on_guide=on_guide, action_label=FIX_LABELS.get(fix, ""))
+            if row.fix_button is not None:
+                self._fix_buttons.append(row.fix_button)
             self.results_layout.insertWidget(self.results_layout.count() - 1, row)
             self._result_rows.append(row)
 
@@ -198,6 +224,43 @@ class DiagnosticsPage(QWidget):
         else:
             summary = f"{n_warnings} thing{'' if n_warnings == 1 else 's'} worth a look."
         self.last_run_label.setText(f"Last run at {datetime.now().strftime('%I:%M %p')} -- {summary}")
+
+    def _fix_callback(self, fix: str) -> Optional[Callable[[], None]]:
+        if fix == diagnostics.FIX_PORT_GUIDE:
+            return self._open_port_forwarding_guide
+        if fix == diagnostics.FIX_SIGN_IN:
+            import windows_update
+            return windows_update.open_sign_in_settings
+        if fix == diagnostics.FIX_INSTALL_VC:
+            return self._install_vc_runtime
+        if self.on_fix is None:
+            return None
+        return lambda _checked=False, f=fix: self._run_fix(f)
+
+    def _run_fix(self, fix: str) -> None:
+        """Hands a fix to MainWindow; the buttons wait until it reports back."""
+        server = self._last_server
+        if server is None or self.on_fix is None or self._worker is not None:
+            return
+        for b in self._fix_buttons:
+            b.setEnabled(False)
+        self.last_run_label.setText("Working on it…")
+        state = {"done": False}
+
+        def done(rerun: bool = True) -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            for b in self._fix_buttons:
+                try:
+                    b.setEnabled(True)
+                except RuntimeError:  # its row was already replaced
+                    pass
+            if rerun and self.get_active_server() is server:
+                self._run()
+            elif self.last_run_label.text() == "Working on it…":
+                self.last_run_label.setText("")
+        self.on_fix(fix, server, done)
 
     def on_server_switched(self) -> None:
         """Clears results from the previous server."""

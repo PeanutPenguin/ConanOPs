@@ -218,7 +218,8 @@ class PowerMixin:
             if was_running and not running_now and server.id not in self._expected_stop and server.id not in self._automation_locked:
                 self._tracker_for(server).close_all_active()
                 self._clear_online(server.id)
-                self._notify(server, "The server process stopped unexpectedly (crash or external kill).", title="Server Crashed")
+                self._notify_with_cause(server, "The server process stopped unexpectedly (crash or external kill).",
+                                        title="Server Crashed")
                 self._unresponsive_since.pop(server.id, None)
                 self._known_running[server.id] = False
                 if self._post_update_failure(server, "crashed"):
@@ -326,7 +327,7 @@ class PowerMixin:
         self._run_op(work, on_done=done, on_error=failed)
 
         if self._watchdog_attempts.get(server.id, 0) >= self._WATCHDOG_MAX_ATTEMPTS:
-            self._notify(
+            self._notify_with_cause(
                 server,
                 f"This server has needed restarting {self._WATCHDOG_MAX_ATTEMPTS} times in a row -- "
                 f"ConanOps will stop trying to restart it automatically. Check the Console and "
@@ -334,6 +335,16 @@ class PowerMixin:
                 f"Dashboard once that's fixed (which also resets this counter).",
                 title="Watchdog Giving Up",
             )
+
+    def _notify_with_cause(self, server: ServerConfig, message: str, title: str) -> None:
+        """An alert plus, when the server's own logs show it, why it happened
+        (log_doctor.py). The logs are read off the GUI thread."""
+        import log_doctor
+
+        def send(cause, msg=message):
+            self._notify(server, msg + (f"\n\n{cause}" if cause else ""), title=title)
+        self._run_op(lambda d=server.install_dir, m=list(server.mods): log_doctor.explain(d, m),
+                     on_done=send, on_error=lambda _e: send(""))
 
     def _network_not_ready_for_resume(self) -> bool:
         """True shortly after boot if a saved bind IP isn't on any adapter yet

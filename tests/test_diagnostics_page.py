@@ -100,3 +100,39 @@ def test_result_row_has_no_tooltip_when_detail_absent():
     result = diagnostics.DiagnosticResult("Ports", diagnostics.STATUS_OK, "Looks fine.")
     row = _result_row(result)
     assert row.toolTip() == ""
+
+
+# --------------------------------------------------------- fix buttons (1.0.13) --
+
+def test_each_fixable_problem_gets_a_button_that_runs_its_fix(monkeypatch):
+    page = _make_page()
+    calls = []
+    page.on_fix = lambda action, server, done: calls.append((action, done))
+    page._last_server = page.get_active_server()
+    page._worker = object()
+    reruns = []
+    monkeypatch.setattr(page, "_run", lambda: reruns.append(1))
+    page._on_diagnostics_finished([
+        diagnostics.DiagnosticResult("Ports", diagnostics.STATUS_ERROR, "Clash.", fix=diagnostics.FIX_FREE_PORT),
+        diagnostics.DiagnosticResult("SteamCMD", diagnostics.STATUS_OK, "Fine.", fix=diagnostics.FIX_INSTALL_STEAMCMD),
+        diagnostics.DiagnosticResult("Note", diagnostics.STATUS_WARNING, "No fix."),
+    ])
+    assert [b.text() for b in page._fix_buttons] == ["Use Free Ports"]  # passing results get no button
+    assert page._result_rows[0].fix_button is page._fix_buttons[0]  # problems are listed first
+    page._fix_buttons[0].click()
+    assert calls and calls[0][0] == diagnostics.FIX_FREE_PORT
+    assert not page._fix_buttons[0].isEnabled()  # waits for the fix
+    calls[0][1]()  # done
+    assert page._fix_buttons[0].isEnabled() and reruns == [1]
+    calls[0][1]()  # a second "done" is ignored
+    assert reruns == [1]
+
+
+def test_fix_buttons_need_the_window_hookup():
+    page = _make_page()
+    page._worker = object()
+    page._on_diagnostics_finished([
+        diagnostics.DiagnosticResult("Ports", diagnostics.STATUS_ERROR, "Clash.", fix=diagnostics.FIX_FREE_PORT),
+        diagnostics.DiagnosticResult("Router UPnP", diagnostics.STATUS_WARNING, "No.", fix=diagnostics.FIX_PORT_GUIDE),
+    ])
+    assert [b.text() for b in page._fix_buttons] == ["View Port Forwarding Guide"]

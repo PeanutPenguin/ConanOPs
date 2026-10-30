@@ -311,3 +311,47 @@ def test_a_scan_finishing_after_close_opens_nothing(monkeypatch):
         time.sleep(0.01)
     assert win._find_worker is None and offered == []
     win.close()
+
+
+def test_every_diagnostics_fix_has_a_handler_and_a_label(monkeypatch):
+    import diagnostics
+    from ui.diagnostics_page import FIX_LABELS
+    fixes = {v for k, v in vars(diagnostics).items() if k.startswith("FIX_")}
+    assert fixes == set(FIX_LABELS)
+    cfg = models.AppConfig()
+    win = _window(monkeypatch, cfg)
+    try:
+        page_side = {diagnostics.FIX_PORT_GUIDE, diagnostics.FIX_SIGN_IN, diagnostics.FIX_INSTALL_VC}
+        for fix in fixes - page_side:
+            assert win.diagnostics_page._fix_callback(fix) is not None
+        unknown = []
+        win._diagnostics_fix("nonsense", cfg.add_server("x"), lambda rerun=True: unknown.append(rerun))
+        assert unknown == [False]
+    finally:
+        win.close()
+
+
+def test_diagnostics_fixes_use_free_ports_and_backup_folder(tmp_path, monkeypatch):
+    import network_utils
+    from PySide6.QtWidgets import QMessageBox
+    cfg = models.AppConfig()
+    a = cfg.add_server("A")
+    b = cfg.add_server("B")
+    a.install_dir, b.install_dir = str(tmp_path / "a" / "server"), str(tmp_path / "b" / "server")
+    b.game_port, b.query_port = a.game_port, a.query_port
+    win = _window(monkeypatch, cfg)
+    monkeypatch.setattr(network_utils, "is_udp_port_free", lambda p, host="0.0.0.0": True)
+    monkeypatch.setattr(QMessageBox, "question", lambda *x, **k: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *x, **k: None)
+    dones = []
+    try:
+        win._diagnostics_fix("free_port", b, lambda rerun=True: dones.append(rerun))
+        assert {b.game_port, b.game_port + 1, b.query_port}.isdisjoint({a.game_port, a.game_port + 1, a.query_port})
+        assert b.query_port not in (b.game_port, b.game_port + 1)
+        b.backup_destination = ""
+        b.adopted = False
+        win._diagnostics_fix("backup_folder", b, lambda rerun=True: dones.append(rerun))
+        assert b.backup_destination == str(tmp_path / "b" / "backups")
+        assert dones == [True, True]
+    finally:
+        win.close()

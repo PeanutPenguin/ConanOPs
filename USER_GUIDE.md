@@ -118,7 +118,10 @@ Server Settings is divided into sections. Each shows the most commonly changed s
 - **Restart Schedule.** A daily restart window, ideally in the quietest hours. The restart happens only when no one is online; if players remain online for the whole window, that day's restart is skipped.
 - **Server Updates.** See Section 10.
 - **RCON.** Turns RCON on or off and sets its port and password.
-- **Diagnostics.** Checks the common reasons a server will not start or cannot be reached from outside, and explains each problem with the steps needed to fix it.
+- **Diagnostics.** Checks the common reasons a server will not start or cannot be reached from outside, and explains each problem. Problems are listed first, and most have a button that fixes them, for example **Repair Networking**, **Use Free Ports**, **Repair Game Files**, **Turn On RCON** or **Restore Latest Backup**; Diagnostics runs again once the fix is complete. Nothing is changed unless such a button is selected. Three of the checks need further explanation:
+  - *Reachable from the internet.* While the server is running, ConanOps asks Steam whether it lists the server at the PC's public address, and sends a test query to that address. A server that Steam does not list after several minutes of running is very probably unreachable. A listing is a good sign but not conclusive, because some routers let Steam's replies through without a port forward; the result therefore also takes the router check into account. A friend connecting from outside remains the most reliable test.
+  - *Server log.* ConanOps reads the server's latest log, its crash reports and its mod list, and explains in plain language why the server would not start or crashed, for example a missing mod file, a crash inside a particular mod, a port in use, insufficient memory or a damaged world save. Errors it does not recognise are quoted as the server reported them.
+  - *Repeated crashes.* A server that has crashed several times in the last 24 hours is reported, together with the most likely cause.
 
 ConanOps writes only the settings shown on these pages. Lines it does not recognise, including settings added by hand or by mods, are left unchanged, and a copy of each settings file is kept before it is modified.
 
@@ -197,9 +200,9 @@ Most of what the PC application offers is available from the web version. For sa
 
 ## 15. Troubleshooting
 
-**The server does not start.** ConanOps runs checks before each start and names the specific problem, such as missing files, a port in use or a missing Visual C++ runtime. **Server Settings → Diagnostics** gives a fuller report. Many problems are repaired automatically.
+**The server does not start, or keeps crashing.** ConanOps runs checks before each start and names the specific problem, such as missing files, a port in use or a missing Visual C++ runtime. **Server Settings → Diagnostics** gives a fuller report, including the cause recorded in the server's own logs, and offers a fix where one exists. Crash alerts also state the most likely cause.
 
-**Friends cannot connect.** Run Diagnostics first. The most common causes are a router without UPnP (forward the game and query ports by hand, using the numbers shown under Network & Ports), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again). Players connecting from the same home network should use the local address shown on the Dashboard.
+**Friends cannot connect.** Run Diagnostics while the server is running; the *Reachable from the internet* result shows whether Steam can see the server from outside. The most common causes are a router without UPnP (forward the game and query ports by hand, using the numbers shown under Network & Ports), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again). Players connecting from the same home network should use the local address shown on the Dashboard.
 
 **The server stopped working after a game update.** This is usually caused by mods that have not yet been rebuilt for the new version. Use **Fix Mod Problems** (Section 8), or wait for ConanOps' automatic mod recovery if it is enabled.
 
