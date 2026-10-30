@@ -514,10 +514,13 @@ class AppConfig:
         return dirs
 
     def default_steamcmd_dir(self, exclude_id: Optional[str] = None) -> str:
-        """An existing server's steamcmd_dir to reuse for a new one, or ""."""
+        """An existing server's steamcmd_dir to reuse for a new one, or "".
+        Skips folders SteamCMD can't install a server into (spaces or
+        non-ASCII characters, e.g. a server taken over from the Desktop)."""
         for s in self.servers:
-            if s.id != exclude_id and s.steamcmd_dir:
-                return s.steamcmd_dir
+            d = s.steamcmd_dir
+            if s.id != exclude_id and d and " " not in d and d.isascii():
+                return os.path.normpath(d)
         return ""
 
     # ------------------------------------------------------- app lock --

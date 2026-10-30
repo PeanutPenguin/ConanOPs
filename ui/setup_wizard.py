@@ -233,7 +233,7 @@ class PathsPage(QWizardPage):
     def _browse(self, edit: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose folder")
         if path:
-            edit.setText(path)
+            edit.setText(os.path.normpath(path))
 
     def validatePage(self) -> bool:
         """Rejects bad names/folders and writes the cleaned values back into
@@ -263,15 +263,25 @@ class PathsPage(QWizardPage):
         steamcmd_dir = _norm(steamcmd_raw)
 
         # SteamCMD's app_update can fail with "Missing configuration" on paths with spaces.
-        for label, path in (("SteamCMD folder", steamcmd_dir), ("server install folder", install_dir)):
+        # Offer a folder that works instead of just refusing.
+        base = os.path.join(_no_space_default_base(), self.server.id)
+        for label, path, edit, fallback in (
+                ("SteamCMD folder", steamcmd_dir, self.steamcmd_edit, os.path.join(base, "steamcmd")),
+                ("server install folder", install_dir, self.install_edit, os.path.join(base, "server"))):
             if _path_has_spaces(path):
-                QMessageBox.warning(
-                    self, "Path contains a space",
-                    f"The {label} can't contain a space -- SteamCMD fails to download the server "
-                    f"with a confusing \"Missing configuration\" error when it does.\n\n"
-                    f"Pick a folder without spaces in its path, e.g. C:\\ConanOps\\... or "
-                    f"C:\\Users\\Public\\ConanOps\\...",
-                )
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Warning)
+                box.setWindowTitle("Folder name has a space")
+                box.setText(f"The {label} can't have a space in its path:\n{path}\n\nSteamCMD can't download "
+                            f"the server into it. Use this folder instead?\n{fallback}")
+                use = box.addButton("Use This Folder", QMessageBox.AcceptRole)
+                box.addButton("Choose Another…", QMessageBox.RejectRole)
+                box.setDefaultButton(use)
+                box.exec()
+                if box.clickedButton() is use:
+                    edit.setText(fallback)
+                    return self.validatePage()  # check the rest with the new folder
+                self._browse(edit)
                 return False
 
         if install_dir == steamcmd_dir:

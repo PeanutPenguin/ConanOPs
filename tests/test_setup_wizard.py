@@ -22,6 +22,9 @@ def no_blocking_dialogs(monkeypatch):
     # A validation warning would otherwise pop a real modal QMessageBox
     # and hang the test suite waiting for a click that never comes.
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)  # no button clicked
+    from PySide6.QtWidgets import QFileDialog
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: ""))
     # Plenty of disk space unless a test says otherwise (the CI box may not have 40 GB free).
     import ui.setup_wizard as sw
     monkeypatch.setattr(sw, "_free_bytes", lambda path: 500 * 1024 ** 3)
@@ -723,3 +726,34 @@ def test_paths_page_asks_when_disk_space_is_merely_low(tmp_path, monkeypatch):
     page.install_edit.setText(str(tmp_path / "server"))
     assert page.validatePage() is False
     assert asked == [1]
+
+
+def test_space_warning_offers_a_folder_that_works(monkeypatch):
+    """1.0.15: a taken-over server on the Desktop ("Server Conan") gave the
+    next server a SteamCMD folder with a space, which the wizard then refused
+    with no way forward. Now one click switches to a folder without spaces."""
+    def click_use(self):
+        use = next(b for b in self.buttons() if b.text() == "Use This Folder")
+        self.clickedButton = lambda: use
+        return 0
+    monkeypatch.setattr(QMessageBox, "exec", click_use)
+    server = ServerConfig(id="s3", name="Third")
+    wizard = SetupWizard(
+        server, get_reserved_ports=lambda: set(), get_reserved_dirs=lambda: set(),
+        get_default_steamcmd_dir=lambda: "",
+    )
+    page = wizard.paths_page
+    page.steamcmd_edit.setText("C:/Users/Oran/Desktop/Server Conan/steamcmd")
+    assert page.validatePage() is True
+    assert " " not in page.steamcmd_edit.text() and page.steamcmd_edit.text().endswith("steamcmd")
+
+
+def test_default_steamcmd_dir_skips_folders_steamcmd_cant_use():
+    import models
+    cfg = models.AppConfig()
+    a = cfg.add_server("Taken over")
+    a.steamcmd_dir = "C:/Users/Oran/Desktop/Server Conan/steamcmd"
+    assert cfg.default_steamcmd_dir() == ""
+    b = cfg.add_server("Other")
+    b.steamcmd_dir = "C:\\ConanOps\\steamcmd"
+    assert cfg.default_steamcmd_dir() == os.path.normpath("C:\\ConanOps\\steamcmd")

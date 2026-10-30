@@ -1,6 +1,10 @@
 ConanOps runs Conan Exiles dedicated servers on a Windows PC and handles their routine maintenance. To install it, download **ConanOps-Setup** below and run it; existing copies of ConanOps update themselves.
 
-### New in this version
+### Fixed in this version
+
+- **Adding a server after taking one over.** If a taken-over server's SteamCMD folder had a space in its path (for example a folder on the Desktop), the setup wizard suggested that folder for the next server and then refused it. ConanOps no longer suggests such a folder, and if a folder with a space is entered, the wizard offers a working folder with one click (**Use This Folder**) or opens the folder picker. The taken-over server itself is not changed.
+
+### New in 1.0.14 (included)
 
 This version reorganises ConanOps so that it is easier to use. No settings are removed, and existing settings are kept.
 

@@ -54,7 +54,7 @@ At several points Windows asks for permission to make a change, for example when
 
 Select **+ Add Your First Server** on the Dashboard (or **Add server** in the sidebar). ConanOps first checks whether a Conan server is already installed on the PC (Section 5). If none is found, the setup wizard opens. It consists of five steps.
 
-1. **Name and folders.** The host names the server and confirms the suggested folders for SteamCMD (Valve's download tool) and for the server itself. ConanOps checks for common problems before anything is downloaded: too little free space, a folder path that SteamCMD cannot handle, or a folder already used by another server.
+1. **Name and folders.** The host names the server and confirms the suggested folders for SteamCMD (Valve's download tool) and for the server itself. ConanOps checks for common problems before anything is downloaded: too little free space, a folder path that SteamCMD cannot handle, or a folder already used by another server. If a folder path contains a space, the wizard offers a suitable folder instead.
 2. **Restore (optional).** The new server can start from a backup of another server, or from a backup file made elsewhere. Otherwise it starts with a new world.
 3. **Installation.** ConanOps downloads SteamCMD and then the Conan Exiles dedicated server. A progress bar is shown; this step takes the longest and depends on the speed of the connection.
 4. **Networking.** ConanOps detects the PC's address on the local network, chooses free ports that no other server uses, adds Windows Firewall rules for those ports and for the server program itself, and asks the router to forward the ports. If the router does not support this, the wizard shows the exact ports to forward by hand and the PC's public address.
