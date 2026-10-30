@@ -756,4 +756,4 @@ def test_default_steamcmd_dir_skips_folders_steamcmd_cant_use():
     assert cfg.default_steamcmd_dir() == ""
     b = cfg.add_server("Other")
     b.steamcmd_dir = "C:\\ConanOps\\steamcmd"
-    assert cfg.default_steamcmd_dir() == os.path.normpath("C:\\ConanOps\\steamcmd")
+    assert cfg.default_steamcmd_dir() == "C:\\ConanOps\\steamcmd"

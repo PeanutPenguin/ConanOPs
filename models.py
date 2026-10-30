@@ -520,7 +520,7 @@ class AppConfig:
         for s in self.servers:
             d = s.steamcmd_dir
             if s.id != exclude_id and d and " " not in d and d.isascii():
-                return os.path.normpath(d)
+                return d
         return ""
 
     # ------------------------------------------------------- app lock --
