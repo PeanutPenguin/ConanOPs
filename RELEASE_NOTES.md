@@ -7,6 +7,8 @@ ConanOps runs Conan Exiles dedicated servers on a Windows PC and handles their r
 - **Reading the server's logs.** Diagnostics reads the server's latest log, its crash reports and its mod list, and explains in plain language why the server would not start or crashed. It recognises, among other causes, a missing mod file, a crash inside a particular mod, a port already in use, insufficient memory, a damaged world save, a full disk and a failed Steam connection. Unrecognised errors are quoted as the server reported them. It also reports when a server has crashed repeatedly in the last 24 hours.
 - **Crash alerts give the likely cause.** When a server crashes, or ConanOps stops restarting it after repeated crashes, the alert now includes the most likely cause from the server's logs.
 - **RCON.** Diagnostics now reports when RCON is off, since ConanOps then cannot save the world before stopping the server.
+- **Fewer firewall prompts.** ConanOps now adds a firewall rule for the server program itself, covering every port the server opens (including RCON), so Windows should no longer ask whether to allow the server. Existing servers receive the rule after **Repair Networking**.
+- **No leftover firewall rules.** Uninstalling and **Delete Everything** remove the rules Windows created for ConanOps itself and for server programs whose folders no longer exist. Removing a server also clears rules left by server folders deleted earlier. Rules for the game itself, and for servers that are kept, are not touched.
 
 The [User Guide](https://github.com/PeanutPenguin/ConanOPs/blob/main/USER_GUIDE.md) describes every feature in detail.
 
