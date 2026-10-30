@@ -63,6 +63,11 @@ def rule_name(server_id: str, label: str, port: int) -> str:
 _rule_name = rule_name
 
 
+def program_rule_name(server_id: str) -> str:
+    """Name of the rule for the server program itself (removed with the port rules, by id)."""
+    return f"{RULE_PREFIX}{_safe_id(server_id)}-Program"
+
+
 def _clean_display(text: str) -> str:
     text = re.sub(r"[\x00-\x1f\x7f]", "", str(text or "")).strip()
     return text[:80] or "Server"
@@ -223,6 +228,18 @@ def add_firewall_rules(
         script += "try {\n" + _exe_block_rules_ps(exe_path) + \
             "$blockRules | Disable-NetFirewallRule -ErrorAction SilentlyContinue\n} catch {}\n"
     script += "$fail = 0\n"
+    if exe_path:
+        # A rule for the server program itself (every port it opens, RCON included),
+        # so Windows doesn't show its "allow this app?" popup and make rules of its own.
+        script += (
+            "try { New-NetFirewallRule "
+            f"-Name {_ps_str(program_rule_name(server_id))} "
+            f"-DisplayName {_ps_str(f'ConanOps - {_clean_display(display or server_id)} - Server program')} "
+            f"-Group {_ps_str(RULE_GROUP)} "
+            "-Description 'Created by ConanOps for a Conan Exiles dedicated server.' "
+            f"-Direction Inbound -Action Allow -Program {_ps_str(exe_path)} -Profile Any | Out-Null }} "
+            "catch { $fail++ }\n"
+        )
     for label, port in ports:
         script += (
             "try { New-NetFirewallRule "

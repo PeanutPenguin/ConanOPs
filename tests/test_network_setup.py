@@ -367,3 +367,20 @@ def test_shell_execute_runas_false_when_uac_declined(monkeypatch):
     monkeypatch.setattr(ctypes, "windll", FakeWindll(), raising=False)
 
     assert proc_utils.shell_execute_runas("cmd.exe", "/c echo hi") is False
+
+
+def test_server_program_gets_its_own_rule_so_windows_doesnt_ask(monkeypatch):
+    scripts = []
+    monkeypatch.setattr(network_setup, "_run_ps_privileged", lambda script, timeout=90.0: (scripts.append(script), "ok")[1])
+    monkeypatch.setattr(network_setup, "present_rule_names", lambda sid: set())
+    monkeypatch.setattr(network_setup, "firewall_environment",
+                        lambda exe_path="": {"checked": True, "block_rules": [], "third_party": []})
+    network_setup.add_firewall_rules("s1", 7777, 27015, display="Chud", exe_path="C:\\S\\Server.exe")
+    s = scripts[0]
+    assert "-Name 'ConanOps-s1-Program'" in s and "-Program 'C:\\S\\Server.exe'" in s and "-Profile Any" in s
+    assert s.index("Disable-NetFirewallRule") < s.index("ConanOps-s1-Program")  # block rules off first
+    # Same id prefix as the port rules, so removing the server removes it too.
+    assert network_setup.program_rule_name("s1").startswith(network_setup.RULE_PREFIX + "s1-")
+    scripts.clear()
+    network_setup.add_firewall_rules("s1", 7777, 27015)
+    assert "-Program" not in scripts[0]  # no exe known: port rules only

@@ -225,6 +225,42 @@ def temp_leftovers() -> List[str]:
     return found
 
 
+# Rules Windows made from its "allow this app?" popup that nothing needs any more:
+# any for ConanOps' own program (also copies run as conanops(1).exe and the like),
+# and any for a Conan server program whose file no longer exists (old installs).
+# The game itself (ConanSandbox.exe) and existing servers are never touched.
+def _stale_rules_ps(include_app: bool = True) -> str:
+    app = "($n -like 'conanops*.exe') -or " if include_app else ""
+    return (
+        "$stale = @(Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { "
+        "$p = [Environment]::ExpandEnvironmentVariables([string]$_.Program); "
+        "if (-not $p -or $p -eq 'Any' -or $p -eq 'System') { $false } else { "
+        "$n = [IO.Path]::GetFileName($p); "
+        f"{app}"
+        "(($n -ieq 'ConanSandboxServer-Win64-Shipping.exe') -and -not (Test-Path -LiteralPath $p)) } "
+        "} | Get-NetFirewallRule -ErrorAction SilentlyContinue)\n"
+    )
+
+
+def stale_firewall_rules_script(include_app: bool = True) -> str:
+    """Elevated PowerShell removing the leftover popup rules described above.
+    include_app=False keeps ConanOps' own (while it's still installed)."""
+    return ("try {\n" + _stale_rules_ps(include_app) +
+            "$stale | Remove-NetFirewallRule -ErrorAction SilentlyContinue\n} catch {}\n")
+
+
+def stale_firewall_rule_count() -> Optional[int]:
+    """How many such leftover rules there are (no admin needed), or None if unknown."""
+    proc = powershell.run_readonly("try {\n" + _stale_rules_ps() + "$stale.Count\n} catch { 'x' }\nexit 0\n", timeout=60)
+    if proc is None or proc.returncode != 0:
+        return None
+    out = (proc.stdout or "").strip().splitlines()
+    try:
+        return int(out[-1]) if out else 0
+    except ValueError:
+        return None
+
+
 def cleanup_script(server_ids: Iterable[str] = (), legacy_names: Iterable[str] = (),
                    program_dirs: Iterable[str] = (), remove_task: bool = False,
                    restore_active_hours: Optional[dict] = None, uninstall_vcredist: bool = False) -> str:
@@ -244,8 +280,12 @@ def cleanup_script(server_ids: Iterable[str] = (), legacy_names: Iterable[str] =
             "$p -and ($dirs | Where-Object { $p.StartsWith($_ + '\\', [StringComparison]::OrdinalIgnoreCase) }) "
             "} | Get-NetFirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue } catch {}\n"
         )
+        if not remove_task:
+            # Same prompt: also rules left by server folders deleted earlier.
+            parts.append(stale_firewall_rules_script(include_app=False))
     if remove_task:
         parts.append("try {\n" + network_setup.web_rule_remove_script() + "} catch {}\n")
+        parts.append(stale_firewall_rules_script())
         import background_mode
         import keep_alive
         parts.append("try {\n" + keep_alive.unregister_script() + "} catch {}\n")

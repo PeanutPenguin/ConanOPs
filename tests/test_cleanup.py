@@ -75,3 +75,37 @@ def test_generic_data_folder_only_owned_if_it_holds_conanops_files(tmp_path, mon
     assert str(data) not in cleanup.owned_roots()
     (data / "config.json").write_text("{}")
     assert str(data) in cleanup.owned_roots()
+
+
+def test_full_cleanup_removes_leftover_popup_rules_but_not_the_game():
+    import cleanup
+    script = cleanup.cleanup_script(["s1"], remove_task=True)
+    assert "conanops*.exe" in script and "ConanSandboxServer-Win64-Shipping.exe" in script
+    assert "Test-Path -LiteralPath $p" in script  # only server programs whose file is gone
+    assert "ConanSandbox.exe" not in script  # the game itself is left alone
+    assert "conanops*.exe" not in cleanup.cleanup_script(["s1"])  # removing one server doesn't
+
+
+def test_uninstall_removes_leftover_rules_only_when_there_are_some(monkeypatch):
+    import cleanup
+    import main
+    import powershell
+    runs = []
+    monkeypatch.setattr(powershell, "run_privileged", lambda s, timeout=0: runs.append(s) or powershell.RUN_OK)
+    for mod, name in (("startup_registration", "unregister"), ("keep_alive", "disable"), ("admin_mode", "disable"),
+                      ("admin_mode", "request_quit"), ("background_mode", "stop_other_instances")):
+        monkeypatch.setattr(__import__(mod), name, lambda *a, **k: None)
+    monkeypatch.setattr(main, "_other_conanops_running", lambda: False)
+    monkeypatch.setattr(__import__("background_mode"), "status", lambda: None)
+    monkeypatch.setattr(cleanup, "stale_firewall_rule_count", lambda: 0)
+    main._uninstall_cleanup()
+    assert runs == []
+    monkeypatch.setattr(cleanup, "stale_firewall_rule_count", lambda: 6)
+    main._uninstall_cleanup()
+    assert len(runs) == 1 and "conanops*.exe" in runs[0]
+
+
+def test_removing_a_server_also_clears_rules_of_deleted_server_folders():
+    import cleanup
+    script = cleanup.cleanup_script(["s1"], program_dirs=["C:\\Srv"])
+    assert "ConanSandboxServer-Win64-Shipping.exe" in script and "conanops*.exe" not in script

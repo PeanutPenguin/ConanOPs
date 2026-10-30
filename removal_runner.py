@@ -101,7 +101,8 @@ class DeleteEverythingWorker(QThread):
             import powershell
             script = cleanup.cleanup_script(
                 server_ids=[s.id for s in servers], legacy_names=[s.name for s in servers],
-                program_dirs=[s.install_dir for s in servers if s.install_dir],
+                # Servers that were on the PC before ConanOps stay, and so do Windows' rules for them.
+                program_dirs=[s.install_dir for s in servers if s.install_dir and not cleanup.is_adopted(s)],
                 remove_task=True,
                 restore_active_hours=self.config.original_active_hours or None,
                 uninstall_vcredist=self.uninstall_vcredist,

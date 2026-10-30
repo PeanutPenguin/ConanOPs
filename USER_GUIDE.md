@@ -57,7 +57,7 @@ Select **+ Add Your First Server** on the Dashboard (or **Add server** in the si
 1. **Name and folders.** The host names the server and confirms the suggested folders for SteamCMD (Valve's download tool) and for the server itself. ConanOps checks for common problems before anything is downloaded: too little free space, a folder path that SteamCMD cannot handle, or a folder already used by another server.
 2. **Restore (optional).** The new server can start from a backup of another server, or from a backup file made elsewhere. Otherwise it starts with a new world.
 3. **Installation.** ConanOps downloads SteamCMD and then the Conan Exiles dedicated server. A progress bar is shown; this step takes the longest and depends on the speed of the connection.
-4. **Networking.** ConanOps detects the PC's address on the local network, chooses free ports that no other server uses, adds Windows Firewall rules and asks the router to forward the ports. If the router does not support this, the wizard shows the exact ports to forward by hand and the PC's public address.
+4. **Networking.** ConanOps detects the PC's address on the local network, chooses free ports that no other server uses, adds Windows Firewall rules for those ports and for the server program itself, and asks the router to forward the ports. If the router does not support this, the wizard shows the exact ports to forward by hand and the PC's public address.
 5. **Keep it running.** One option, on by default, sets ConanOps to start with Windows, reopen itself if it closes or crashes, keep the PC awake while a server is running, and limit restarts for Windows updates to between 4 and 6 AM. Each of these can be changed later (Section 11).
 
 The wizard also points out one Windows setting that ConanOps cannot change: **Use my sign-in info to automatically finish setting up after an update**. If it is off, the PC waits at the sign-in screen after an update restart, and the servers remain offline until someone signs in.
@@ -193,7 +193,7 @@ Most of what the PC application offers is available from the web version. For sa
 - The server's backups can be kept or deleted.
 - If ConanOps switched off other launchers when it took the server over, it offers to turn them back on.
 
-**Uninstalling.** **App Settings → Delete ConanOps** offers two choices. **Uninstall ConanOps (Keep My Data)** removes the program but keeps servers, worlds and backups in `C:\ConanOps\data`, so a later reinstallation finds them again. **Delete Everything** also stops and deletes every server, its backups and SteamCMD, and reverses the Windows changes ConanOps made; servers that were on the PC before ConanOps are left in place. Because this cannot be undone, it must be confirmed by typing DELETE. ConanOps can also be uninstalled through Windows' list of installed apps, which keeps the data folder.
+**Uninstalling.** **App Settings → Delete ConanOps** offers two choices. **Uninstall ConanOps (Keep My Data)** removes the program and the firewall rules Windows created for it, but keeps servers, worlds and backups in `C:\ConanOps\data`, so a later reinstallation finds them again. **Delete Everything** also stops and deletes every server, its backups and SteamCMD, and reverses the Windows changes ConanOps made; servers that were on the PC before ConanOps are left in place. It also removes the firewall rules Windows created for ConanOps itself and for servers whose folders no longer exist; the rules for the game, and for servers that are kept, are not touched. Because this cannot be undone, it must be confirmed by typing DELETE. ConanOps can also be uninstalled through Windows' list of installed apps, which keeps the data folder.
 
 ## 15. Troubleshooting
 
@@ -202,6 +202,8 @@ Most of what the PC application offers is available from the web version. For sa
 **Friends cannot connect.** Run Diagnostics first. The most common causes are a router without UPnP (forward the game and query ports by hand, using the numbers shown under Network & Ports), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again). Players connecting from the same home network should use the local address shown on the Dashboard.
 
 **The server stopped working after a game update.** This is usually caused by mods that have not yet been rebuilt for the new version. Use **Fix Mod Problems** (Section 8), or wait for ConanOps' automatic mod recovery if it is enabled.
+
+**Windows asks whether to allow ConanSandboxServer.** This prompt comes from Windows Defender Firewall, not from the server. Because ConanOps adds a firewall rule for the server program during setup, it should not normally appear. If it does, select **Allow access**. Selecting **Cancel** makes Windows create rules that block the server, so that friends cannot connect; **Repair Networking** under Network & Ports switches those rules off again.
 
 **The servers were offline after Windows restarted.** Check that **Use my sign-in info to automatically finish setting up after an update** is on in Windows (App Settings shows a warning when it is off), or turn on **Keep my servers running when nobody is signed into Windows**.
 

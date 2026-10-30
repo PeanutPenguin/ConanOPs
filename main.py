@@ -261,6 +261,16 @@ def _uninstall_cleanup() -> int:
     except Exception as e:  # noqa: BLE001 - best-effort
         log.warning(f"Couldn't remove the background task: {e}")
     try:
+        # Firewall rules Windows made for ConanOps itself and for servers that are
+        # gone. One permission prompt, and only if there's something to remove.
+        import cleanup
+        import powershell
+        count = cleanup.stale_firewall_rule_count()
+        if count:
+            powershell.run_privileged(cleanup.stale_firewall_rules_script() + "exit 0\n", timeout=120)
+    except Exception as e:  # noqa: BLE001 - best-effort
+        log.warning(f"Couldn't remove leftover firewall rules: {e}")
+    try:
         # An elevated copy can't be killed from here; ask it to close.
         import time
         admin_mode.request_quit()
