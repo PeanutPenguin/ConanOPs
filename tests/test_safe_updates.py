@@ -295,3 +295,19 @@ def test_stop_runs_off_the_ui_thread(monkeypatch):
         assert win._known_running.get(s.id) is False
     finally:
         win.close()
+
+
+def test_launch_writes_name_ports_and_password_for_a_new_server(tmp_path):
+    """1.0.15: a server made with the setup wizard had its name only in
+    ConanOps' settings, so it was listed as "Conan Exiles Server"."""
+    s = models.ServerConfig(name="Chudville Two", install_dir=str(tmp_path), password="pw",
+                            game_port=7779, query_port=27016, bind_ip="192.168.1.5", max_players=30)
+    assert process_manager.sync_server_ini(s) is True
+    engine = open(process_manager.engine_ini_path(str(tmp_path))).read()
+    assert "[OnlineSubsystemSteam]" in engine and "ServerName=Chudville Two" in engine
+    assert "ServerPassword=pw" in engine and "GameServerQueryPort=27016" in engine
+    assert "Port=7779" in engine and "MultiHome=192.168.1.5" in engine
+    assert "MaxPlayers=30" in open(process_manager.game_ini_path(str(tmp_path))).read()
+    assert process_manager.sync_server_ini(s) is False  # already matches
+    s.name = "Renamed"
+    assert process_manager.sync_server_ini(s) is True

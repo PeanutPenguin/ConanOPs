@@ -2,23 +2,8 @@ ConanOps runs Conan Exiles dedicated servers on a Windows PC and handles their r
 
 ### Fixed in this version
 
-- **Adding a server after taking one over.** If a taken-over server's SteamCMD folder had a space in its path (for example a folder on the Desktop), the setup wizard suggested that folder for the next server and then refused it. ConanOps no longer suggests such a folder, and if a folder with a space is entered, the wizard offers a working folder with one click (**Use This Folder**) or opens the folder picker. The taken-over server itself is not changed.
-
-### New in 1.0.14 (included)
-
-This version reorganises ConanOps so that it is easier to use. No settings are removed, and existing settings are kept.
-
-- **Presets.** Most groups of settings now start with a few named choices, each described in one line, with one marked *Recommended*: for example *Standard*, *Frequent* or *Light* backups; *Official*, *Relaxed*, *Boosted* or *Hardcore* play styles; and *Hands-off*, *While I'm signed in* or *Only when I open it* for how ConanOps runs. Selecting a preset sets every setting in that group. A **?** beside each group explains it in more detail.
-- **Simple and Advanced.** A switch at the top right chooses how much is shown. Simple, the default, shows the presets and the settings most hosts change. Advanced also shows every individual setting under its preset, as well as Console, ports, remote commands (RCON), the fixed web address, the Discord bot, the PIN lock and the Steam Workshop key. Changing an individual setting marks its group *Custom*. A search for a setting that exists only in Advanced opens Advanced to show it.
-- **Fewer sections.** Server Settings has four sections: Server, Gameplay, Automation (backups, the daily restart, game updates and broken-mod handling) and Check for Problems. App Settings has five: Run Automatically, Remote Access, Alerts, Appearance, and Updates & Uninstall.
-- **A clearer Dashboard.** Whether the server is online is shown once, at the top of the window. A stopped server has a single **Start** button; a running one has **Restart** and **Stop**. The address friends connect to is shown in full, with a **Copy** button, and the automatic tasks have plain names.
-- **Shorter, plainer text.** Explanations are shorter, technical terms are replaced or explained, and errors such as a failed mod-status check are described in ordinary words.
-- **The web version** keeps its current layout in this release.
-
-### Also included (from 1.0.12 and 1.0.13, which were not released separately)
-
-- **Check for Problems** tests whether the server can be seen from the internet, reads the server's logs and crash reports to explain why it would not start or crashed, and offers a fix button for most problems. Crash alerts include the most likely cause.
-- **Firewall.** ConanOps adds a firewall rule for the server program itself, so Windows should no longer ask whether to allow it, and removes leftover rules when uninstalled or when everything is deleted.
+- **New servers kept the default name.** A server created with the setup wizard was listed in the game's server browser as "Conan Exiles Server" instead of the name it was given, because the name was not written to the server's own settings file until a setting was saved. ConanOps now writes each server's name, password, ports and player limit to the server's settings files before every start. If a server is affected, restarting it from ConanOps 1.0.16 applies its name.
+- **Remote commands (RCON) on a new server.** The same step also rewrites RCON settings if the server replaced them during its first start, so a restart restores them.
 
 The [User Guide](https://github.com/PeanutPenguin/ConanOPs/blob/main/USER_GUIDE.md) describes every feature in detail.
 

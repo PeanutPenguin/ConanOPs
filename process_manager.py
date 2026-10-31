@@ -90,10 +90,46 @@ def sync_rcon_ini(server: ServerConfig) -> bool:
         return False  # never block a launch over this
 
 
+def engine_ini_path(install_dir: str) -> str:
+    return os.path.join(install_dir, "ConanSandbox", "Saved", "Config", "WindowsServer", "Engine.ini")
+
+
+def _sync_keys(path: str, wanted: dict) -> bool:
+    import ini_utils  # local: keeps this module's import graph minimal
+    try:
+        current = ini_utils.read_known_keys(path, {k: sec for k, (sec, _v) in wanted.items()}) \
+            if os.path.exists(path) else {}
+        if all(str(current.get(k, "")).strip() == v for k, (_sec, v) in wanted.items()):
+            return False
+        ini_utils.apply_known_keys(path, wanted)
+        return True
+    except OSError:
+        return False  # never block a launch over this
+
+
+def sync_server_ini(server: ServerConfig) -> bool:
+    """Makes the name, password, ports and player limit in Engine.ini/Game.ini
+    match ConanOps' before launch. The server reads its name only from
+    Engine.ini, so without this a new server announced itself as "Conan Exiles
+    Server" until a setting was saved. Writes only what differs."""
+    engine = {
+        "ServerName": ("OnlineSubsystemSteam", server.name),
+        "ServerPassword": ("OnlineSubsystemSteam", server.password or ""),
+        "Port": ("URL", str(server.game_port)),
+        "GameServerQueryPort": ("OnlineSubsystemSteam", str(server.query_port)),
+    }
+    if server.bind_ip:
+        engine["MultiHome"] = ("URL", server.bind_ip)
+    wrote = _sync_keys(engine_ini_path(server.install_dir), engine)
+    game = {"MaxPlayers": ("/script/engine.gamesession", str(server.max_players))}
+    return _sync_keys(game_ini_path(server.install_dir), game) or wrote
+
+
 def launch(server: ServerConfig) -> subprocess.Popen:
     exe = server_exe_path(server.install_dir)
     if not os.path.exists(exe):
         raise FileNotFoundError(f"Server executable not found: {exe}")
+    sync_server_ini(server)
     sync_rcon_ini(server)
     args = build_launch_args(server)
     kwargs = dict(cwd=os.path.dirname(exe), env=proc_utils.child_env(), **hidden_gui_window_kwargs())
