@@ -27,6 +27,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 import applog
 import network_utils
+import port_mapping
 import powershell
 import proc_utils  # noqa: F401 - re-exported for callers/tests that patch it here
 
@@ -303,6 +304,27 @@ _SSDP_PORT = 1900
 _SEARCH_TARGETS = (
     "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
     "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+    # Some routers answer only a search for the service itself.
+    "urn:schemas-upnp-org:service:WANIPConnection:1",
+    "urn:schemas-upnp-org:service:WANIPConnection:2",
+    "urn:schemas-upnp-org:service:WANPPPConnection:1",
+)
+_SSDP_ROUNDS = 2  # UDP searches get lost; ask twice
+
+# Where common routers publish their UPnP description, tried on the router's
+# own address when nobody answers a search (multicast blocked or filtered).
+_COMMON_DESCRIPTION_URLS = (
+    (5000, "/rootDesc.xml"),                 # miniupnpd (OpenWrt, Asus, Ubiquiti, many others)
+    (1900, "/rootDesc.xml"),
+    (1900, "/igd.xml"),
+    (49000, "/igddesc.xml"),                 # AVM Fritz!Box
+    (49152, "/rootDesc.xml"),
+    (49152, "/IGDdevicedesc_brlan0.xml"),    # Arris / Technicolor / many ISP gateways
+    (52869, "/picsdesc.xml"),                # Realtek-based routers
+    (2555, "/upnp/InternetGatewayDevice.xml"),
+    (1780, "/InternetGatewayDevice.xml"),
+    (60000, "/igd.xml"),
+    (80, "/rootDesc.xml"),
 )
 
 
@@ -325,6 +347,7 @@ class UpnpDevice:
     control_url: str
     service_type: str
     location: str = ""
+    name: str = ""  # the router's own name, e.g. "AmpliFi HD"
 
 
 UPNP_CONFLICT = 718            # ConflictInMappingEntry
@@ -332,9 +355,10 @@ UPNP_NO_SUCH_ENTRY = 714       # NoSuchEntryInArray
 UPNP_ARRAY_INDEX_INVALID = 713  # SpecifiedArrayIndexInvalid
 
 
-def _ssdp_locations(timeout: float, local_ip: Optional[str]) -> List[str]:
+def _ssdp_locations(timeout: float, local_ip: Optional[str], unicast_to: Optional[str] = None) -> List[str]:
     """Every LOCATION answering an IGD search (a TV or NAS may answer first).
-    Sent from the LAN adapter so a VPN default route doesn't swallow it."""
+    Sent from the LAN adapter so a VPN default route doesn't swallow it, and
+    also straight to `unicast_to` (the router) when given."""
     locations: List[str] = []
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
@@ -345,11 +369,14 @@ def _ssdp_locations(timeout: float, local_ip: Optional[str]) -> List[str]:
                 sock.bind((local_ip, 0))
             except OSError as e:
                 _log.info(f"Couldn't pin UPnP discovery to {local_ip}: {e}")
-        for st in _SEARCH_TARGETS:
-            try:
-                sock.sendto(_msearch(st), (_SSDP_ADDR, _SSDP_PORT))
-            except OSError as e:
-                _log.info(f"SSDP send failed: {e}")
+        dests = [(_SSDP_ADDR, _SSDP_PORT)] + ([(unicast_to, _SSDP_PORT)] if unicast_to else [])
+        for _round in range(_SSDP_ROUNDS):
+            for dest in dests:
+                for st in _SEARCH_TARGETS:
+                    try:
+                        sock.sendto(_msearch(st), dest)
+                    except OSError as e:
+                        _log.info(f"SSDP send to {dest[0]} failed: {e}")
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -388,6 +415,13 @@ def _services_at(location: str, timeout: float) -> List[UpnpDevice]:
         if _local_tag(el.tag) == "URLBase" and (el.text or "").strip():
             base = el.text.strip()
             break
+    names = {}
+    for el in root.iter():
+        tag = _local_tag(el.tag)
+        if tag in ("friendlyName", "modelName", "manufacturer") and tag not in names and (el.text or "").strip():
+            names[tag] = el.text.strip()
+    name = names.get("friendlyName") or " ".join(
+        x for x in (names.get("manufacturer"), names.get("modelName")) if x)
     found = []
     for svc in root.iter():
         if _local_tag(svc.tag) != "service":
@@ -397,7 +431,7 @@ def _services_at(location: str, timeout: float) -> List[UpnpDevice]:
         if "WANIPConnection" in stype or "WANPPPConnection" in stype:
             ctrl = fields.get("controlURL", "")
             if ctrl:
-                found.append(UpnpDevice(urllib.parse.urljoin(base, ctrl), stype, location))
+                found.append(UpnpDevice(urllib.parse.urljoin(base, ctrl), stype, location, name[:60]))
     # Prefer IP over PPP: combo modems often list an unused PPP service.
     found.sort(key=lambda d: 0 if "WANIPConnection" in d.service_type else 1)
     return found
@@ -437,6 +471,8 @@ def _soap(device: UpnpDevice, action: str, args: List[Tuple[str, object]],
             code = int(code_text) if code_text else None
         except Exception:  # noqa: BLE001
             pass
+        if code is None and e.code in (401, 403):
+            code = e.code  # router refuses changes outright
         _log.info(f"UPnP {action} failed: HTTP {e.code}, UPnP error {code}")
         return None, code
     except Exception as e:  # noqa: BLE001 - OSError, HTTPException, ValueError, ParseError
@@ -444,19 +480,88 @@ def _soap(device: UpnpDevice, action: str, args: List[Tuple[str, object]],
         return None, None
 
 
+# The router description that worked last, per LAN address: tried first next
+# time, so a router that answers searches unreliably is still found.
+_last_location: Dict[str, str] = {}
+_last_device: Dict[str, UpnpDevice] = {}
+_last_candidates: Dict[str, List[UpnpDevice]] = {}
+
+
+def _probe_common_locations(gateway: str, timeout: float = 1.0) -> List[str]:
+    """Description URLs that answer on the router itself, checked in parallel."""
+    hits: List[Tuple[int, str]] = []
+    lock = threading.Lock()
+
+    def probe(i: int, url: str) -> None:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                head = resp.read(65536)
+            if b"WANIPConnection" in head or b"WANPPPConnection" in head:
+                with lock:
+                    hits.append((i, url))
+        except Exception:  # noqa: BLE001 - nothing there
+            pass
+
+    threads = [threading.Thread(target=probe, args=(i, f"http://{gateway}:{port}{path}"), daemon=True)
+               for i, (port, path) in enumerate(_COMMON_DESCRIPTION_URLS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout + 0.5)
+    return [url for _i, url in sorted(hits)]
+
+
+def _gateway_for(local_ip: Optional[str]) -> Optional[str]:
+    try:
+        gw = network_utils.get_default_gateway(local_ip)
+    except Exception:  # noqa: BLE001
+        return None
+    return gw if gw and network_utils.is_valid_ipv4(gw) else None
+
+
+def _rank(candidates: List[UpnpDevice], timeout: float) -> List[UpnpDevice]:
+    """Connected WAN services first (a combo modem may list an unused one)."""
+    connected, rest = [], []
+    for dev in candidates:
+        fields, _ = _soap(dev, "GetStatusInfo", [], timeout=timeout)
+        (connected if fields and fields.get("NewConnectionStatus", "").lower() == "connected" else rest).append(dev)
+    return connected + rest
+
+
+def discover_igds(timeout: float = 3.0, local_ip: Optional[str] = None) -> List[UpnpDevice]:
+    """Every usable WAN connection service on the router, best first. Tries,
+    in order: the router that answered last time, a multicast search (twice,
+    for several device and service types), then the router's own address
+    directly (search and common description URLs). Empty if UPnP is off."""
+    key = local_ip or ""
+    candidates: List[UpnpDevice] = []
+    cached = _last_location.get(key)
+    if cached:
+        candidates = _services_at(cached, timeout)
+    if not candidates:
+        locations = _ssdp_locations(timeout, local_ip)
+        if not locations:
+            gateway = _gateway_for(local_ip)
+            if gateway:
+                locations = _ssdp_locations(min(timeout, 2.0), local_ip, unicast_to=gateway) \
+                    or _probe_common_locations(gateway)
+        for loc in locations:
+            candidates.extend(_services_at(loc, timeout))
+    if not candidates:
+        _last_location.pop(key, None)
+        return []
+    ranked = _rank(candidates, timeout)
+    _last_location[key] = ranked[0].location
+    _last_device[key] = ranked[0]
+    _last_candidates[key] = ranked
+    return ranked
+
+
 def discover_igd(timeout: float = 3.0, local_ip: Optional[str] = None) -> Optional[UpnpDevice]:
     """The router's WAN connection service, preferring one reporting Connected.
     None if nothing usable responds (normal when UPnP is off)."""
-    candidates: List[UpnpDevice] = []
-    for loc in _ssdp_locations(timeout, local_ip):
-        candidates.extend(_services_at(loc, timeout))
-    if not candidates:
-        return None
-    for dev in candidates:
-        fields, _ = _soap(dev, "GetStatusInfo", [], timeout=timeout)
-        if fields and fields.get("NewConnectionStatus", "").lower() == "connected":
-            return dev
-    return candidates[0]
+    found = discover_igds(timeout, local_ip)
+    return found[0] if found else None
 
 
 def get_external_ip(device: UpnpDevice, timeout: float = 5.0) -> Optional[str]:
@@ -510,6 +615,14 @@ def _is_ours(entry: Dict[str, str], server_id: str, internal_ip: Optional[str]) 
 MAP_OK = "ok"
 MAP_CONFLICT = "conflict"
 MAP_FAILED = "failed"
+MAP_DENIED = "denied"   # UPnP is on but the router refuses changes ("secure mode" / read-only)
+UPNP_NOT_AUTHORIZED = 606
+_DENIED_CODES = {UPNP_NOT_AUTHORIZED, 401, 403}
+
+
+def _plain_description(text: str) -> str:
+    """Some routers reject descriptions with symbols or long text."""
+    return re.sub(r"[^A-Za-z0-9 ]", "", text.replace("+", "Plus"))[:40].strip() or "ConanOps"
 
 
 def map_port(device: UpnpDevice, port: int, internal_ip: str, description: str,
@@ -533,10 +646,19 @@ def map_port(device: UpnpDevice, port: int, internal_ip: str, description: str,
         else:
             _log.info(f"UPnP: port {port}/{protocol} is already forwarded to {existing.get('NewInternalClient', 'another device')}.")
             return MAP_CONFLICT
-    if fields is None and code != UPNP_CONFLICT:
+    if fields is None and code != UPNP_CONFLICT and code not in _DENIED_CODES:
         # Some IGDv2 routers refuse permanent leases; refresh_upnp_async renews this one.
         fields, code = add(7 * 24 * 3600)
+    if fields is None and code not in (UPNP_CONFLICT,) and code not in _DENIED_CODES:
+        plain = _plain_description(description)
+        if plain != description:
+            description = plain
+            fields, code = add(0)
+            if fields is None and code != UPNP_CONFLICT and code not in _DENIED_CODES:
+                fields, code = add(7 * 24 * 3600)
     if fields is None:
+        if code in _DENIED_CODES:
+            return MAP_DENIED
         return MAP_CONFLICT if code == UPNP_CONFLICT else MAP_FAILED
 
     check = get_port_mapping(device, port, protocol, timeout)
@@ -556,11 +678,16 @@ def remove_upnp_mappings(server_id: str, ports: Iterable[int] = (), local_ip: Op
     """Deletes this server's router mappings (found by tag in the table, or by
     checking `ports` if listing isn't supported), except `keep`. Returns the count."""
     local_ip = local_ip or network_utils.get_local_ip()
-    device = device or discover_igd(local_ip=local_ip)
-    if device is None:
-        return 0
     keep = {int(p) for p in keep}
     removed = 0
+    pmp = _pmp_mapped.get(server_id) or set()
+    for port in sorted(pmp - keep):
+        if port_mapping.unmap_udp(_pmp_gateway.get(server_id, ""), local_ip, port, key=server_id):
+            removed += 1
+        pmp.discard(port)
+    device = device or discover_igd(local_ip=local_ip)
+    if device is None:
+        return removed
     entries = list_port_mappings(device)
     seen = set()
     for e in entries:
@@ -584,34 +711,107 @@ def remove_upnp_mappings(server_id: str, ports: Iterable[int] = (), local_ip: Op
     return removed
 
 
+# Ports forwarded by NAT-PMP/PCP this session, per server (they expire on
+# their own within port_mapping.LIFETIME if ConanOps stops renewing them).
+_pmp_mapped: Dict[str, set] = {}
+_pmp_renewed: Dict[str, float] = {}
+_pmp_gateway: Dict[str, str] = {}
+
+
+def _labels(game_port: int, query_port: int) -> List[Tuple[str, int, str]]:
+    return [("Game", game_port, "game_port_forwarded"),
+            ("GamePlus1", game_port + 1, "game_port_plus_one_forwarded"),
+            ("Query", query_port, "query_port_forwarded")]
+
+
 def reconcile_upnp(server_id: str, internal_ip: str, game_port: int, query_port: int,
                    old_ports: Iterable[int] = ()) -> dict:
-    """Makes this server's forwards exactly game/game+1/query -> internal_ip,
-    removing stale ones, and checks the router's WAN IP for double NAT."""
+    """Makes this server's router forwards exactly game/game+1/query ->
+    internal_ip, removing stale ones, and checks the router's WAN IP for
+    double NAT. Uses UPnP, trying each WAN service the router offers, then
+    NAT-PMP/PCP for anything UPnP couldn't forward.
+
+    "upnp_available" means automatic forwarding works by any of these
+    methods; "method" says which ("UPnP", "NAT-PMP", "PCP", joined with " + ")."""
     result = {
         "upnp_available": False, "game_port_forwarded": False,
         "game_port_plus_one_forwarded": False, "query_port_forwarded": False,
         "conflicts": [], "external_ip": None, "double_nat": False,
+        "method": "", "router": "", "denied": False, "errors": [],
     }
+    wanted = _labels(game_port, query_port)
+    methods: List[str] = []
     device = discover_igd(local_ip=internal_ip)
-    if device is None:
-        return result
-    result["upnp_available"] = True
-    wanted = [("Game", game_port, "game_port_forwarded"),
-              ("Game+1", game_port + 1, "game_port_plus_one_forwarded"),
-              ("Query", query_port, "query_port_forwarded")]
-    if server_id:
-        remove_upnp_mappings(server_id, ports=old_ports, local_ip=internal_ip, device=device,
-                             keep=[p for _l, p, _k in wanted])
-    for label, port, key in wanted:
-        status = map_port(device, port, internal_ip, f"{upnp_tag(server_id)}{label}".strip(), server_id=server_id)
-        result[key] = status == MAP_OK
-        if status == MAP_CONFLICT:
-            result["conflicts"].append(port)
-    ext = get_external_ip(device)
-    result["external_ip"] = ext
-    result["double_nat"] = bool(ext and network_utils.is_non_public_ipv4(ext))
+    if device is not None:
+        result["upnp_available"] = True
+        result["router"] = device.name
+        if server_id:
+            remove_upnp_mappings(server_id, ports=old_ports, local_ip=internal_ip, device=device,
+                                 keep=[p for _l, p, _k in wanted])
+        others = [d for d in _last_candidates.get(internal_ip or "", []) if d.control_url != device.control_url]
+        for label, port, key in wanted:
+            desc = f"{upnp_tag(server_id)}{label}".strip()
+            status = map_port(device, port, internal_ip, desc, server_id=server_id)
+            for alt in others:
+                if status in (MAP_OK, MAP_CONFLICT):
+                    break
+                status = map_port(alt, port, internal_ip, desc, server_id=server_id)
+            result[key] = status == MAP_OK
+            if status == MAP_CONFLICT:
+                result["conflicts"].append(port)
+            elif status == MAP_DENIED:
+                result["denied"] = True
+        if any(result[k] for _l, _p, k in wanted):
+            methods.append("UPnP")
+        ext = get_external_ip(device)
+        result["external_ip"] = ext
+        result["double_nat"] = bool(ext and network_utils.is_non_public_ipv4(ext))
+
+    missing = [(label, port, key) for label, port, key in wanted if not result[key] and port not in result["conflicts"]]
+    if missing and internal_ip:
+        gateway = _gateway_for(internal_ip)
+        used = set()
+        for label, port, key in missing:
+            m = port_mapping.map_udp(gateway, internal_ip, port, key=server_id) if gateway else \
+                port_mapping.Mapping(False, error="router address unknown")
+            if m.ok:
+                result[key] = True
+                used.add(m.method)
+                _pmp_mapped.setdefault(server_id, set()).add(int(port))
+                _pmp_gateway[server_id] = gateway
+            else:
+                result["errors"].append(f"{label} {port}: {m.error}")
+                if not m.method:
+                    break  # the router answers neither protocol; don't wait on each port
+        if used:
+            _pmp_renewed[server_id] = time.monotonic()
+            result["upnp_available"] = True
+            methods.extend(sorted(used))
+            if not result["external_ip"]:
+                ext = port_mapping.pmp_external_ip(gateway, internal_ip)
+                result["external_ip"] = ext
+                result["double_nat"] = bool(ext and network_utils.is_non_public_ipv4(ext))
+    result["method"] = " + ".join(methods)
     return result
+
+
+def forwards_intact(server_id: str, internal_ip: str, game_port: int, query_port: int) -> bool:
+    """Quick check, without a new search: does the router we found last still
+    forward all three ports here, and are NAT-PMP/PCP forwards fresh?"""
+    ports = [p for _l, p, _k in _labels(game_port, query_port)]
+    pmp = _pmp_mapped.get(server_id) or set()
+    if pmp and time.monotonic() - _pmp_renewed.get(server_id, 0) > _PMP_RENEW_SECONDS:
+        return False
+    device = _last_device.get(internal_ip or "")
+    for port in ports:
+        if port in pmp:
+            continue
+        if device is None:
+            return False
+        entry = get_port_mapping(device, port, "UDP", timeout=3.0)
+        if not entry or entry.get("NewInternalClient") not in ("", internal_ip):
+            return False
+    return True
 
 
 def try_upnp_forward(internal_ip: str, game_port: int, query_port: int, server_id: str = "") -> dict:
@@ -623,7 +823,13 @@ def try_upnp_forward(internal_ip: str, game_port: int, query_port: int, server_i
 _refresh_lock = threading.Lock()
 _had_router: Dict[str, bool] = {}
 _last_refresh: Dict[str, Tuple[tuple, float]] = {}
-_REFRESH_MIN_INTERVAL = 30 * 60  # below the hourly check in MainWindow, so that one always runs
+# MainWindow checks every 5 minutes, so a router that lost its forwards (a
+# reboot, a firmware update) gets them back within minutes. Most checks are
+# three quick questions to the router; a full redo only when something is off.
+_REFRESH_MIN_INTERVAL = 4 * 60
+_PMP_RENEW_SECONDS = port_mapping.LIFETIME // 3
+_NO_ROUTER_RETRY_SECONDS = 30 * 60  # no automatic forwarding found: ask again less often
+_no_router_at: Dict[str, float] = {}
 UPNP_REFRESH_ENABLED = sys.platform == "win32"
 
 
@@ -641,7 +847,17 @@ def refresh_upnp_async(server) -> None:
 
     def work():
         try:
+            if forwards_intact(server.id, ip, key[1], key[2]):
+                return
+            if time.monotonic() - _no_router_at.get(server.id, -1e9) < _NO_ROUTER_RETRY_SECONDS:
+                return
             r = reconcile_upnp(server.id, ip, key[1], key[2])
+            if r["upnp_available"]:
+                _no_router_at.pop(server.id, None)
+            elif not _had_router.get(server.id):
+                # Never had automatic forwarding: ask less often. (A router that
+                # had it and stopped answering is probably rebooting: keep asking.)
+                _no_router_at[server.id] = time.monotonic()
             if r["upnp_available"]:
                 _log.info(f"UPnP refresh for {server.id}: {r}")
             elif _had_router.get(server.id):

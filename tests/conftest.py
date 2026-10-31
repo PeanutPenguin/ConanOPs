@@ -75,6 +75,21 @@ def no_workshop_status_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_router_traffic(monkeypatch):
+    """Tests never talk to a real router: no NAT-PMP/PCP packets, no probing
+    the gateway's web ports, no remembered router from another test."""
+    import network_setup
+    import port_mapping
+    monkeypatch.setattr(port_mapping, "_exchange", lambda *a, **k: None)
+    monkeypatch.setattr(network_setup, "_probe_common_locations", lambda *a, **k: [])
+    monkeypatch.setattr(network_setup, "_gateway_for", lambda local_ip=None: None)
+    for d in (network_setup._last_location, network_setup._last_device, network_setup._last_candidates,
+              network_setup._pmp_mapped, network_setup._pmp_renewed, network_setup._pmp_gateway,
+              network_setup._no_router_at):
+        d.clear()
+
+
+@pytest.fixture(autouse=True)
 def no_real_pc_scan(monkeypatch):
     """MainWindow looks for servers and other launchers on the PC a few
     seconds after it opens (and on "Add server"). Never let a test walk the

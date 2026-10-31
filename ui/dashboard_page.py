@@ -428,7 +428,13 @@ class DashboardPage(QWidget):
         host = (self.get_fixed_host() if callable(self.get_fixed_host) else "") or _PUBLIC_IP["ip"]
         if host:
             self._address = f"{host}:{server.game_port}"
-            self.connect_label.setText(f"Friends connect to {self._address}")
+            text = f"Friends connect to {self._address}"
+            if server.bind_ip:
+                # Many routers don't loop the public address back inside (NAT
+                # loopback), so on this network the server can vanish from the
+                # in-game browser; the home-network address always works here.
+                text += f"\nOn this network, use {server.bind_ip}:{server.game_port}"
+            self.connect_label.setText(text)
         else:
             local = server.bind_ip or ""
             self._address = f"{local}:{server.game_port}" if local else ""

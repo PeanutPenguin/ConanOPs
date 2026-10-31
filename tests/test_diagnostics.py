@@ -733,3 +733,43 @@ def test_log_findings_show_up_with_their_fix(tmp_path, monkeypatch):
     (logs / "ConanSandbox.log").write_text("[x][  0]LogNet: Error: Unable to bind socket to port 17777\n")
     r = next(x for x in diagnostics.run_diagnostics(server) if x.title == "Port already in use")
     assert r.status == diagnostics.STATUS_ERROR and r.fix == diagnostics.FIX_FREE_PORT and "17777" in r.detail
+
+
+# ---------------------------------------------------- router (1.0.17) --
+
+def test_no_loopback_is_explained_with_the_home_address(tmp_path, monkeypatch):
+    import network_setup
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    server.bind_ip = "192.168.117.219"
+    _running(monkeypatch)
+    monkeypatch.setattr("network_utils.list_local_ipv4s", lambda: {"192.168.117.219"})
+    monkeypatch.setattr(network_setup, "discover_igd", lambda timeout=3.0, local_ip=None: network_setup.UpnpDevice(
+        "http://192.168.1.1/control", "urn:schemas-upnp-org:service:WANIPConnection:1", name="AmpliFi HD"))
+    monkeypatch.setattr(steam_visibility, "steam_listing", lambda *a, **k: steam_visibility.SteamListing(
+        steam_visibility.LISTED, match={"gameport": server.game_port}))
+    results = diagnostics.run_diagnostics(server)
+    loop = next(r for r in results if r.title == diagnostics.LOOPBACK_TITLE)
+    assert loop.status == diagnostics.STATUS_WARNING
+    assert f"192.168.117.219:{server.game_port}" in loop.message and "disappear" in loop.message
+    assert "AmpliFi HD" in next(r for r in results if r.title == "Router UPnP").message
+
+
+def test_no_loopback_result_when_loopback_works(tmp_path, monkeypatch):
+    import steam_visibility
+    server = _make_installed_server(tmp_path)
+    _running(monkeypatch)
+    monkeypatch.setattr(steam_visibility, "answers_on_public_address", lambda ip, port, timeout=2.0: True)
+    assert not any(r.title == diagnostics.LOOPBACK_TITLE for r in diagnostics.run_diagnostics(server))
+
+
+def test_router_without_upnp_but_with_nat_pmp(tmp_path, monkeypatch):
+    import network_setup
+    server = _make_installed_server(tmp_path)
+    monkeypatch.setattr("network_utils.list_local_ipv4s", lambda: {"127.0.0.1"})
+    monkeypatch.setattr(diagnostics, "_pmp_method", lambda s: "NAT-PMP")
+    r = next(r for r in diagnostics.run_diagnostics(server) if r.title == "Router UPnP")
+    assert r.status == diagnostics.STATUS_WARNING and "NAT-PMP" in r.message and r.fix == diagnostics.FIX_REPAIR_NETWORK
+    network_setup._pmp_mapped[server.id] = {server.game_port, server.game_port + 1, server.query_port}
+    r = next(r for r in diagnostics.run_diagnostics(server) if r.title == "Router UPnP")
+    assert r.status == diagnostics.STATUS_OK and "renewed" in r.message

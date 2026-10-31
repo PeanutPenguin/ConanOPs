@@ -434,7 +434,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
         self._init_mod_recovery()
 
-        # Routers often forget UPnP forwards on reboot; refresh hourly.
+        # Routers often forget forwards on reboot; check every few minutes (cheap when intact).
         self._upnp_refresh_timer = QTimer(self)
         self._upnp_refresh_timer.timeout.connect(self._refresh_router_forwards)
         self._upnp_refresh_timer.start(self._UPNP_REFRESH_MS)
@@ -1088,7 +1088,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
 
     # -------------------------------------------------------- disk space --
-    _UPNP_REFRESH_MS = 60 * 60 * 1000
+    _UPNP_REFRESH_MS = 5 * 60 * 1000
 
 
     # ------------------------------------------------------ app updates --

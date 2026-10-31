@@ -685,13 +685,16 @@ class NetworkPage(QWizardPage):
         needs_manual_forwarding = not upnp.get("upnp_available")
         lines.append("")
         if not upnp.get("upnp_available"):
-            lines.append("Your router didn't respond to automatic port forwarding (UPnP).")
+            lines.append("Your router didn't respond to automatic port forwarding (UPnP, NAT-PMP or PCP).")
             lines.append(
                 f"Manual step needed: forward UDP ports {self.detected_game_port}, "
                 f"{self.detected_game_port + 1}, and {self.detected_query_port} to {self.detected_ip} "
                 f"in your router's settings -- the guide below walks through it."
             )
         else:
+            via = upnp.get("method") or "UPnP"
+            router = f" ({upnp['router']})" if upnp.get("router") else ""
+            lines.append(f"Router{router}: forwarding automatically with {via}.")
             lines.append(f"Router forwarding, game port {self.detected_game_port}: {_yes_no(upnp.get('game_port_forwarded'))}")
             lines.append(f"Router forwarding, port {self.detected_game_port + 1}: {_yes_no(upnp.get('game_port_plus_one_forwarded'))}")
             lines.append(f"Router forwarding, query port {self.detected_query_port}: {_yes_no(upnp.get('query_port_forwarded'))}")
@@ -701,6 +704,8 @@ class NetworkPage(QWizardPage):
                 if upnp.get("conflicts"):
                     ports = ", ".join(str(p) for p in upnp["conflicts"])
                     lines.append(f"Port(s) {ports} are already forwarded to another device on your network.")
+                if upnp.get("denied"):
+                    lines.append("Your router has automatic forwarding (UPnP) turned on but refuses changes. In the router's settings, allow UPnP to make changes (the setting may be called \"Allow users to make port mapping changes\" or similar), then run Repair Networking.")
                 lines.append("Some ports weren't forwarded automatically -- forward those manually (see the guide).")
 
         if self._last_public_ip:

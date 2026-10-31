@@ -144,13 +144,20 @@ class NetworkMixin:
         if upnp is None:
             pass
         elif not upnp.get("upnp_available"):
-            lines.append("✗ Router: automatic forwarding (UPnP) isn't available -- forward the ports "
-                         "manually (Diagnostics has a step-by-step guide).")
+            lines.append("✗ Router: automatic forwarding (UPnP, NAT-PMP or PCP) isn't available -- forward the "
+                         "ports manually (Diagnostics has a step-by-step guide).")
         else:
             ok = all(upnp.get(k) for k in ("game_port_forwarded", "game_port_plus_one_forwarded",
                                             "query_port_forwarded"))
-            lines.append("✓ Router: all three ports forwarded." if ok
-                         else "✗ Router: some ports couldn't be forwarded automatically.")
+            via = f" with {upnp['method']}" if upnp.get("method") else ""
+            router = f" ({upnp['router']})" if upnp.get("router") else ""
+            lines.append(f"✓ Router{router}: all three ports forwarded{via}." if ok
+                         else f"✗ Router{router}: some ports couldn't be forwarded automatically.")
+            if not ok and upnp.get("conflicts"):
+                lines.append("✗ Port(s) " + ", ".join(map(str, upnp["conflicts"]))
+                             + " are already forwarded to another device on your network.")
+            if not ok and upnp.get("denied"):
+                lines.append("✗ Your router has automatic forwarding (UPnP) turned on but refuses changes. In the router's settings, allow UPnP to make changes (the setting may be called \"Allow users to make port mapping changes\" or similar), then run Repair Networking.")
             if upnp.get("double_nat"):
                 lines.append("⚠ Your router's internet address isn't public (double NAT or carrier-grade "
                              "NAT) -- see Diagnostics.")

@@ -98,7 +98,7 @@ def test_quit_from_tray_marks_deliberate_quit(data, monkeypatch):
         win.close()
 
 
-def test_hourly_router_refresh_only_for_running_servers(monkeypatch):
+def test_regular_router_refresh_only_for_running_servers(monkeypatch):
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication(sys.argv)
     import models
@@ -117,7 +117,7 @@ def test_hourly_router_refresh_only_for_running_servers(monkeypatch):
         win._known_running[b.id] = False
         win._refresh_router_forwards()
         assert refreshed == [a.id]
-        assert win._upnp_refresh_timer.interval() == 60 * 60 * 1000
+        assert win._upnp_refresh_timer.interval() == 5 * 60 * 1000
     finally:
         win._really_quit = True
         win.close()

@@ -406,9 +406,13 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         f"({server.bind_ip or '(not yet detected)'})"
     )
     forward_state = "no_upnp"  # what the router check found, for the internet check
+    pmp_ports = network_setup._pmp_mapped.get(server.id) or set()
+    router_name = f" ({device.name})" if device is not None and device.name else ""
     if device is not None:
         missing = []
         for label, port in fw_ports:
+            if port in pmp_ports:
+                continue  # forwarded by NAT-PMP/PCP, which can't be listed
             entry = network_setup.get_port_mapping(device, port, "UDP")
             if not entry or (server.bind_ip and entry.get("NewInternalClient") not in ("", server.bind_ip)):
                 missing.append(port)
@@ -416,7 +420,7 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         if missing:
             results.append(DiagnosticResult(
                 "Router UPnP", STATUS_WARNING,
-                f"Your router supports automatic forwarding, but port(s) {', '.join(map(str, missing))} "
+                f"Your router{router_name} supports automatic forwarding, but port(s) {', '.join(map(str, missing))} "
                 f"aren't forwarded to this PC. Repair Networking asks the router again; otherwise forward "
                 f"{manual_text} manually.",
                 detail=f"UPnP control URL {device.control_url} ({device.service_type}); "
@@ -427,8 +431,9 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         else:
             results.append(DiagnosticResult(
                 "Router UPnP", STATUS_OK,
-                "Your router is forwarding all three ports to this PC.",
-                detail=f"UPnP control URL {device.control_url} ({device.service_type}).",
+                f"Your router{router_name} is forwarding all three ports to this PC.",
+                detail=f"UPnP control URL {device.control_url} ({device.service_type})"
+                       + (f"; NAT-PMP/PCP forwards: {sorted(pmp_ports)}" if pmp_ports else "") + ".",
             ))
         external_ip = network_setup.get_external_ip(device)
         double_nat = bool(external_ip and network_utils.is_non_public_ipv4(external_ip)) or bool(
@@ -445,6 +450,19 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
                 f"a public IP address.",
                 detail=f"UPnP GetExternalIPAddress returned {external_ip}; api.ipify.org reports {public_text}.",
             ))
+    elif (method := _pmp_method(server)):
+        all_pmp = all(port in pmp_ports for _l, port in fw_ports)
+        forward_state = "ok" if all_pmp else "missing"
+        results.append(DiagnosticResult(
+            "Router UPnP", STATUS_OK if all_pmp else STATUS_WARNING,
+            (f"Your router doesn't use UPnP, but it supports {method}, and ConanOps is forwarding all three "
+             f"ports to this PC with it. The forwards are renewed while the server runs."
+             if all_pmp else
+             f"Your router doesn't use UPnP, but it supports {method}. ConanOps forwards the ports with it "
+             f"when the server starts; Repair Networking does it now."),
+            detail=f"{method} answered at the router; forwarded this session: {sorted(pmp_ports) or 'none'}.",
+            fix="" if all_pmp else FIX_REPAIR_NETWORK,
+        ))
     else:
         results.append(DiagnosticResult(
             "Router UPnP", STATUS_WARNING,
@@ -459,7 +477,13 @@ def run_diagnostics(server: ServerConfig, reserved_ports: Optional[set] = None) 
         ))
 
     if running:
-        results.append(_check_internet(server, pid, public_ip, forward_state))
+        hairpin = None
+        if public_ip:
+            import steam_visibility
+            hairpin = steam_visibility.answers_on_public_address(public_ip, server.query_port)
+        results.append(_check_internet(server, pid, public_ip, forward_state, hairpin=hairpin))
+        if hairpin is False and forward_state == "ok":
+            results.append(_loopback_result(server, public_ip))
 
     # -------------------------------------------------------- runtime state --
     if running:
@@ -598,6 +622,36 @@ def _check_rcon(server: ServerConfig) -> DiagnosticResult:
         )
 
 
+def _pmp_method(server: ServerConfig) -> str:
+    """NAT-PMP or PCP if the router answers it (asks only; changes nothing)."""
+    import port_mapping
+    try:
+        gateway = network_setup._gateway_for(server.bind_ip or None)
+        return port_mapping.available(gateway, server.bind_ip or None) if gateway else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+LOOPBACK_TITLE = "Joining from your own network"
+
+
+def _loopback_result(server: ServerConfig, public_ip: str) -> DiagnosticResult:
+    """The ports are forwarded, but the router doesn't pass the public address
+    back inside. Only PCs on this network notice."""
+    lan = f"{server.bind_ip or 'this PC'}:{server.game_port}"
+    return DiagnosticResult(
+        LOOPBACK_TITLE, STATUS_WARNING,
+        f"Your router doesn't pass connections to your public address back into your own network (this is "
+        f"called NAT loopback). It only affects PCs on this network: here, the server can appear in the "
+        f"in-game server browser and then disappear, while players on the internet see it normally. To join "
+        f"from this network, use Direct Connect with {lan}. Some routers can fix this with a setting called "
+        f"NAT loopback, hairpin NAT or NAT reflection, and some loop back ports that are forwarded by hand in "
+        f"the router's settings but not ones forwarded automatically.",
+        detail=f"Router forwards confirmed for all three ports, but A2S_INFO to {public_ip}:{server.query_port} "
+               f"from this PC got no answer.",
+    )
+
+
 def _has_backups(server: ServerConfig) -> bool:
     try:
         return bool(server.backup_destination and backup_manager.list_backups(server.backup_destination))
@@ -618,7 +672,7 @@ def _process_age(pid: Optional[int]) -> Optional[float]:
 
 
 def _check_internet(server: ServerConfig, pid: Optional[int], public_ip: Optional[str],
-                    forward_state: str) -> DiagnosticResult:
+                    forward_state: str, hairpin: Optional[bool] = None) -> DiagnosticResult:
     """Whether the running server can be seen from outside this PC (steam_visibility.py)."""
     import steam_visibility
     title = INTERNET_TITLE
@@ -631,7 +685,8 @@ def _check_internet(server: ServerConfig, pid: Optional[int], public_ip: Optiona
             "internet connection and run Diagnostics again.",
             detail="api.ipify.org gave no answer.",
         )
-    hairpin = steam_visibility.answers_on_public_address(public_ip, server.query_port)
+    if hairpin is None:
+        hairpin = steam_visibility.answers_on_public_address(public_ip, server.query_port)
     if "-nosteam" in extra:
         if hairpin:
             return DiagnosticResult(

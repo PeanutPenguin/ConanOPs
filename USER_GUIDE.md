@@ -38,7 +38,7 @@ ConanOps does not replace Conan Exiles, Steam or the router. It is not affiliate
 - Around 8 GB of RAM for a small group of players. Large or heavily modded servers need more.
 - An internet connection. A graphics card is not required.
 
-Players outside the host's home network can connect only if two further conditions are met. The router must either support UPnP (which ConanOps uses to open the ports automatically) or have the ports forwarded by hand, and the internet provider must assign the connection a public IP address. Some providers place customers behind shared addresses (often called CGNAT), in which case outside players cannot connect directly. **Server Settings → Check for Problems** (Section 7) checks for this.
+Players outside the host's home network can connect only if two further conditions are met. The router must either support automatic port forwarding (UPnP, NAT-PMP or PCP, which ConanOps uses to open the ports itself) or have the ports forwarded by hand, and the internet provider must assign the connection a public IP address. Some providers place customers behind shared addresses (often called CGNAT), in which case outside players cannot connect directly. **Server Settings → Check for Problems** (Section 7) checks for this.
 
 ## 3. Installation
 
@@ -182,7 +182,7 @@ Windows may ask for permission once when a preset changes its update hours. In A
 - **Keep this PC awake while a server is running.** Sleep is blocked only while a server runs; Windows power settings are not changed.
 - **Only restart for Windows updates during this window.** ConanOps sets Windows' active hours around the chosen window. Inside it, and only when no one is online, ConanOps saves and stops the servers and restarts the PC itself, at most once a day and never within two hours of start-up.
 
-In addition, ConanOps restarts a server that crashes, rechecks the router's port forwards every hour (many routers lose them when they restart), and resumes servers that were running before the PC restarted. A server stopped deliberately with **Stop** stays stopped, including after a restart of the PC.
+In addition, ConanOps restarts a server that crashes, checks the router's port forwards every five minutes and restores any that are missing (many routers lose them when they restart), and resumes servers that were running before the PC restarted. A server stopped deliberately with **Stop** stays stopped, including after a restart of the PC.
 
 In Advanced mode, a PIN can be required when ConanOps opens (**App Settings → PIN Lock**), and **App Settings → Remote Access** offers a fixed web address: a free DuckDNS name that keeps pointing at the PC when its public address changes, so players can use a name instead of a changing number. The Dashboard then shows that name as the address to connect to.
 
@@ -215,7 +215,9 @@ Most of what the PC application offers is available from the web version. For sa
 
 **The server does not start, or keeps crashing.** ConanOps runs checks before each start and names the specific problem, such as missing files, a port in use or a missing Visual C++ runtime. **Server Settings → Check for Problems** gives a fuller report, including the cause recorded in the server's own logs, and offers a fix where one exists. Crash alerts also state the most likely cause.
 
-**Friends cannot connect.** Run **Check for Problems** while the server is running; the *Reachable from the internet* result shows whether Steam can see the server from outside. The most common causes are a router without UPnP (forward the game and query ports by hand, using the port numbers shown under **Server Settings → Server** in Advanced mode), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again). Players on the same home network should connect to the PC's address on that network.
+**Friends cannot connect.** Run **Check for Problems** while the server is running; the *Reachable from the internet* result shows whether Steam can see the server from outside. The most common causes are a router without automatic forwarding (forward the game port, the port above it and the query port by hand, using the port numbers shown under **Server Settings → Server** in Advanced mode), a router that has UPnP switched on but refuses changes (Repair Networking reports this; allow UPnP changes in the router's settings), an internet provider that does not assign a public address, and a firewall rule that was not added because a permission prompt was declined (**Repair Networking** adds it again).
+
+**The server appears in the in-game server browser and then disappears, but only on the host's own network.** Many routers do not pass connections to the public address back into the home network (a feature called NAT loopback, hairpin NAT or NAT reflection). The game finds the server through Steam, tries to reach it at the public address, receives no answer and removes it from the list. Players on the internet are not affected. **Check for Problems** reports this under *Joining from your own network*, and the Dashboard shows the address to use on the home network (for example *On this network, use 192.168.1.20:7777*); enter it in **Direct Connect**. Some routers have a setting to turn NAT loopback on, and some loop back ports forwarded by hand in the router's settings but not ports forwarded automatically. No program can switch this behaviour on from the PC.
 
 **The server stopped working after a game update.** This is usually caused by mods that have not yet been rebuilt for the new version. Use **Fix Mod Problems** (Section 8), or wait for ConanOps' automatic mod recovery if it is enabled.
 
@@ -235,4 +237,5 @@ Most of what the PC application offers is available from the web version. For sa
 - Settings that Funcom does not offer in its own settings screen are not shown. They can still be added to the settings files by hand, and ConanOps will leave them unchanged.
 - The daily restart is skipped on days when players are online throughout the restart window, so it is not guaranteed to occur every day.
 - Servers that keep their world in a separate folder (`-usedir`) cannot be taken over.
-- Automatic router configuration depends on the router supporting UPnP. Where it does not, the ports must be forwarded by hand.
+- Automatic router configuration depends on the router supporting UPnP, NAT-PMP or PCP and allowing changes through it. Where it does not, the ports must be forwarded by hand.
+- On some routers, the host cannot see their own server in the in-game browser (see *Troubleshooting*); Direct Connect with the home-network address always works.

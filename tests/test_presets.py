@@ -204,3 +204,8 @@ def test_dashboard_shows_one_status_and_a_friendly_address(win, monkeypatch):
     dash._set_status("● Not set up", "warn")
     assert dash.status_label.isVisibleTo(dash)
     assert not dash.automation_tiles["ddns"].isVisibleTo(dash)  # Advanced only
+    win.config.get_active().bind_ip = "192.168.117.219"
+    dash._show_address()
+    assert dash.connect_label.text().endswith("On this network, use 192.168.117.219:7777")
+    dash._copy_address()
+    assert QApplication.clipboard().text() == "chud.duckdns.org:7777"  # Copy stays the friends' address

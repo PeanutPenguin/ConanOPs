@@ -6,7 +6,7 @@ ConanOps is a Windows application for running up to five Conan Exiles dedicated 
 
 Download **ConanOps-Setup-*version*.exe** from the [latest release](https://github.com/PeanutPenguin/ConanOPs/releases/latest) and run it. Administrator rights are not required, and the program installs to `C:\ConanOps`. Because the release is not code-signed, Windows may display "Windows protected your PC"; select **More info**, then **Run anyway**.
 
-ConanOps requires Windows 10 or 11 (64-bit), about 50 GB of free disk space (75 GB or more is advisable), roughly 8 GB of RAM for a small group of players and an internet connection. A graphics card is not needed. Windows asks for permission a few times during setup, for example to add firewall rules and install the Microsoft Visual C++ runtime; these prompts should be accepted. Players outside the home network can connect only if the router supports UPnP or has the ports forwarded by hand, and if the internet provider assigns a public IP address.
+ConanOps requires Windows 10 or 11 (64-bit), about 50 GB of free disk space (75 GB or more is advisable), roughly 8 GB of RAM for a small group of players and an internet connection. A graphics card is not needed. Windows asks for permission a few times during setup, for example to add firewall rules and install the Microsoft Visual C++ runtime; these prompts should be accepted. Players outside the home network can connect only if the router supports automatic forwarding (UPnP, NAT-PMP or PCP) or has the ports forwarded by hand, and if the internet provider assigns a public IP address.
 
 A server that is already installed on the PC can be taken over without reinstalling it: its world, settings and mods are kept, and other programs that start or update it are switched off so that ConanOps is the only one managing it.
 
@@ -77,9 +77,10 @@ sidebar for a new one) to run the setup wizard, which:
 4. Adds Windows Firewall rules for both ports. **This step needs
    ConanOps to be running as Administrator** -- if it isn't, the wizard
    reports the failure rather than silently skipping it.
-5. Attempts UPnP port forwarding on your router. If your router doesn't
-   support UPnP (or has it disabled, which is common), the wizard shows
-   the exact manual forwarding instructions and your public IP instead.
+5. Forwards the ports on your router: UPnP first (found by multicast
+   search, then by asking the router directly), then NAT-PMP or PCP for
+   anything UPnP couldn't do. If none works, the wizard shows the exact
+   manual forwarding instructions and your public IP instead.
 
 Taking over a server that is already on the PC is described in the
 [User Guide](USER_GUIDE.md#5-taking-over-a-server-that-is-already-on-the-pc);
