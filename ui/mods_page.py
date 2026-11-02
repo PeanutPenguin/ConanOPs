@@ -74,7 +74,6 @@ class ModsPage(QWidget):
         self._mod_status_ids: dict = {}
         self._mod_status_error: dict = {}    # server_id -> error text from the last check
         self._status_worker: Optional[ModStatusWorker] = None
-        self._status_worker_server_id: Optional[str] = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
@@ -229,7 +228,6 @@ class ModsPage(QWidget):
         api_key = self.get_api_key() if self.get_api_key else ""
         worker = ModStatusWorker([m["id"] for m in server.mods], api_key=api_key, cutoff_ts=self._cutoff_ts())
         self._status_worker = worker
-        self._status_worker_server_id = server.id
         self.check_status_btn.setEnabled(False)
         self.check_status_btn.setText("Checking…")
         self.status_spinner.show()
@@ -240,7 +238,6 @@ class ModsPage(QWidget):
 
     def _on_mod_status(self, server_id: str, result, ids=None) -> None:
         self._status_worker = None
-        self._status_worker_server_id = None
         self.check_status_btn.setEnabled(True)
         self.check_status_btn.setText("Check for Outdated Mods")
         self.status_spinner.hide()
@@ -469,7 +466,7 @@ class ModsPage(QWidget):
         self.server.mods = mod_manager.set_enabled(self.server.mods, mod_id, on)
         if self.on_changed:
             # Let the switch repaint before the disk work.
-            QTimer.singleShot(0, lambda srv=self.server: self.on_changed(srv))
+            QTimer.singleShot(0, self, lambda srv=self.server: self.on_changed(srv))
         known = self._mod_status.get(self.server.id)
         server_ids = {m["id"] for m in self.server.mods}
         mod = next((m for m in self.server.mods if m["id"] == mod_id), None)
@@ -496,7 +493,7 @@ class ModsPage(QWidget):
                 self.list_widget.setCurrentRow(i)
                 break
         # Deferred: the action rebuilds the list, deleting the sender widget.
-        QTimer.singleShot(0, action)
+        QTimer.singleShot(0, self, action)
 
     def _selected_id(self) -> Optional[str]:
         item = self.list_widget.currentItem()
@@ -530,7 +527,7 @@ class ModsPage(QWidget):
     def mods_added(self, server) -> None:
         """Check new mods' Workshop status right away (if automatic checks are on)."""
         if self.auto_check_mod_status and server is not None:
-            QTimer.singleShot(0, lambda srv=server: self._check_mod_status(srv))
+            QTimer.singleShot(0, self, lambda srv=server: self._check_mod_status(srv))
 
     @staticmethod
     def _extract_workshop_id(raw: str) -> Optional[str]:

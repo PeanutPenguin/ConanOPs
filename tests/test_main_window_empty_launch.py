@@ -1458,7 +1458,7 @@ def test_manual_restart_broadcasts_warning_when_players_online(monkeypatch):
         broadcasts = []
         monkeypatch.setattr(banlist_manager, "broadcast_message", lambda srv, msg: broadcasts.append(msg))
         scheduled = []
-        monkeypatch.setattr("ui.main_window.QTimer.singleShot", staticmethod(lambda ms, cb: scheduled.append((ms, cb))))
+        monkeypatch.setattr("ui.main_window.QTimer.singleShot", staticmethod(lambda ms, *a: scheduled.append((ms, a[-1]))))
         monkeypatch.setattr(process_manager, "restart", lambda s: None)
 
         win._handle_restart(server)

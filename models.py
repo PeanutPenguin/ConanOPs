@@ -14,9 +14,13 @@ import secrets as _secrets
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
+import applog
 import conanops_paths
+import fileio
 import ini_field_specs
 import secrets_store
+
+_log = applog.get_logger(__name__)
 
 MAX_SERVERS = 5
 
@@ -322,17 +326,41 @@ class AppConfig:
     def default_path() -> str:
         return os.path.join(AppConfig.data_dir(), "config.json")
 
+    @staticmethod
+    def _read_raw(path: str) -> Optional[dict]:
+        """config.json's contents. If it's damaged (a disk error, or a power cut
+        before 1.0.18 made saving safe), the copy from the previous save is
+        used, so a bad file can't stop ConanOps from starting or lose the
+        servers. The damaged file is kept beside it."""
+        for candidate in (path, path + ".bak"):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    if candidate != path:
+                        _log.warning(f"{path} was damaged; using the copy from the previous save.")
+                    return raw
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as e:
+                _log.warning(f"Couldn't read {candidate}: {e}")
+            if candidate == path:
+                try:
+                    shutil.copy2(path, path + ".damaged")
+                except OSError:
+                    pass
+        return None
+
     @classmethod
     def load(cls, path: Optional[str] = None) -> "AppConfig":
         path = path or cls.default_path()
         if not os.path.exists(path):
             cls._migrate_legacy_data_dir()
-        if not os.path.exists(path):
+        raw = cls._read_raw(path) if os.path.exists(path) else None
+        if raw is None:
             cfg = cls()
             cfg.save(path)
             return cfg
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
         servers = [ServerConfig.from_dict(s) for s in raw.get("servers", [])]
         cfg = cls(
             servers=servers,
@@ -441,10 +469,12 @@ class AppConfig:
             "ignored_rivals": self.ignored_rivals,
             "takeover_records": self.takeover_records,
         }
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
+        text = json.dumps(data, indent=2)
+        fileio.write_text_atomic(path, text)
+        try:
+            fileio.write_text_atomic(path + ".bak", text)  # the fallback _read_raw uses
+        except OSError:
+            pass
 
     # ------------------------------------------------------------ helpers --
     def get_active(self) -> Optional[ServerConfig]:

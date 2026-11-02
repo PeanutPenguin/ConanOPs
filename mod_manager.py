@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import applog
+import fileio
 
 _log = applog.get_logger(__name__)
 
@@ -77,8 +78,7 @@ def write_modlist(install_dir: str, steamcmd_dir: str, mods: List[dict], local: 
         if m.get("enabled", True):
             lines.append(f"*{mod_pak(steamcmd_dir, m)}")
         lines += [x["line"] for x in local if x.get("after") == m["id"]]
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + ("\n" if lines else ""))
+    fileio.write_text_atomic(path, "\n".join(lines) + ("\n" if lines else ""))
 
 
 # ------------------------------------------------------ world save safety --

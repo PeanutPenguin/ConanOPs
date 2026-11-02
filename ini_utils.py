@@ -12,6 +12,8 @@ import shutil
 from datetime import datetime
 from typing import Dict, List, Tuple
 
+import fileio
+
 _SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*$")
 _KEY_RE = re.compile(r"^\s*(?P<key>[^=;#\[][^=]*?)\s*=\s*(?P<val>.*?)\s*$")
 
@@ -53,6 +55,15 @@ def _prune_ini_backups(path: str, keep: int = _MAX_INI_BACKUPS_PER_FILE) -> None
             pass  # best-effort cleanup -- not worth failing the actual ini write over
 
 
+def _read_lines(path: str) -> Tuple[List[str], str]:
+    """The file's lines ("\n" endings) and its encoding. Unreal writes .ini
+    files as UTF-16 when they hold non-ASCII text (a server name with an
+    accent), and a UTF-8 byte-order mark would hide the first [Section]."""
+    text, encoding = fileio.read_text_detect(path)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.splitlines(keepends=True), encoding
+
+
 def read_known_keys(path: str, wanted: Dict[str, str]) -> Dict[str, str]:
     """wanted: {key_name: section_name}. Returns {key_name: raw_value_str}
     for the keys present in the file.
@@ -65,19 +76,19 @@ def read_known_keys(path: str, wanted: Dict[str, str]) -> Dict[str, str]:
     if not os.path.exists(path):
         return found
     current_section_cf = None
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            m = _SECTION_RE.match(line)
-            if m:
-                current_section_cf = m.group("name").casefold()
-                continue
-            m = _KEY_RE.match(line)
-            if not m:
-                continue
-            key_cf = m.group("key").strip().casefold()
-            hit = wanted_cf.get(key_cf)
-            if hit and hit[1] == current_section_cf:
-                found[hit[0]] = m.group("val").strip()
+    lines, _encoding = _read_lines(path)
+    for line in lines:
+        m = _SECTION_RE.match(line)
+        if m:
+            current_section_cf = m.group("name").casefold()
+            continue
+        m = _KEY_RE.match(line)
+        if not m:
+            continue
+        key_cf = m.group("key").strip().casefold()
+        hit = wanted_cf.get(key_cf)
+        if hit and hit[1] == current_section_cf:
+            found[hit[0]] = m.group("val").strip()
     return found
 
 
@@ -92,9 +103,9 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
     lines: List[str] = []
+    encoding = "utf-8"
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        lines, encoding = _read_lines(path)
 
     # {casefolded key: (original key name, casefolded section name, value)}
     remaining = {k.casefold(): (k, section.casefold(), value) for k, (section, value) in updates.items()}
@@ -149,19 +160,7 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
                 lines.append(f"{k}={v}\n")
             section_end_index[section_cf] = (len(lines) - 1, requested_name)
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-
-
-# Engine.ini connection keys written by the Network & Ports page. Gameplay
-# keys live in ini_field_specs.py.
-ENGINE_INI_MAP = {
-    "Port": "URL",
-    "GameServerQueryPort": "OnlineSubsystemSteam",
-    "MultiHome": "URL",
-    "ServerName": "OnlineSubsystemSteam",
-    "ServerPassword": "OnlineSubsystemSteam",
-}
+    fileio.write_text_atomic(path, "".join(lines), encoding=encoding)
 
 
 def bool_to_ini(v: bool) -> str:

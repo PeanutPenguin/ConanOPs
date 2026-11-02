@@ -97,7 +97,6 @@ class DeleteEverythingWorker(QThread):
                     problems.append(f"{s.name} didn't stop in time; some of its files may remain.")
 
             self.progress.emit("Removing Windows settings (Windows will ask for permission)…")
-            import background_mode
             import powershell
             script = cleanup.cleanup_script(
                 server_ids=[s.id for s in servers], legacy_names=[s.name for s in servers],

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QLabel, QLineEdit, QSpinBox, QHBoxLayout, QVBoxLayout, QPushButton,
-    QFrame, QCheckBox,
+    QFrame,
 )
 
 import network_utils

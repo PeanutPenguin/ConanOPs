@@ -163,7 +163,7 @@ class UpdatesMixin:
                 return  # removed, already resolved (manual Start or update), or busy
             self._start_update_apply(srv, relaunch_after=True)
 
-        QTimer.singleShot(self._UPDATE_RETRY_MINUTES * 60 * 1000, retry)
+        QTimer.singleShot(self._UPDATE_RETRY_MINUTES * 60 * 1000, self, retry)
 
     def _update_mods_then_relaunch(self, server: ServerConfig, was_running: bool, watch: bool = False) -> None:
         """After any server update, refreshes mods (a server update never

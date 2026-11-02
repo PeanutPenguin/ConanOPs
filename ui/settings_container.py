@@ -261,7 +261,7 @@ class SettingsContainer(QWidget):
             if w is not None:
                 w.ensureWidgetVisible(widget, 0, 120)
             widget.setFocus(Qt.OtherFocusReason)
-        QTimer.singleShot(0, reveal)
+        QTimer.singleShot(0, self, reveal)
 
     # ------------------------------------------------------------ search --
     def _build_index(self) -> list:

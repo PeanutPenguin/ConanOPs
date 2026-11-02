@@ -12,10 +12,9 @@ import os
 import re
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import applog
 import version
@@ -23,7 +22,6 @@ from webui.bridge import GuiBridge, WebActionError
 
 _log = applog.get_logger(__name__)
 
-LOG_LINES_KEPT = 400
 MAX_IMPORT_BYTES = 8 * 1024 ** 3
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -22,7 +22,6 @@ class UpdatesPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.server: Optional[ServerConfig] = None
-        self.on_before_update = None   # callable(server) -> run backup etc, called before update
         self.on_update_applied = None  # callable(server, new_buildid)
         self.on_auto_update_setting_changed = None  # callable(server) -> persist auto_update / interval
         self.on_update_now_guard = None      # callable(server) -> bool: True if an update is already in flight elsewhere

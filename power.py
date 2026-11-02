@@ -35,6 +35,3 @@ def set_keep_awake(on: bool) -> bool:
         _current = on
     return ok
 
-
-def is_keeping_awake() -> bool:
-    return _current

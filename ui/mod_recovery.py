@@ -13,7 +13,6 @@ _begin_post_update_watch and config.
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -21,7 +20,6 @@ from PySide6.QtCore import QThread, QTimer, Signal
 
 import applog
 import backup_manager
-import mod_manager
 import process_manager
 
 _log = applog.get_logger(__name__)

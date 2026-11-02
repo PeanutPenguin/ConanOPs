@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import applog
+import fileio
 
 _log = applog.get_logger(__name__)
 
@@ -140,18 +141,6 @@ def _backup_app_files(install_dir: str, backup_dir: str, rel_paths: set) -> int:
     return copied
 
 
-def _ignore_at_top_level(root_dir: str, name: str):
-    """copytree() ignore callback excluding `name` only directly inside root_dir."""
-    root_norm = os.path.normcase(os.path.abspath(root_dir))
-
-    def _ignore(dirpath, names):
-        if os.path.normcase(os.path.abspath(dirpath)) == root_norm and name in names:
-            return {name}
-        return set()
-
-    return _ignore
-
-
 def _copy_file_with_swap(src_path: str, dest_path: str) -> None:
     """Copies over dest_path; if it's locked (a running .exe/.dll), renames it
     aside first, since Windows allows renaming an open file but not overwriting it."""
@@ -224,8 +213,7 @@ def _read_manifest(install_dir: str) -> Optional[set]:
 
 def _write_manifest(install_dir: str, files: set) -> None:
     try:
-        with open(os.path.join(install_dir, _MANIFEST_NAME), "w", encoding="utf-8") as f:
-            json.dump({"files": sorted(files)}, f, indent=0)
+        fileio.write_text_atomic(os.path.join(install_dir, _MANIFEST_NAME), json.dumps({"files": sorted(files)}, indent=0))
     except OSError as e:
         _log.warning(f"Couldn't write the update manifest: {e}")
 
@@ -294,9 +282,7 @@ def update_pending() -> bool:
 
 def _write_pending_marker(backup_dir: str, install_dir: str, attempted: bool) -> None:
     marker = {"backup_dir": backup_dir, "install_dir": install_dir, "attempted": attempted}
-    os.makedirs(os.path.dirname(_pending_marker_path()), exist_ok=True)
-    with open(_pending_marker_path(), "w", encoding="utf-8") as f:
-        json.dump(marker, f)
+    fileio.write_text_atomic(_pending_marker_path(), json.dumps(marker))
 
 
 def _read_pending_marker() -> Optional[dict]:

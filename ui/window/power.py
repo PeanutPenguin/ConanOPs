@@ -64,7 +64,7 @@ class PowerMixin:
                 server, f"Server restarting in {self._RESTART_WARNING_GRACE_SECONDS} seconds...",
             )
             QTimer.singleShot(
-                self._RESTART_WARNING_GRACE_SECONDS * 1000,
+                self._RESTART_WARNING_GRACE_SECONDS * 1000, self,
                 lambda: self._finish_restart(server, manual),
             )
         else:

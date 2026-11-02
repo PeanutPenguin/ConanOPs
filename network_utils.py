@@ -91,11 +91,6 @@ def _iface_name_by_ip() -> dict:
     return names
 
 
-def is_virtual_interface_ip(ip: str) -> bool:
-    name = _iface_name_by_ip().get(ip, "")
-    return bool(name and _VIRTUAL_IFACE_RE.search(name))
-
-
 # `route print -4` data rows are language-independent, unlike `ipconfig`'s
 # localized labels and split gateway lines on dual-stack adapters.
 _DEFAULT_ROUTE_RE = re.compile(

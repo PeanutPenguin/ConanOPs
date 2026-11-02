@@ -12,6 +12,7 @@ from dataclasses import dataclass, fields, asdict
 from typing import Optional
 
 import applog
+import fileio
 
 _log = applog.get_logger(__name__)
 
@@ -123,6 +124,4 @@ def load_theme(path: Optional[str] = None) -> ThemePalette:
 def save_theme(palette: ThemePalette, path: Optional[str] = None) -> None:
     path = path or _theme_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(asdict(palette), f, indent=2)
-        f.write("\n")
+    fileio.write_text_atomic(path, json.dumps(asdict(palette), indent=2) + "\n")

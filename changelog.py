@@ -10,7 +10,6 @@ import urllib.request
 import urllib.parse
 import json
 from dataclasses import dataclass
-from typing import Optional
 
 from models import APP_ID
 

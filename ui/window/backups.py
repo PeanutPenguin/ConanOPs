@@ -55,13 +55,6 @@ class BackupsMixin:
         if self.config.active_server_id == server.id:
             self.settings_backups_page.refresh()
 
-    def _handle_pre_update_backup(self, server: ServerConfig) -> None:
-        if server.backup_before_update and server.backup_destination:
-            try:
-                backup_manager.create_backup_for_server(server, server.backup_destination, backup_manager.TRIGGER_PRE_UPDATE)
-            except backup_manager.BackupSpaceError as e:
-                self._notify(server, f"Pre-update backup skipped -- {e}", title="Backup Failed")
-
     def _handle_restore(self, server: ServerConfig, entry) -> None:
         if server.id in self._restore_workers:
             return  # a restore for this server is already in flight

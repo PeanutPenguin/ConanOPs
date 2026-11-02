@@ -460,7 +460,7 @@ class DashboardPage(QWidget):
         if self._address:
             QApplication.clipboard().setText(self._address)
             self.copy_address_btn.setText("Copied")
-            QTimer.singleShot(1500, lambda: self.copy_address_btn.setText("Copy"))
+            QTimer.singleShot(1500, self, lambda: self.copy_address_btn.setText("Copy"))
 
     def _handle_restart(self) -> None:
         if self.server and self.on_restart:
@@ -495,7 +495,15 @@ class DashboardPage(QWidget):
     def on_log_line(self, line: str) -> None:
         self.log_view.appendPlainText(line)
 
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt name
+        super().showEvent(event)
+        self._poll_process_stats()  # catch up at once after being hidden
+
     def _poll_process_stats(self) -> None:
+        if not self.isVisible():
+            # Only this page shows these numbers. Hidden (another page, or
+            # ConanOps in the tray all day) there's no need to check every 2 s.
+            return
         if not self.server:
             return  # no server configured at all -- set_empty()'s state stands, nothing to poll
         if not self.server.install_dir:

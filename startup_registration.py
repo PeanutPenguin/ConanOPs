@@ -5,7 +5,6 @@ Only launches at sign-in; it does nothing while the PC sits at the sign-in scree
 from __future__ import annotations
 
 import sys
-from typing import Optional
 
 import applog
 

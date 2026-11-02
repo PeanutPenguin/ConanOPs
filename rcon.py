@@ -73,9 +73,16 @@ class RconClient:
         self._sock.sendall(packet)
         return pkt_id
 
+    # id + type + two terminating NULs; and far more than any real reply.
+    _MIN_PACKET, _MAX_PACKET = 10, 4 * 1024 * 1024
+
     def _recv_packet(self) -> tuple:
         raw_len = self._recv_exact(4)
         (length,) = struct.unpack("<i", raw_len)
+        if not self._MIN_PACKET <= length <= self._MAX_PACKET:
+            # Not an RCON reply (a different program on this port, or garbage):
+            # don't try to read gigabytes or fail with an unexpected error.
+            raise RconError(f"The server sent something that isn't an RCON reply (length {length}).")
         data = self._recv_exact(length)
         pkt_id, pkt_type = struct.unpack("<ii", data[:8])
         body = data[8:-2].decode("utf-8", errors="replace")

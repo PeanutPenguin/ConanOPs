@@ -8,7 +8,7 @@ ConanOps-only and never written to an .ini.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
 DEFAULT_SECTION = "ServerSettings"  # ConanSandbox/Saved/Config/WindowsServer/ServerSettings.ini

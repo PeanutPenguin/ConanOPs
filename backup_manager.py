@@ -86,6 +86,28 @@ def _ensure_space_for_backup(db_files, config_dir: str, destination: str) -> Non
         )
 
 
+_PARTIAL_SUFFIX = ".partial"
+
+
+def _unique_path(destination: str, stem: str) -> str:
+    """destination/stem.zip, or stem_2.zip... if two backups land in the same second."""
+    path = os.path.join(destination, stem + ".zip")
+    n = 2
+    while os.path.exists(path) or os.path.exists(path + _PARTIAL_SUFFIX):
+        path = os.path.join(destination, f"{stem}_{n}.zip")
+        n += 1
+    return path
+
+
+def cleanup_partial_backups(destination: str) -> None:
+    """Removes unfinished backups left by a crash (best-effort)."""
+    for path in glob.glob(os.path.join(destination, "*.zip" + _PARTIAL_SUFFIX)):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def create_backup(install_dir: str, destination: str, trigger: str, label: str = "") -> Optional[BackupEntry]:
     if not destination:
         return None
@@ -96,8 +118,7 @@ def create_backup(install_dir: str, destination: str, trigger: str, label: str =
 
     ts = datetime.now()
     suffix = f"_{label}" if label else ""
-    fname = f"{ts.strftime('%Y%m%d-%H%M%S')}_{trigger}{suffix}.zip"
-    out_path = os.path.join(destination, fname)
+    out_path = _unique_path(destination, f"{ts.strftime('%Y%m%d-%H%M%S')}_{trigger}{suffix}")
 
     db_files = glob.glob(os.path.join(saved, "*.db")) + \
         glob.glob(os.path.join(saved, "*.db-wal")) + \
@@ -105,32 +126,39 @@ def create_backup(install_dir: str, destination: str, trigger: str, label: str =
     config_dir = os.path.join(saved, "Config")
     _ensure_space_for_backup(db_files, config_dir, destination)
 
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in db_files:
-            zf.write(f, arcname=os.path.join("Saved", os.path.basename(f)))
-        if os.path.isdir(config_dir):
-            for root, _dirs, files in os.walk(config_dir):
-                for fn in files:
-                    full = os.path.join(root, fn)
-                    rel = os.path.relpath(full, saved)
-                    zf.write(full, arcname=os.path.join("Saved", rel))
+    # Written under a temporary name and renamed only once verified, so a
+    # crash or full disk part-way through never leaves a broken .zip that
+    # looks like a good backup (and could count towards the ones kept).
+    partial = out_path + _PARTIAL_SUFFIX
+    try:
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in db_files:
+                zf.write(f, arcname=os.path.join("Saved", os.path.basename(f)))
+            if os.path.isdir(config_dir):
+                for root, _dirs, files in os.walk(config_dir):
+                    for fn in files:
+                        full = os.path.join(root, fn)
+                        rel = os.path.relpath(full, saved)
+                        zf.write(full, arcname=os.path.join("Saved", rel))
+
+        # Check every entry's CRC so a truncated zip is never reported as a good backup.
+        try:
+            with zipfile.ZipFile(partial, "r") as zf:
+                bad_entry = zf.testzip()
+        except zipfile.BadZipFile:
+            bad_entry = "(the file itself)"
+        if bad_entry is not None:
+            _log.error(f"Backup {out_path} failed integrity verification (bad entry: {bad_entry}) -- deleting it.")
+            return None
+        os.replace(partial, out_path)
+    finally:
+        if os.path.exists(partial):
+            try:
+                os.remove(partial)
+            except OSError as e:
+                _log.error(f"Couldn't delete the unfinished backup {partial}: {e}")
 
     size = os.path.getsize(out_path)
-
-    # Check every entry's CRC so a truncated zip is never reported as a good backup.
-    try:
-        with zipfile.ZipFile(out_path, "r") as zf:
-            bad_entry = zf.testzip()
-    except zipfile.BadZipFile:
-        bad_entry = "(the file itself)"
-    if bad_entry is not None:
-        _log.error(f"Backup {out_path} failed integrity verification (bad entry: {bad_entry}) -- deleting it.")
-        try:
-            os.remove(out_path)
-        except OSError as e:
-            _log.error(f"Also couldn't delete the corrupt backup {out_path}: {e}")
-        return None
-
     return BackupEntry(path=out_path, when=ts, trigger=trigger, size_bytes=size)
 
 
@@ -194,7 +222,17 @@ def _restore_target_path(name: str, saved: str) -> Optional[str]:
         else:
             return None  # not something we recognize as part of a save
 
-    return os.path.join(os.path.dirname(saved), *rel.split("/"))
+    parts = rel.split("/")
+    # A crafted zip ("Saved/../../Windows/x", "C:/...") must not write outside
+    # the server's Saved folder; imported backups can come from anywhere.
+    if any(p in ("", ".", "..") or ":" in p for p in parts):
+        return None
+    root = os.path.abspath(os.path.dirname(saved))
+    target = os.path.abspath(os.path.join(root, *parts))
+    inside = os.path.normcase(os.path.join(root, "Saved") + os.sep)
+    if not os.path.normcase(target).startswith(inside):
+        return None
+    return target
 
 
 def restore_backup(install_dir: str, backup: BackupEntry) -> None:
@@ -228,6 +266,7 @@ def prune_backups(destination: str, daily_keep: int, weekly_keep: int) -> List[s
     """Keeps the newest `daily_keep` scheduled backups plus one per week for
     `weekly_keep` weeks; deletes the rest. Returns deleted paths.
     Only "scheduled" backups are ever pruned, and at least one backup always remains."""
+    cleanup_partial_backups(destination)
     entries = list_backups(destination)
     if not entries:
         return []
@@ -298,9 +337,14 @@ def import_external_backup(source_path: str, destination: str, label: str = "") 
     os.makedirs(destination, exist_ok=True)
     ts = datetime.now()
     suffix = f"_{label}" if label else ""
-    fname = f"{ts.strftime('%Y%m%d-%H%M%S')}_{TRIGGER_IMPORTED}{suffix}.zip"
-    out_path = os.path.join(destination, fname)
-    shutil.copy2(source_path, out_path)
+    out_path = _unique_path(destination, f"{ts.strftime('%Y%m%d-%H%M%S')}_{TRIGGER_IMPORTED}{suffix}")
+    partial = out_path + _PARTIAL_SUFFIX
+    try:
+        shutil.copy2(source_path, partial)
+        os.replace(partial, out_path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
 
     size = os.path.getsize(out_path)
     return BackupEntry(path=out_path, when=ts, trigger=TRIGGER_IMPORTED, size_bytes=size)

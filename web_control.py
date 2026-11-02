@@ -351,7 +351,6 @@ class WebControlServer:
         self.sessions = SessionStore(sessions_path)
         self.limiter = LoginLimiter()
         self.api = None
-        self.tunnel_port_hint: Optional[int] = None
         self._httpd: Optional[_ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self.actual_port: Optional[int] = None

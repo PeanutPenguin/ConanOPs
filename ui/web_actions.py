@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import os
 import secrets
-from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import applog
 import backup_manager
@@ -58,8 +57,8 @@ class WebActionsMixin:
         if getattr(result, "files_missing", False) and self._repair_game_files(
                 server, why=f"game files were missing when asked to {verb} it", then_start=True,
                 stop_first=self.is_running(server)):
-            return (f"Some game files were missing, so ConanOps is having Steam check and re-download them, "
-                    f"then it starts the server. You'll get an alert when it's done.")
+            return ("Some game files were missing, so ConanOps is having Steam check and re-download them, "
+                    "then it starts the server. You'll get an alert when it's done.")
         if not result.ok:
             return f"Can't {verb} -- pre-flight checks failed:\n" + "\n".join(result.problems)
         if result.repairs:

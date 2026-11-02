@@ -1151,7 +1151,7 @@ class AppSettingsPage(QWidget):
             self._section_pages[key].ensureWidgetVisible(widget, 0, 120)
             if widget.focusPolicy() != Qt.NoFocus:
                 widget.setFocus(Qt.OtherFocusReason)
-        QTimer.singleShot(0, reveal)
+        QTimer.singleShot(0, self, reveal)
 
     def show_section(self, key: str) -> None:
         key = self.SECTION_ALIASES.get(key, key)

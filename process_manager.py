@@ -45,17 +45,46 @@ def build_launch_args(server: ServerConfig) -> list:
     return args
 
 
+# exe path -> (pid, start time) of the server process found last. Checked
+# first, so the regular "is it running?" checks don't list every process on
+# the PC; the start time guards against Windows reusing the pid.
+_pid_cache: dict = {}
+
+
+def _cached_pid(target_exe: str) -> Optional[int]:
+    hit = _pid_cache.get(target_exe)
+    if hit is None:
+        return None
+    pid, started = hit
+    try:
+        proc = psutil.Process(pid)
+        if proc.create_time() == started and proc.name() == PROCESS_NAME and proc.is_running():
+            return pid
+    except (psutil.Error, OSError):
+        pass
+    _pid_cache.pop(target_exe, None)
+    return None
+
+
 def find_running_pid(install_dir: str) -> Optional[int]:
-    """Matches name AND exe path, so two servers on one machine aren't confused."""
+    """Matches name AND exe path, so two servers on one machine aren't confused.
+    Uses its own Process objects rather than psutil.process_iter()'s shared
+    cache (see takeover._processes)."""
     target_exe = os.path.normcase(os.path.abspath(server_exe_path(install_dir)))
-    for proc in psutil.process_iter(["pid", "name", "exe"]):
+    pid = _cached_pid(target_exe)
+    if pid is not None:
+        return pid
+    for pid in psutil.pids():
         try:
-            if proc.info["name"] != PROCESS_NAME:
-                continue
-            exe = proc.info.get("exe")
-            if exe and os.path.normcase(os.path.abspath(exe)) == target_exe:
-                return proc.info["pid"]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            proc = psutil.Process(pid)
+            with proc.oneshot():  # on Windows name() reads the exe path; read it once
+                if proc.name() != PROCESS_NAME:
+                    continue
+                exe = proc.exe()
+                if exe and os.path.normcase(os.path.abspath(exe)) == target_exe:
+                    _pid_cache[target_exe] = (pid, proc.create_time())
+                    return pid
+        except (psutil.Error, OSError):
             continue
     return None
 

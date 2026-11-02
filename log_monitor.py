@@ -65,13 +65,26 @@ class LogMonitor(QThread):
         self._current_log: Optional[str] = None
         self._position = 0
         self._attached_once = False
+        self._last_scan = 0.0
+
+    # Conan keeps every old log in the same folder, so finding the newest one
+    # means checking each file. Between scans the current log is followed;
+    # a restart that reuses its name is still caught at once (it shrinks).
+    _SCAN_INTERVAL = 5.0
+
+    def _latest(self) -> Optional[str]:
+        now = time.monotonic()
+        if self._current_log is None or now - self._last_scan >= self._SCAN_INTERVAL:
+            self._last_scan = now
+            return find_latest_log(self.install_dir)
+        return self._current_log
 
     def stop(self) -> None:
         self._running = False
 
     def run(self) -> None:
         while self._running:
-            latest = find_latest_log(self.install_dir)
+            latest = self._latest()
             if latest and latest != self._current_log:
                 self._current_log = latest
                 if not self._attached_once:

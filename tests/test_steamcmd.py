@@ -256,7 +256,7 @@ def test_install_steamcmd_bootstrap_forces_windows_platform_type(monkeypatch, tm
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(steamcmd, "_run_cancelable", fake_run_cancelable)
-    monkeypatch.setattr(steamcmd.urllib.request, "urlretrieve", lambda url, path: open(path, "wb").close())
+    monkeypatch.setattr(steamcmd, "_download", lambda url, path: open(path, "wb").close())
     monkeypatch.setattr(
         steamcmd.zipfile, "ZipFile",
         lambda path, mode="r": type("FakeZip", (), {
@@ -377,7 +377,7 @@ def test_install_steamcmd_runs_a_settle_pass_after_bootstrap(monkeypatch, tmp_pa
 
     monkeypatch.setattr(steamcmd, "_run_cancelable", fake_run_cancelable)
     monkeypatch.setattr(steamcmd, "_sleep_cancelable", lambda s, c=None: None)
-    monkeypatch.setattr(steamcmd.urllib.request, "urlretrieve", lambda url, path: open(path, "wb").close())
+    monkeypatch.setattr(steamcmd, "_download", lambda url, path: open(path, "wb").close())
     monkeypatch.setattr(
         steamcmd.zipfile, "ZipFile",
         lambda path, mode="r": type("FakeZip", (), {
@@ -389,3 +389,11 @@ def test_install_steamcmd_runs_a_settle_pass_after_bootstrap(monkeypatch, tmp_pa
     assert steamcmd.install_steamcmd(str(tmp_path)) is True
     assert len(runs) == 2  # bootstrap + settle pass
     assert all("+quit" in r for r in runs)
+
+
+def test_run_cancelable_timeout_is_real_time_even_with_lots_of_output():
+    """1.0.18: each line used to count as a whole poll interval, so a chatty
+    download 'timed out' long before its real limit."""
+    code = "import time\nfor i in range(400): print(i, flush=True)\ntime.sleep(0.2)\nprint('done')"
+    proc = steamcmd._run_cancelable([sys.executable, "-c", code], timeout=5, poll_interval=0.25)
+    assert proc.returncode == 0 and "done" in proc.stdout

@@ -1,6 +1,23 @@
 ConanOps runs Conan Exiles dedicated servers on a Windows PC and handles their routine maintenance. To install it, download **ConanOps-Setup** below and run it; existing copies of ConanOps update themselves.
 
-### New in this version: more reliable router forwarding
+### Fixed in this version
+
+This version comes from a review of the whole application. It changes how ConanOps works internally, not what it does.
+
+- **Server settings files with non-English characters.** When a server's name or other settings contain characters outside plain English (for example "Chüdville"), the game saves its settings files in a different text format. ConanOps read such files incorrectly and could damage them when saving a setting. It now reads and writes each file in the format the game used.
+- **Safer saving.** ConanOps' own settings, player history, mod list, ban and whitelist files, theme and update records are now saved in a way that a power cut or crash part-way through cannot leave a half-written file. If ConanOps' settings file is ever damaged, ConanOps starts with the copy from the previous save instead of failing to open, and a damaged player history no longer stops a server's page from opening.
+- **Backups.** An unfinished backup (for example when the disk fills up) no longer appears in the backup list as if it were complete. Two backups made in the same second no longer overwrite each other. Restoring a backup can no longer write files outside the server's save folder, whatever the backup contains.
+- **Game and mod downloads.** Long downloads that print a lot of progress could be stopped as "timed out" well before their real time limit. Downloading SteamCMD during setup can no longer wait forever on a stalled connection.
+- **Remote commands (RCON).** A reply that is not from a Conan server (another program on the same port, or damaged data) is now reported as an error instead of being read without limit.
+
+### Runs lighter
+
+- Checking whether a server is running is now much cheaper: ConanOps remembers the server's process instead of looking through every program on the PC each time.
+- The Dashboard's CPU, memory and status readings pause while the Dashboard isn't on screen, including when ConanOps is in the system tray, and resume as soon as it is shown.
+- The server's log folder is searched for a new log every few seconds instead of every second.
+- Unused code left over from earlier versions has been removed.
+
+### Included from 1.0.17: more reliable router forwarding
 
 - **Finding the router.** ConanOps now searches for the router several times and for more device types, asks the router directly when the network blocks searches, tries the addresses where common routers publish their settings, and remembers the router that worked last time. The router's name is shown in Check for Problems and Repair Networking.
 - **NAT-PMP and PCP.** Routers that have UPnP switched off, or that refuse some UPnP requests, often support one of these two protocols. ConanOps now uses them for any port that UPnP could not forward, and renews those forwards while the server runs.

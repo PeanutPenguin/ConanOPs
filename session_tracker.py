@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import applog
+import fileio
+
+_log = applog.get_logger(__name__)
+
 
 @dataclass
 class Session:
@@ -28,9 +33,20 @@ class SessionTracker:
     def _load(self) -> None:
         if not os.path.exists(self.storage_path):
             return
-        with open(self.storage_path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        self.sessions = [Session(**s) for s in raw.get("sessions", [])]
+        try:
+            with open(self.storage_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            self.sessions = [Session(**s) for s in raw.get("sessions", [])]
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            # A damaged file (e.g. a power cut while saving, before 1.0.18)
+            # mustn't stop the server's page from opening. Keep it aside.
+            _log.warning(f"Player history at {self.storage_path} is unreadable ({e}); starting a new one.")
+            try:
+                os.replace(self.storage_path, self.storage_path + ".damaged")
+            except OSError:
+                pass
+            self.sessions = []
+            return
 
         # Sessions left open mean ConanOps or the server crashed. Close them
         # at the file's mtime so playtime doesn't grow forever. They are not
@@ -46,9 +62,8 @@ class SessionTracker:
             self._save()
 
     def _save(self) -> None:
-        os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump({"sessions": [s.__dict__ for s in self.sessions]}, f, indent=2)
+        fileio.write_text_atomic(self.storage_path,
+                                 json.dumps({"sessions": [s.__dict__ for s in self.sessions]}, indent=2))
 
     def player_joined(self, name: str) -> None:
         if name in self._active:

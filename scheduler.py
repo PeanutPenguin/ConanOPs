@@ -5,7 +5,6 @@ refresh. It only emits signals; MainWindow does the actual work.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta
 from typing import Callable, List, Optional
 

@@ -10,7 +10,6 @@ so at most one UAC prompt.
 """
 from __future__ import annotations
 
-import os
 import re
 import socket
 import subprocess
@@ -78,11 +77,6 @@ def display_name(server_name: str, label: str, port: int) -> str:
     return f"ConanOps - {_clean_display(server_name)} - {label} ({int(port)}/UDP)"
 
 
-def legacy_rule_prefix(server_name: str) -> str:
-    """DisplayName prefix of legacy netsh-created rules."""
-    return f"ConanOps - {server_name} - "
-
-
 # Aliases so tests and callers can patch these names on this module.
 _ps_str = powershell.ps_str
 _ps_array = powershell.ps_array
@@ -144,15 +138,6 @@ def present_rule_names(server_id: str) -> Optional[set]:
     if proc is None or proc.returncode != 0:
         return None
     return {line.strip() for line in (proc.stdout or "").splitlines() if line.strip()}
-
-
-def rule_exists(name: str) -> bool:
-    script = (
-        f"$r = Get-NetFirewallRule -Name {_ps_str(name)} -ErrorAction SilentlyContinue\n"
-        "if ($r) { exit 0 } else { exit 1 }\n"
-    )
-    proc = _run_ps_readonly(script)
-    return bool(proc is not None and proc.returncode == 0)
 
 
 def firewall_status(server_id: str, game_port: int, query_port: int) -> List[FirewallResult]:
@@ -668,11 +653,6 @@ def map_port(device: UpnpDevice, port: int, internal_ip: str, description: str,
     return MAP_OK
 
 
-def add_port_mapping(device: UpnpDevice, external_port: int, internal_port: int, internal_ip: str,
-                     protocol: str = "UDP", description: str = "ConanOps", timeout: float = 5.0) -> bool:
-    return map_port(device, external_port, internal_ip, description, protocol=protocol, timeout=timeout) == MAP_OK
-
-
 def remove_upnp_mappings(server_id: str, ports: Iterable[int] = (), local_ip: Optional[str] = None,
                          device: Optional[UpnpDevice] = None, keep: Iterable[int] = ()) -> int:
     """Deletes this server's router mappings (found by tag in the table, or by
@@ -814,10 +794,6 @@ def forwards_intact(server_id: str, internal_ip: str, game_port: int, query_port
     return True
 
 
-def try_upnp_forward(internal_ip: str, game_port: int, query_port: int, server_id: str = "") -> dict:
-    return reconcile_upnp(server_id, internal_ip, game_port, query_port)
-
-
 # Refresh before each launch re-points forwards after a DHCP change and renews
 # leases. Throttled per configuration.
 _refresh_lock = threading.Lock()
@@ -906,11 +882,3 @@ def allow_web_port(port: int) -> str:
     )
     return _run_ps_privileged(script)
 
-
-def web_port_allowed(port: int) -> Optional[bool]:
-    proc = _run_ps_readonly(
-        f"$r = Get-NetFirewallRule -Name {_ps_str(WEB_RULE_PREFIX + str(int(port)))} -ErrorAction SilentlyContinue\n"
-        "if ($r -and [string]$r.Enabled -eq 'True') { 'YES' } else { 'NO' }\nexit 0\n")
-    if proc is None or proc.returncode != 0:
-        return None
-    return (proc.stdout or "").strip().endswith("YES")

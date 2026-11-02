@@ -101,7 +101,7 @@ def _window(monkeypatch):
 def test_failed_update_leaves_server_stopped_and_schedules_a_retry(monkeypatch):
     win, s, notes, mw = _window(monkeypatch)
     timers = []
-    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, fn: timers.append((ms, fn)))
+    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, *a: timers.append((ms, a[-1])))
     relaunched = []
     monkeypatch.setattr(win, "_update_mods_then_relaunch", lambda *a, **k: relaunched.append(1))
     try:
@@ -158,7 +158,7 @@ def test_success_clears_the_hold(monkeypatch):
 
 def test_manual_update_failure_also_holds(monkeypatch):
     win, s, notes, mw = _window(monkeypatch)
-    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, fn: None)
+    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, *a: None)
     relaunched = []
     monkeypatch.setattr(win, "_update_mods_then_relaunch", lambda *a, **k: relaunched.append(1))
     try:

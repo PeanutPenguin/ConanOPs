@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import sys
 from functools import lru_cache
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFontDatabase, QIcon, QPainter, QPixmap
@@ -183,6 +183,3 @@ class LoadingSpinner(QLabel):
 def frame_count() -> int:
     return len(_loading_frames(24))
 
-
-def pixmap_or_none(path: str) -> Optional[QPixmap]:
-    return QPixmap(path) if os.path.exists(path) else None

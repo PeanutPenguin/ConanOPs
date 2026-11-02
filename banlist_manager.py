@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from typing import List
 
+import fileio
 import ini_utils
 import rcon
 from models import ServerConfig
@@ -36,8 +37,7 @@ def set_whitelist_enabled(server: ServerConfig) -> None:
 def write_list_file(install_dir: str, kind: str, ids: List[str]) -> None:
     path = _list_path(install_dir, kind)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(ids) + ("\n" if ids else ""))
+    fileio.write_text_atomic(path, "\n".join(ids) + ("\n" if ids else ""))
 
 
 def add_whitelist(server: ServerConfig, steam_id: str) -> None:

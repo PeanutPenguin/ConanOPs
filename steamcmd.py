@@ -5,18 +5,20 @@ Long-running calls must run on a worker thread, not the GUI thread.
 """
 from __future__ import annotations
 
-import proc_utils
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
+import time
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import mod_manager
+import proc_utils
 
 from models import APP_ID
 from proc_utils import hidden_console_kwargs
@@ -188,7 +190,9 @@ def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable
             if on_line:
                 on_line(raw_line.rstrip("\n"))
 
-    waited = 0.0
+    # Real elapsed time: counting loop passes would run out early when output
+    # arrives faster than poll_interval (a long, chatty download).
+    deadline = time.monotonic() + timeout
     while True:
         try:
             raw_line = line_queue.get(timeout=poll_interval)
@@ -212,8 +216,7 @@ def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable
             _drain_remaining()
             return subprocess.CompletedProcess(args, proc.returncode if proc.returncode is not None else -1, "".join(lines), "")
 
-        waited += poll_interval
-        if waited >= timeout:
+        if time.monotonic() >= deadline:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -221,6 +224,12 @@ def _run_cancelable(args: list, timeout: float, should_cancel: Optional[Callable
                 proc.kill()
                 proc.wait()
             raise subprocess.TimeoutExpired(args, timeout)
+
+
+def _download(url: str, path: str) -> None:
+    # A timeout per read, so a stalled connection can't hang setup forever.
+    with urllib.request.urlopen(url, timeout=60) as resp, open(path, "wb") as out:
+        shutil.copyfileobj(resp, out)
 
 
 def install_steamcmd(steamcmd_dir: str, progress: Optional[Callable[[str], None]] = None,
@@ -238,7 +247,7 @@ def install_steamcmd(steamcmd_dir: str, progress: Optional[Callable[[str], None]
     zip_path = os.path.join(steamcmd_dir, "steamcmd.zip")
 
     log("Downloading SteamCMD...")
-    urllib.request.urlretrieve(STEAMCMD_ZIP_URL, zip_path)
+    _download(STEAMCMD_ZIP_URL, zip_path)
 
     log("Extracting SteamCMD...")
     with zipfile.ZipFile(zip_path, "r") as z:

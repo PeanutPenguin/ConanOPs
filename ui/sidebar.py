@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (

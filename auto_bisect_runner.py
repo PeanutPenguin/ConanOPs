@@ -463,10 +463,6 @@ class AutoBisectWorker(QThread):
         """False if the restore failed; True if restored or nothing to restore."""
         return mod_manager.restore_world_save(self.server.install_dir, self._saved_snapshot_dir)
 
-    @staticmethod
-    def _world_save_files(saved_dir: str) -> List[str]:
-        return mod_manager.world_save_files(saved_dir)
-
     def _cleanup_snapshot(self) -> None:
         mod_manager.cleanup_world_save_snapshot(self._saved_snapshot_dir)
         self._saved_snapshot_dir = None

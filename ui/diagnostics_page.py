@@ -16,8 +16,6 @@ from PySide6.QtWidgets import (
 
 import diagnostics
 import diagnostics_runner
-import network_setup
-import network_utils
 from models import ServerConfig
 from ui.workers import keep_running_past_owner, keep_until_finished
 
