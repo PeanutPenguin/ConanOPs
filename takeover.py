@@ -42,8 +42,13 @@ _MANAGER_NAMES = ("windowsgsm", "conanexilesserverlauncher", "dedicatedserverlau
 # ConanOps' own entries.
 _OWN_TASKS = {"conanops keep-alive", "conanops (admin)"}
 _OWN_RUN_VALUES = {"conanops"}
-_MARKERS = ("conansandboxserver", "443030", "conan exiles dedicated server", "conan_monitor",
-            "conan_auto_update", "conansandbox")
+# Not plain "conansandbox": that's also the game itself (ConanSandbox.exe) on
+# a PC where someone plays. 443030 is matched whole, not inside a longer number.
+_MARKERS = ("conansandboxserver", "conan exiles dedicated server", "conan exiles enhanced dedicated server",
+            "conan_monitor", "conan_auto_update")
+_APP_ID_RE = re.compile(r"(?<!\d)443030(?!\d)")
+# conan.exe is the C++ package manager, nothing to do with this game.
+_UNRELATED_STEMS = {"conan"}
 _SCRIPT_RE = re.compile(r'([A-Za-z]:\\[^"\r\n<>|*?]*?\.(?:bat|cmd|ps1|pyw?|vbs)|(?<![\w.])/[^"\s<>|*?:]*?\.(?:bat|cmd|ps1|pyw?|vbs))'
                         r'|([^\s"\\/<>|*?]+\.(?:bat|cmd|ps1|pyw?|vbs))', re.IGNORECASE)
 _FORCE_DIR_RE = re.compile(r'\+force_install_dir\s+(?:"([^"]+)"|(\S+))', re.IGNORECASE)
@@ -130,7 +135,7 @@ def expand_text(text: str, cwd: str = "", depth: int = 2) -> str:
                 if n in seen or not os.path.isfile(path):
                     continue
                 seen.add(n)
-                body = _read_text(path)
+                body = _resolve_batch(_read_text(path), path)
                 if body:
                     out.append(body)
                     nxt.append((body, os.path.dirname(path)))
@@ -140,12 +145,28 @@ def expand_text(text: str, cwd: str = "", depth: int = 2) -> str:
     return "\n".join(out)
 
 
+def _resolve_batch(body: str, path: str) -> str:
+    """Fills in what a .bat/.cmd works out itself: %~dp0 (its own folder) and
+    variables it sets with a plain SET, so paths built from them can be read."""
+    if not path.lower().endswith((".bat", ".cmd")):
+        return body
+    folder = re.sub(r"[^\\/]*$", "", path)
+    body = re.sub(r"%~dp0", lambda _m: folder, body, flags=re.IGNORECASE)
+    values = {}
+    for m in re.finditer(r'(?im)^\s*set\s+"?([A-Za-z_]\w*)=([^"\r\n]*)"?\s*$', body):
+        values[m.group(1).casefold()] = m.group(2).strip()
+    for _ in range(3):  # variables built from other variables
+        body = re.sub(r"%([A-Za-z_]\w*)%", lambda m: values.get(m.group(1).casefold(), m.group(0)), body)
+    return body
+
+
 def _paths_named(text: str) -> List[str]:
     """Server install folders a command or script names: the server exe's
     path, or a SteamCMD +force_install_dir for the server."""
     found = []
-    for m in server_finder._EXE_IN_TEXT.finditer(text):
-        root = server_finder._install_from_exe(m.group(1))
+    # Python and JSON sources write each backslash twice.
+    for exe, _rest in server_finder.exe_matches(text.replace("\\\\", "\\")):
+        root = server_finder._install_from_exe(exe)
         if root:
             found.append(root)
     if "443030" in text:
@@ -162,7 +183,7 @@ def _relevance(text: str, known_installs: Iterable[str]) -> Tuple[bool, List[str
         n = server_finder.path_key(inst)
         if n.casefold() in low or inst.casefold() in low:
             named.add(n)
-    about = bool(named) or any(m in low for m in _MARKERS)
+    about = bool(named) or any(m in low for m in _MARKERS) or bool(_APP_ID_RE.search(low))
     return about, sorted(named)
 
 
@@ -348,6 +369,8 @@ def scan(known_installs: Iterable[str] = (), inventory: Optional[dict] = None,
         stem = os.path.splitext(low)[0].replace(" ", "").replace("-", "").replace("_", "")
         if stem.startswith(("conansandbox", "conanops", "funcom")):
             continue  # the game itself (a player's client), its launcher, or ConanOps
+        if stem in _UNRELATED_STEMS:
+            continue
         is_manager = any(m in stem for m in _MANAGER_NAMES) or "conan" in stem
         if low not in _SCRIPT_HOSTS and not is_manager and pid not in server_parents:
             continue
@@ -460,7 +483,9 @@ def _task_state(path: str, name: str) -> str:
     proc = powershell.run_readonly(
         f"(Get-ScheduledTask -TaskPath {powershell.ps_str(path)} -TaskName {powershell.ps_str(name)} "
         f"-ErrorAction SilentlyContinue).State", timeout=30)
-    return (proc.stdout or "").strip().lower() if proc else ""
+    if proc is None or proc.returncode != 0:
+        return "unknown"  # couldn't check: never report it as switched off
+    return (proc.stdout or "").strip().lower()
 
 
 def _service_off(name: str) -> bool:

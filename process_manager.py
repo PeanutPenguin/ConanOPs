@@ -136,6 +136,10 @@ def _sync_keys(path: str, wanted: dict) -> bool:
         return False  # never block a launch over this
 
 
+def server_settings_path(install_dir: str) -> str:
+    return os.path.join(os.path.dirname(game_ini_path(install_dir)), "ServerSettings.ini")
+
+
 def sync_server_ini(server: ServerConfig) -> bool:
     """Makes the name, password, ports and player limit in Engine.ini/Game.ini
     match ConanOps' before launch. The server reads its name only from
@@ -151,7 +155,23 @@ def sync_server_ini(server: ServerConfig) -> bool:
         engine["MultiHome"] = ("URL", server.bind_ip)
     wrote = _sync_keys(engine_ini_path(server.install_dir), engine)
     game = {"MaxPlayers": ("/script/engine.gamesession", str(server.max_players))}
-    return _sync_keys(game_ini_path(server.install_dir), game) or wrote
+    wrote = _sync_keys(game_ini_path(server.install_dir), game) or wrote
+    # A taken-over server's admin password may have come from its old launch
+    # options or another file; keep it in the one file ConanOps edits.
+    admin = str((getattr(server, "gameplay", None) or {}).get("AdminPassword") or "")
+    if getattr(server, "adopted", False) and admin:
+        import ini_utils
+        settings = server_settings_path(server.install_dir)
+        try:
+            # Only when the file has none: one set there (by hand, or from the
+            # game's own server settings) is newer and must not be overwritten.
+            has_one = os.path.exists(settings) and ini_utils.read_known_keys(
+                settings, {"AdminPassword": "ServerSettings"}).get("AdminPassword", "").strip()
+        except OSError:
+            has_one = True
+        if not has_one:
+            wrote = _sync_keys(settings, {"AdminPassword": ("ServerSettings", admin)}) or wrote
+    return wrote
 
 
 def launch(server: ServerConfig) -> subprocess.Popen:

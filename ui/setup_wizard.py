@@ -298,9 +298,12 @@ class PathsPage(QWizardPage):
             )
             return False
 
+        import server_finder
         for other in self.get_reserved_dirs():
             other_n = _norm(other)
-            if install_dir == other_n:
+            # Also the same folder under another path (a junction, a short name).
+            if install_dir == other_n or (server_finder.is_install(install_dir) and
+                                          server_finder.same_install(install_dir, other_n)):
                 QMessageBox.warning(
                     self, "Folder already in use",
                     "Another configured server already uses this install folder. Pick a different one.",

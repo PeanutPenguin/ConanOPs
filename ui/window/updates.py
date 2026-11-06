@@ -25,8 +25,25 @@ class UpdatesMixin:
         self._notify(server, f"Updated to build {buildid}.", title="Update Applied")
         self._update_failure_streak.pop(server.id, None)  # a success (manual or automatic) clears any building streak
 
+    def _settle_unknown_build(self, server: ServerConfig, latest_buildid) -> None:
+        """A taken-over server with no Steam manifest: its build can't be known,
+        and "unknown" mustn't count as out of date, or ConanOps would stop and
+        update it the moment nobody's online. Counts from the current build, so
+        the next real update is caught."""
+        if not latest_buildid or server.installed_buildid or not server.adopted:
+            return
+        import server_finder
+        found = server_finder.installed_build(server.install_dir) if server.install_dir else ""
+        server.installed_buildid = found or latest_buildid
+        self.config.save()
+        if not found:
+            self._notify(server, "ConanOps couldn't tell which game build this server is on, so it will update when "
+                                 "the next one comes out. If players can't join because it's out of date, run an "
+                                 "update from the Updates page.", title="Server Build Unknown")
+
     def _on_restart_update_check(self, server: ServerConfig, latest_buildid) -> None:
         self._update_check_workers.pop(server.id, None)
+        self._settle_unknown_build(server, latest_buildid)
         if latest_buildid and latest_buildid != server.installed_buildid:
             self._notify(server, f"Update {latest_buildid} found during scheduled restart -- updating now.", title="Scheduled Restart")
             self._start_update_apply(server)
@@ -62,6 +79,7 @@ class UpdatesMixin:
             return  # not stamped, so a failed check retries soon
         server.last_update_check_at = datetime.now().isoformat()
         self.config.save()
+        self._settle_unknown_build(server, latest_buildid)
         if latest_buildid == server.installed_buildid:
             return
         online = bool(self._online_by_server.get(server.id))

@@ -92,6 +92,20 @@ def read_known_keys(path: str, wanted: Dict[str, str]) -> Dict[str, str]:
     return found
 
 
+def read_key_anywhere(path: str, key: str) -> str:
+    """The first non-blank value of `key` in any section of the file ("" if
+    none). For finding a setting on an existing server, wherever it was put."""
+    if not os.path.exists(path):
+        return ""
+    key_cf = key.casefold()
+    lines, _encoding = _read_lines(path)
+    for line in lines:
+        m = _KEY_RE.match(line)
+        if m and m.group("key").strip().casefold() == key_cf and m.group("val").strip():
+            return m.group("val").strip()
+    return ""
+
+
 def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
     """updates: {key_name: (section_name, new_value_str)}.
     Updates existing keys in place, appends missing ones under their section

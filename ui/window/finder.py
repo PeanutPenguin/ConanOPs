@@ -10,6 +10,7 @@ Part of MainWindow (see ui/main_window.py)."""
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -20,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 import applog
+import ini_utils
+import process_manager
 import server_finder
 import takeover
 from models import MAX_SERVERS
@@ -31,6 +34,7 @@ RESULT_NEVER = 2  # "Don't Ask Again"
 # going away mid-scan never destroys a running QThread; closeEvent waits on these.
 RUNNING_SCANS: list = []
 RESULT_BROWSE = 3
+SNOOZE_SECONDS = 7 * 24 * 3600  # "Not Now" asks again in a week, not at every start
 
 
 @dataclass
@@ -74,6 +78,7 @@ def run_scan(managed: Dict[str, str], ignored_dirs: List[str], ignored_rivals: L
                 if line:
                     found[i] = f = server_finder.read_server(f.install_dir, None, line)
             f.rivals = [r for r in takeover.for_install(rivals, f.install_dir) if r.key not in ignored_rivals]
+        server_finder.mark_leftovers(found)  # some were read again just above
         for sid, inst in managed.items():
             # Only rivals that name this server: a stray Conan script isn't a reason to nag.
             mine = [r for r in rivals if inst and r.install_dirs and r.applies_to(inst) and r.key not in ignored_rivals]
@@ -119,6 +124,13 @@ class _ScanningDialog(QDialog):
         lay.addWidget(buttons)
 
 
+def _world_line(f) -> str:
+    """Lets someone tell two installs apart at a glance."""
+    gb = f.world_bytes / (1024 ** 3)
+    size = f"{gb:.1f} GB" if gb >= 0.1 else f"{f.world_bytes / (1024 ** 2):.0f} MB"
+    return f"World last saved {time.strftime('%b %d, %Y %H:%M', time.localtime(f.world_saved_at))} ({size})"
+
+
 def _bullets(lines: List[str]) -> str:
     return "\n".join(f"• {line}" for line in lines)
 
@@ -132,11 +144,14 @@ class _FoundDialog(QDialog):
         self.setWindowTitle("Conan servers found on this PC")
         self.setMinimumWidth(560)
         self.found = list(found)
+        self.room = room
         lay = QVBoxLayout(self)
         n = len(self.found)
         intro = QLabel(f"ConanOps found {n} Conan Exiles server{'s' if n != 1 else ''} on this PC. "
-                       "Manage them here? Nothing is reinstalled or reset: the world, settings, ports, passwords, "
-                       "mods and launch options are kept exactly as they are, and a backup is made first.")
+                       "Manage them here? Nothing is reinstalled or reset: the world, settings, ports, passwords and "
+                       "mods are kept, and a backup is made as soon as you start.\n\n"
+                       "ConanOps then looks after each one: RCON is turned on if it's off, and the daily restart, "
+                       "automatic updates and scheduled backups start running. You can change those in its settings.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
 
@@ -151,14 +166,18 @@ class _FoundDialog(QDialog):
         allowed = 0
         for f in self.found:
             ok = not f.blocker and allowed < room
-            if not f.blocker:
+            ticked = ok and not f.likely_leftover
+            if not f.blocker and not f.likely_leftover:
                 allowed += 1
             cb = QCheckBox(f"{f.name}{'  (running now)' if f.running else ''}")
-            cb.setChecked(ok)
+            cb.setChecked(ticked)
             cb.setEnabled(ok)
             rows.addWidget(cb)
             notes = ([f.blocker] if f.blocker else []) + list(f.warnings)
-            text = f.install_dir + ("\n" + _bullets(notes) if notes else "")
+            if f.likely_leftover:
+                notes.insert(0, "Not ticked: " + f.likely_leftover)
+            world = "\n" + _world_line(f) if f.world_saved_at else ""  # its warnings already say when there's none
+            text = f.install_dir + world + ("\n" + _bullets(notes) if notes else "")
             if f.rivals:
                 any_rivals = True
                 text += "\n• Also started or updated by:\n" + "\n".join(f"      – {r.describe()}" for r in f.rivals)
@@ -221,10 +240,14 @@ class _FoundDialog(QDialog):
         lay.addWidget(buttons)
 
     def _sync_add_button(self) -> None:
-        self.add_btn.setEnabled(bool(self.chosen()))
+        self.add_btn.setEnabled(0 < len(self.chosen()) <= self.room)
 
     def chosen(self):
         return [f for cb, f in self.checks if cb.isChecked() and cb.isEnabled()]
+
+    def passed_over(self):
+        """Left unticked on purpose: not worth asking about at every start."""
+        return [f for cb, f in self.checks if cb.isEnabled() and not cb.isChecked()]
 
     @property
     def turn_off_rivals(self) -> bool:
@@ -268,10 +291,15 @@ class FinderMixin:
         and offers to take them over. From "Add server", finding none goes
         to the setup wizard (or Browse)."""
         if getattr(self, "_find_worker", None) is not None:
+            if from_add_button:
+                # The startup scan is still running: once it lands, run the one
+                # "Add server" asked for, instead of ignoring the click.
+                self._find_wants_add = True
             return
         managed = {s.id: s.install_dir for s in self.config.servers if s.install_dir}
-        ignored = [] if from_add_button else list(self.config.ignored_server_dirs)
-        ignored_rivals = [] if from_add_button else list(self.config.ignored_rivals)
+        snoozed = _still_snoozed(self.config)
+        ignored = [] if from_add_button else list(self.config.ignored_server_dirs) + snoozed
+        ignored_rivals = [] if from_add_button else list(self.config.ignored_rivals) + snoozed
         # Walking every drive is for when the person asked and is waiting ("Add server").
         deep = from_add_button
         server_finder.cancel_event.clear()
@@ -292,6 +320,8 @@ class FinderMixin:
             self._find_worker = None
             skipped = getattr(self, "_find_skipped", False)
             self._find_skipped = False
+            wants_add = getattr(self, "_find_wants_add", False) and not add
+            self._find_wants_add = False
             if dlg is not None:
                 dlg.blockSignals(True)
                 dlg.close()
@@ -299,6 +329,9 @@ class FinderMixin:
             if skipped or getattr(self, "_closed", False):
                 return
             self._last_scan = result
+            if wants_add:
+                self._scan_for_servers(from_add_button=True)
+                return
             if result.found:
                 self._offer_found_servers(result.found, add, unreadable=result.unreadable)
             elif add:
@@ -349,20 +382,29 @@ class FinderMixin:
                 self._offer_found_servers(pending, from_add_button)
             return
         mine = server_finder._norm(root)
-        managed = next((s for s in self.config.servers if s.install_dir and server_finder._norm(s.install_dir) == mine), None)
+        managed = self._managing(root)
         if managed is not None:
             QMessageBox.information(self, "Already Managed", f"ConanOps already manages that server as \"{managed.name}\".")
             return
-        running = server_finder.scan_running().by_install.get(mine)
+        scan = server_finder.scan_running()
+        running = scan.by_install.get(mine)
+        if running is None:  # running from the same folder under another path
+            running = next((cmd for key, cmd in scan.by_install.items()
+                            if server_finder.same_install(scan.paths.get(key, key), root)), None)
         rivals = list(getattr(getattr(self, "_last_scan", None), "rivals", []) or [])
         line = takeover.launch_lines(rivals, [root]).get(server_finder.path_key(root))
         found = server_finder.read_server(root, running, line)
         found.rivals = [r for r in takeover.for_install(rivals, root) if r.key not in self.config.ignored_rivals]
-        others = [f for f in (pending or []) if server_finder._norm(f.install_dir) != mine]
+        others = [f for f in (pending or []) if not server_finder.same_install(f.install_dir, root)]
         self._offer_found_servers([found] + others, from_add_button)
 
     # ------------------------------------------------------------- offering --
     def _offer_found_servers(self, found, from_add_button: bool, unreadable: int = 0) -> None:
+        found = self._not_yet_managed(found)
+        if not found:
+            if from_add_button:
+                self._offer_browse_or_new(unreadable)
+            return
         room = MAX_SERVERS - len(self.config.servers)
         if room <= 0:
             if from_add_button:
@@ -373,6 +415,10 @@ class FinderMixin:
             dialog.skip_btn.setText("Set Up a New Server Instead")
         result = dialog.exec()
         if result == QDialog.Accepted:
+            skipped = {f.install_dir for f in dialog.passed_over()}
+            if skipped:  # "Add server" still lists them
+                self.config.ignored_server_dirs = sorted(set(self.config.ignored_server_dirs) | skipped)
+                self.config.save()
             self._take_over(dialog.chosen(), turn_off=dialog.turn_off_rivals)
         elif result == RESULT_BROWSE:
             self._browse_for_server(from_add_button, pending=found)
@@ -382,6 +428,28 @@ class FinderMixin:
             self.config.save()
         elif from_add_button:
             self._add_new_server()
+        else:
+            _snooze(self.config, [f.install_dir for f in found])
+
+    def _managing(self, install_dir: str):
+        """The server ConanOps already runs from this folder, under any spelling of it."""
+        if not install_dir:
+            return None
+        return next((s for s in self.config.servers if s.install_dir and
+                     (server_finder.same_path(s.install_dir, install_dir) or
+                      server_finder.same_install(s.install_dir, install_dir))), None)
+
+    def _not_yet_managed(self, found) -> list:
+        """A scan's result can be out of date by the time it's shown (a server
+        was added meanwhile), and two lists can hold the same install."""
+        out, seen = [], set()
+        for f in found:
+            ident = server_finder.identity(f.install_dir)
+            if ident in seen or self._managing(f.install_dir) is not None:
+                continue
+            seen.add(ident)
+            out.append(f)
+        return out
 
     def _offer_turn_off_managed(self, managed_rivals: Dict[str, list]) -> None:
         by_id = {s.id: s for s in self.config.servers}
@@ -397,28 +465,36 @@ class FinderMixin:
         elif result == RESULT_NEVER:
             self.config.ignored_rivals = sorted(set(self.config.ignored_rivals) | {r.key for r in rivals})
             self.config.save()
+        else:
+            _snooze(self.config, [r.key for r in rivals])
 
     # ------------------------------------------------------------ taking over --
     def _take_over(self, chosen, turn_off: bool) -> None:
-        servers = []
+        servers, adopted = [], []
         for f in chosen:
-            server = self._adopt_server(f, turned_off=turn_off and bool(f.rivals))
+            server = self._adopt_server(f, turned_off=turn_off and bool(f.rivals), sole=len(chosen) == 1)
             if server is not None:
                 servers.append(server)
+                adopted.append(f)
         if not servers:
             return
-        rivals = _dedupe([r for f in chosen for r in f.rivals]) if turn_off else []
+        rivals = _dedupe([r for f in adopted for r in f.rivals]) if turn_off else []
         if not turn_off:
-            keys = {r.key for f in chosen for r in f.rivals}
+            keys = {r.key for f in adopted for r in f.rivals}
             if keys:
                 self.config.ignored_rivals = sorted(set(self.config.ignored_rivals) | keys)
                 self.config.save()
         self._turn_off_rivals(rivals, servers, backups=servers)
 
-    def _adopt_server(self, found, turned_off: bool = False):
+    def _adopt_server(self, found, turned_off: bool = False, sole: bool = True):
         """Manages an existing install as-is, keeping its world and settings."""
         import steamcmd
         from ui.setup_wizard import _no_space_default_base
+        existing = self._managing(found.install_dir)
+        if existing is not None:
+            # Two servers on one folder would share, and fight over, one world save.
+            _log.warning(f"Not adding {found.install_dir} again: it's already \"{existing.name}\".")
+            return None
         server = self.config.add_server(found.name)
         if server is None:
             return None
@@ -433,13 +509,29 @@ class FinderMixin:
             if hasattr(server, attr):
                 setattr(server, attr, value)
         server.gameplay.update(found.gameplay)
+        # It was left out of the launch options kept below, or lived in another
+        # file: put it in the one ConanOps edits so it keeps working.
+        admin = found.gameplay.get("AdminPassword")
+        if admin and found.admin_password_source and found.admin_password_source != "ServerSettings.ini":
+            try:
+                ini_utils.apply_known_keys(process_manager.server_settings_path(server.install_dir),
+                                           {"AdminPassword": ("ServerSettings", admin)})
+            except OSError as e:
+                _log.warning(f"Couldn't copy the admin password into ServerSettings.ini: {e}")
         server.mods = list(found.mods)
         server.local_mods = list(found.local_mods)
         server.extra_launch_args = list(found.extra_args)
         # It used to start by itself (task, service, startup item): ConanOps does that now.
-        auto_started = turned_off and any(r.kind != takeover.KIND_PROCESS for r in found.rivals)
+        # A launcher that doesn't say which server it runs only counts when
+        # there's one server it could mean; otherwise every copy would start.
+        auto_started = turned_off and any(r.kind != takeover.KIND_PROCESS and (r.install_dirs or sole)
+                                          for r in found.rivals)
         server.desired_running = found.running or auto_started
         notes = []
+        if server.name != found.name:
+            notes.append(f"Another server here is already called \"{found.name}\", so this one is \"{server.name}\". "
+                         "That name also shows in the server browser after its next restart; change it in Settings → "
+                         "Network if you'd like another.")
         if not found.values.get("rcon_enabled"):
             notes.append("RCON was turned on (ConanOps uses it to save the world and warn players before "
                          "restarts); it takes effect the next time the server restarts.")
@@ -578,8 +670,27 @@ class FinderMixin:
             if s.install_dir and not s.backup_destination and cleanup.is_adopted(s):
                 s.backup_destination = os.path.join(_no_space_default_base(), s.id, "backups")
                 changed = True
+            # Taken over before the build was read: it would look out of date.
+            if s.install_dir and not s.installed_buildid and cleanup.is_adopted(s):
+                build = server_finder.installed_build(s.install_dir)
+                if build:
+                    s.installed_buildid = build
+                    changed = True
         if changed:
             self.config.save()
+
+
+def _still_snoozed(config) -> List[str]:
+    """Folders and launchers under a "Not Now"; forgets the expired ones."""
+    now = time.time()
+    config.snoozed_until = {k: t for k, t in config.snoozed_until.items() if t > now}
+    return list(config.snoozed_until)
+
+
+def _snooze(config, keys) -> None:
+    until = time.time() + SNOOZE_SECONDS
+    config.snoozed_until.update({k: until for k in keys if k})
+    config.save()
 
 
 def _dedupe(rivals):

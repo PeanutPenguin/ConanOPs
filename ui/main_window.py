@@ -748,6 +748,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         server.desired_running = False
 
         others = [s for s in self.config.servers if s.id != server_id]
+        if server.install_dir and not delete_files:
+            # Its files stay, and removing it shouldn't bring it straight back
+            # as a "found" server at the next start. "Add server" still lists it.
+            self.config.ignored_server_dirs = sorted(set(self.config.ignored_server_dirs) | {server.install_dir})
         self.config.remove_server(server_id)
         self.config.save()
         self._refresh_sidebar()
@@ -921,6 +925,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         """Apply handler for every gameplay/identity page. Keys are Conan ini
         names; "__"-prefixed keys are stored but never written to an .ini."""
         s = server or self._active()
+        # Applying writes the whole page. On a server ConanOps took over, only
+        # write what changed, so anything it couldn't read isn't blanked or reset.
+        if s.adopted:
+            values = {k: v for k, v in values.items() if s.gameplay.get(k) != v}
         s.gameplay.update(values)
         self.config.save()
 

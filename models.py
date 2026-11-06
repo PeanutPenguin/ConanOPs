@@ -12,7 +12,7 @@ import shutil
 import uuid
 import secrets as _secrets
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import applog
 import conanops_paths
@@ -267,6 +267,8 @@ class AppConfig:
     discord_bot_admin_ids: str = ""   # Discord user IDs allowed to !restart, comma-separated
     # Server folders found on this PC that the person chose not to manage.
     ignored_server_dirs: List[str] = field(default_factory=list)
+    # "Not Now" answers, not asked about again until this time: folder or launcher key -> epoch seconds.
+    snoozed_until: Dict[str, float] = field(default_factory=dict)
     # Other launchers (takeover.Rival.key) the person chose to leave running.
     ignored_rivals: List[str] = field(default_factory=list)
     # What ConanOps switched off when taking servers over (takeover.restore() undoes these).
@@ -407,6 +409,11 @@ class AppConfig:
         cfg.discord_bot_admin_ids = str(raw.get("discord_bot_admin_ids", "") or "")
         cfg.ignored_server_dirs = [str(x) for x in raw.get("ignored_server_dirs", []) if x]
         cfg.ignored_rivals = [str(x) for x in raw.get("ignored_rivals", []) if x]
+        snoozed = raw.get("snoozed_until", {})
+        if isinstance(snoozed, dict):
+            for key, until in snoozed.items():
+                if isinstance(until, (int, float)) and not isinstance(until, bool):
+                    cfg.snoozed_until[str(key)] = float(until)
         cfg.takeover_records = [dict(x) for x in raw.get("takeover_records", []) if isinstance(x, dict)]
         if "alert_discord_url" in raw or "alert_ntfy_url" in raw:
             for attr in ("alert_discord_url", "alert_ntfy_url"):
@@ -467,6 +474,7 @@ class AppConfig:
             "discord_bot_admin_ids": self.discord_bot_admin_ids,
             "ignored_server_dirs": self.ignored_server_dirs,
             "ignored_rivals": self.ignored_rivals,
+            "snoozed_until": self.snoozed_until,
             "takeover_records": self.takeover_records,
         }
         text = json.dumps(data, indent=2)
