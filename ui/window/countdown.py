@@ -60,6 +60,24 @@ class CountdownMixin:
         c = self._countdowns.get(server_id)
         return None if c is None else max(0, int(c.deadline - time.monotonic()))
 
+    def countdown_text(self, server_id: str) -> str:
+        """For the dashboard and the web version: "" when nothing's counting down."""
+        left = self.countdown_left(server_id)
+        if left is None:
+            return ""
+        minutes = max(1, (left + 59) // 60)
+        return (f"Players are being warned in game: {self.countdown_what(server_id)} in about "
+                f"{plural(minutes, 'minute')}. It goes ahead sooner if everyone leaves.")
+
+    def call_off_countdown(self, server: ServerConfig, where: str = "the dashboard") -> bool:
+        """Someone called the countdown off (the app or the web version)."""
+        what = self.countdown_what(server.id)
+        if not self.cancel_countdown(server.id, f"called off from {where}.", by_hand=True):
+            return False
+        if server.rcon_enabled and self._known_running.get(server.id, False):
+            self._broadcast(server, f"The server {what} has been called off. Carry on!")
+        return True
+
     def countdown_what(self, server_id: str) -> str:
         c = self._countdowns.get(server_id)
         return c.what if c else ""
@@ -109,13 +127,19 @@ class CountdownMixin:
             return banlist_manager.broadcast_message(srv, msg)
         self._run_op(send, on_error=lambda e, n=server.name: _log.warning(f"Couldn't warn players on {n}: {e}"))
 
-    def cancel_countdown(self, server_id: str, why: str = "") -> bool:
+    def cancel_countdown(self, server_id: str, why: str = "", by_hand: bool = False) -> bool:
+        """by_hand: someone called it off (not a stop or restart), so an
+        automatic mod update isn't straight back an hour later."""
         c = self._countdowns.pop(server_id, None)
         if c is None:
             return False
         server = next((s for s in self.config.servers if s.id == server_id), None)
         if server is not None and why:
             self._notify(server, f"The {c.what} countdown was called off: {why}", title="Countdown Cancelled")
+        if by_hand and c.what == "mod update" and hasattr(self, "_mod_update_backoff"):
+            # Not straight back on the next hourly check.
+            from ui.window.mod_watch import MOD_UPDATE_BACKOFF_SECONDS
+            self._mod_update_backoff[server_id] = time.monotonic() + MOD_UPDATE_BACKOFF_SECONDS
         if not self._countdowns:
             self._countdown_timer.stop()
         self._refresh_chrome()

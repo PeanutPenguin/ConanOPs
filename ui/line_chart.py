@@ -18,8 +18,8 @@ Point = Tuple[float, Optional[float]]  # (unix time, value or None for a gap)
 def _nice_max(v: float) -> float:
     if v <= 0:
         return 1.0
-    for step in (1, 2, 2.5, 5):
-        for mag in range(-2, 12):
+    for mag in range(-2, 13):
+        for step in (1, 2, 2.5, 5):
             n = step * 10 ** mag
             if n >= v:
                 return n

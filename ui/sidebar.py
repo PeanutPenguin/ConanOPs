@@ -98,7 +98,7 @@ class Sidebar(QWidget):
             root.addSpacing(8)
             root.addWidget(_section_label(section))
             for key, label, icon in items:
-                btn = QPushButton(label)
+                btn = QPushButton(label.replace("&", "&&"))
                 btn.setObjectName("NavButton")
                 btn.setCheckable(True)
                 btn.setProperty("nav_key", key)

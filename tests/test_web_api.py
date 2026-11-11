@@ -148,7 +148,8 @@ def test_overview_lists_servers(web):
     assert data["version"] and data["theme"]["bg"].startswith("#")
 
 
-@pytest.mark.parametrize("path", ["", "/players", "/access", "/backups", "/updates", "/mods", "/settings"])
+@pytest.mark.parametrize("path", ["", "/players", "/access", "/backups", "/updates", "/mods", "/settings",
+                                  "/history", "/world", "/events"])
 def test_every_server_page_reads_for_any_server(web, path):
     win, c = web
     for sid in ("s1", "s2"):
@@ -714,3 +715,73 @@ def test_chunked_request_bodies_work(web):
         time.sleep(0.005)
     assert b" 200 " in out["resp"].split(b"\r\n")[0]
     assert "76561198000000009" in win.config.servers[0].whitelist_ids
+
+
+# ------------------------------------------------------------------ 2.0 --
+
+def test_history_endpoint_returns_samples_summary_and_events(web):
+    import history
+    win, c = web
+    now = time.time()
+    for i in range(6):
+        history.record_sample("s1", True, players=i, cpu=10.0, mem_mb=4096, now=now - 3000 + i * 300, force=True)
+    history.record_event("s1", "crash", "boom", now=now - 100)
+    history.record_event("s1", "backup", now=now - 50)
+    data = c.get("/api/servers/s1/history?range=86400")
+    assert len(data["samples"]) == 6 and data["summary"]["peak_players"] == 5
+    assert [e["kind"] for e in data["events"]] == ["backup", "crash"]
+    only = c.get("/api/servers/s1/history?range=86400&problems=1")
+    assert [e["label"] for e in only["events"]] == ["Crashed"]
+
+
+def test_events_can_be_added_edited_and_deleted_from_the_web(web):
+    win, c = web
+    meta = c.get("/api/servers/s1/events")
+    assert meta["events"] == [] and any(f["key"] == "PlayerXPRateMultiplier" for f in meta["settings"])
+    ev = {"name": "Double XP", "kind": "settings", "start_day": 4, "start": "18:00", "end_day": 6, "end": "23:00",
+          "changes": {"PlayerXPRateMultiplier": 2}}
+    r = c.post("/api/servers/s1/events/save", {"event": ev})
+    listed = c.get("/api/servers/s1/events")["events"]
+    assert listed[0]["id"] == r["id"] and listed[0]["when"] == "Fri 18:00 – Sun 23:00"
+    status, data, _ = c.call("POST", "/api/servers/s1/events/save", {"event": dict(ev, id=r["id"], name="")})
+    assert status == 400 and "name" in data["error"]
+    c.post("/api/servers/s1/events/save", {"event": dict(ev, id=r["id"], name="Triple XP")})
+    assert [e["name"] for e in win.config.servers[0].scheduled_events] == ["Triple XP"]
+    assert c.post("/api/servers/s1/events/delete", {"id": r["id"]})["ok"]
+    assert win.config.servers[0].scheduled_events == []
+
+
+def test_world_report_without_backups_says_so(web):
+    win, c = web
+    win.config.servers[0].backup_destination = ""
+    r = c.post("/api/servers/s1/world")
+    assert not r["ok"] and "backup folder" in r["message"]
+    assert c.get("/api/servers/s1/world") == {"busy": False, "report": None}
+
+
+def test_countdown_shows_and_can_be_called_off_from_the_web(web, monkeypatch):
+    import banlist_manager
+    win, c = web
+    s = win.config.servers[0]
+    s.rcon_enabled = True
+    said = []
+    monkeypatch.setattr(banlist_manager, "broadcast_message", lambda srv, m: said.append(m) or True)
+    monkeypatch.setattr(win, "_notify", lambda *a, **k: None)
+    win.RUN_OPS_INLINE = True
+    win._known_running["s1"] = True
+    win._online_by_server["s1"] = {"Conan"}
+    win._with_warning(s, "restart", lambda: None)
+    summary = next(x for x in c.get("/api/overview")["servers"] if x["id"] == "s1")
+    assert "restart in about 15 minutes" in summary["countdown"]
+    assert c.post("/api/servers/s1/countdown/cancel")["ok"]
+    assert "called off" in said[-1] and win.countdown_left("s1") is None
+
+
+def test_weekly_report_settings_from_the_web(web):
+    win, c = web
+    c.post("/api/app/weekly_report", {"value": {"enabled": True, "day": 4, "hour": 18}})
+    assert (win.config.weekly_report_day, win.config.weekly_report_hour) == (4, 18)
+    assert win.app_settings_page.weekly_report_day_combo.currentIndex() == 4
+    assert c.get("/api/app")["weekly_report"] == {"enabled": True, "day": 4, "hour": 18}
+    status, data, _ = c.call("POST", "/api/app/weekly_report", {"value": {"day": 9, "hour": 1}})
+    assert status == 400 or data.get("ok") is False

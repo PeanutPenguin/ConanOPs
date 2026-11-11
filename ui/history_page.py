@@ -9,11 +9,11 @@ import time
 from datetime import datetime
 from typing import List, Optional
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
 import history
@@ -77,16 +77,26 @@ class HistoryPage(QWidget):
         root.setSpacing(14)
 
         bar = QHBoxLayout()
+        switch = QFrame()
+        switch.setObjectName("ModeSwitch")
+        switch.setAccessibleName("Period shown")
+        sw = QHBoxLayout(switch)
+        sw.setContentsMargins(3, 3, 3, 3)
+        sw.setSpacing(2)
         self.range_group = QButtonGroup(self)
         self.range_buttons = {}
         for key, label, seconds in RANGES:
             b = QPushButton(label)
+            b.setObjectName("ModeButton")
             b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
             b.setChecked(seconds == self._range)
             b.clicked.connect(lambda _c=False, s=seconds: self.set_range(s))
             self.range_group.addButton(b)
             self.range_buttons[key] = b
-            bar.addWidget(b)
+            sw.addWidget(b)
+        switch.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        bar.addWidget(switch)
         bar.addStretch(1)
         self.caption = QLabel("")
         self.caption.setObjectName("Dim")

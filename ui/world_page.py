@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, Optional
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QPushButton, QScrollArea, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -59,7 +59,7 @@ def _table(headers):
     t.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
     for i in range(1, len(headers)):
         t.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
-    t.setMinimumHeight(240)
+    t.setMinimumHeight(320)
     return t
 
 
@@ -102,7 +102,7 @@ class WorldPage(QWidget):
         bar = QHBoxLayout()
         self.make_btn = QPushButton("Make Report")
         self.make_btn.setObjectName("PrimaryButton")
-        self.make_btn.clicked.connect(self.make_report)
+        self.make_btn.clicked.connect(lambda: self.make_report())
         bar.addWidget(self.make_btn)
         self.status = QLabel("")
         self.status.setObjectName("Dim")
@@ -169,16 +169,31 @@ class WorldPage(QWidget):
             self.status.setText("Make a report to see this server's clans, buildings and inactive players.")
         self.make_btn.setEnabled(self._worker is None)
 
-    def make_report(self) -> None:
-        if self.server is None or self._worker is not None:
-            return
-        server = self.server
+    def make_report(self, server=None) -> str:
+        """Starts a report for `server` (default: the one shown). Returns ""
+        or why it can't start."""
+        server = server or self.server
+        if server is None:
+            return "No server."
+        if self._worker is not None:
+            return "A report is already being made. Try again in a minute."
+        if not server.backup_destination:
+            return "This server has no backup folder yet."
+        self._busy_id = server.id
         self.make_btn.setEnabled(False)
-        self.status.setText("Unpacking the newest backup and reading the world… (a big world takes a minute)")
+        if self.server is not None and self.server.id == server.id:
+            self.status.setText("Unpacking the newest backup and reading the world… (a big world takes a minute)")
         worker = WorldReportWorker(server.backup_destination)
         worker.finished_report.connect(lambda rep, sid=server.id: self._done(sid, rep))
         self._worker = worker
         worker.start()
+        return ""
+
+    def is_busy(self, server_id: str) -> bool:
+        return self._worker is not None and getattr(self, "_busy_id", "") == server_id
+
+    def report_for(self, server_id: str):
+        return self._reports.get(server_id)
 
     def _done(self, server_id: str, rep) -> None:
         if self._worker is not None:
@@ -212,6 +227,7 @@ class WorldPage(QWidget):
             t.setItem(i, 2, _NumItem(c.pieces))
             t.setItem(i, 3, _NumItem(c.last_active or 0, _ago(c.last_active) if c.last_active else "—"))
         t.setSortingEnabled(True)
+        t.sortItems(2, Qt.DescendingOrder)
 
         t = self.inactive_table
         t.setSortingEnabled(False)
@@ -223,6 +239,7 @@ class WorldPage(QWidget):
             t.setItem(i, 3, _NumItem(p.last_online or 0, _ago(p.last_online)))
             t.setItem(i, 4, _NumItem(p.pieces))
         t.setSortingEnabled(True)
+        t.sortItems(3, Qt.AscendingOrder)
 
         pts = [(g.when.timestamp(), g.world_bytes / 1024 ** 2) for g in rep.growth]
         if pts:

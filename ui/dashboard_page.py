@@ -268,6 +268,10 @@ class DashboardPage(QWidget):
         root.addWidget(self.content, 1)
 
         grid = QGridLayout()
+        self.countdown_notice = NoticeBar("Call It Off")
+        self.countdown_notice.button.clicked.connect(lambda: self.on_cancel_countdown and self.on_cancel_countdown())
+        content_layout.addWidget(self.countdown_notice)
+        self.on_cancel_countdown = None
         self.hold_notice = NoticeBar("Start Anyway")
         self.hold_notice.button.clicked.connect(lambda: self.on_start_anyway and self.on_start_anyway())
         content_layout.addWidget(self.hold_notice)

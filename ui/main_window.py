@@ -447,6 +447,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.app_settings_page.on_alerts_changed = self.alerts_changed
         self.app_settings_page.get_web_link_line = self.web_link_line
         self.app_settings_page.send_weekly_report_now = self._send_weekly_report_from_page
+        self.dashboard_page.on_cancel_countdown = lambda: (
+            self.config.get_active() and self.call_off_countdown(self.config.get_active()))
         self.admin_mode_problem.connect(self.app_settings_page.show_admin_mode_problem)
         self.app_settings_page.web_tunnel = self.web_tunnel
         self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel
@@ -660,6 +662,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             self.dashboard_page.hold_notice.set_notice(
                 f"Held stopped. {active.update_hold}" if active.update_hold else ""
             )
+            self.dashboard_page.countdown_notice.set_notice(self.countdown_text(active.id))
             pending = self.updates_page.state_for(active).get("pending", "")
             self.dashboard_page.update_notice.set_notice(
                 f"{pending} -- it installs on its own if automatic updates are on, or install it now."
