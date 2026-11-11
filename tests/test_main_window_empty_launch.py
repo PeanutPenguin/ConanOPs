@@ -891,6 +891,7 @@ def test_track_hung_state_marks_and_restarts_after_threshold(monkeypatch):
         t = [1000.0]
         monkeypatch.setattr(time_mod, "monotonic", lambda: t[0])
 
+        win._answered_since_start.add(server.id)  # it had answered since starting
         win._track_hung_state(server, info=None)  # first sighting -- just records the time
         assert launched == []
         assert server.id in win._unresponsive_since
@@ -2072,5 +2073,36 @@ def test_missing_server_files_offer_reinstall_instead_of_error(monkeypatch, tmp_
         monkeypatch.setattr(win, "_open_setup_wizard", lambda server: opened.append(server.id))
         win._handle_start(s)
         assert opened == [s.id] and warned == []
+    finally:
+        win.close()
+
+
+def test_a_server_still_loading_gets_a_startup_grace(monkeypatch):
+    """2.0: a server that hasn't answered once since it started is still
+    loading (big world, many mods), not frozen."""
+    import process_manager
+    import preflight
+    import time as time_mod
+
+    cfg = models.AppConfig()
+    server = cfg.add_server("Chudville")
+    server.install_dir = "/tmp/fake-install"
+    server.desired_running = True
+    win = MainWindow(config=cfg)
+    try:
+        monkeypatch.setattr(preflight, "run_preflight", lambda s: preflight.CheckResult(ok=True, problems=[], repairs=[]))
+        monkeypatch.setattr(process_manager, "graceful_stop", lambda s: True)
+        launched = []
+        monkeypatch.setattr(process_manager, "launch", lambda s: launched.append(s))
+        t = [1000.0]
+        monkeypatch.setattr(time_mod, "monotonic", lambda: t[0])
+        win._track_hung_state(server, info=None)
+        t[0] += win._HUNG_THRESHOLD_SECONDS + 1
+        win._track_hung_state(server, info=None)
+        assert launched == []  # still inside the startup grace
+        t[0] += win._STARTUP_GRACE_SECONDS
+        win._track_hung_state(server, info=None)
+        win.RUN_OPS_INLINE = True
+        assert server.id not in win._unresponsive_since  # handed to the watchdog
     finally:
         win.close()

@@ -414,7 +414,8 @@ class WebApi:
                              "trigger": e.trigger, "size_mb": round(e.size_bytes / 2 ** 20, 1)} for e in entries]}
 
     def backup_now(self, req: Request) -> dict:
-        return self._do(req, self.win.back_up_now, "Backed up.", timeout=900)
+        return self._do(req, self.win.back_up_now,
+                        "Backup started. It shows in the list when it's done, and you'll get an alert if it fails.")
 
     def restore(self, req: Request) -> dict:
         import backup_manager

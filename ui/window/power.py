@@ -28,8 +28,24 @@ _log = applog.get_logger('ui.main_window')
 
 
 class PowerMixin:
+    # Desktop buttons wait for these, as the web version's do: starting or
+    # restarting during one would launch a server whose files are being
+    # replaced (and a second copy once it finishes).
+    _BLOCKS_START = ("Restoring a backup", "Updating", "Finding a broken mod", "Testing mods (in the app)",
+                     "Downloading mods", "Stopping")
+
+    def _busy_for_button(self, server: ServerConfig, action: str) -> bool:
+        busy = self.server_busy(server)
+        if busy in self._BLOCKS_START:
+            QMessageBox.information(self, f"Can't {action} yet", f"Wait until this finishes: {busy}.")
+            return True
+        return False
+
     def _handle_restart(self, server: ServerConfig) -> None:
         """Manual restart from the Dashboard: failures show as dialogs."""
+        if self._busy_for_button(server, "restart"):
+            return
+        self.cancel_countdown(server.id)  # restarting now supersedes a counted-down restart
         result = preflight.run_preflight(server)
         if not result.ok:
             if self._offer_reinstall_if_files_missing(server) or self._offer_file_fixes(server, result, "restart"):
@@ -89,9 +105,10 @@ class PowerMixin:
         self._tracker_for(server).close_all_active()
         self._clear_online(server.id)
 
-        def done(_result, sid=server.id):
+        def done(_result, sid=server.id, srv=server):
             self._known_running[sid] = True
             self._expected_stop.discard(sid)
+            self._record_event(srv, "restart")
             self._refresh_chrome()
 
         def failed(e, sid=server.id):
@@ -108,6 +125,8 @@ class PowerMixin:
         """Manual start from the Dashboard: preflight, then launch."""
         if process_manager.is_running(server.install_dir):
             return  # Start button shouldn't even be visible in this case, but don't double-launch
+        if self._busy_for_button(server, "start"):
+            return
         result = preflight.run_preflight(server)
         if not result.ok:
             if self._offer_reinstall_if_files_missing(server) or self._offer_file_fixes(server, result, "start"):
@@ -135,6 +154,11 @@ class PowerMixin:
         """Manual stop from the Dashboard (graceful, then hard kill)."""
         if not process_manager.is_running(server.install_dir):
             return  # Stop button shouldn't even be visible in this case
+        busy = self.server_busy(server)
+        if busy in ("Restoring a backup", "Updating", "Finding a broken mod", "Testing mods (in the app)"):
+            QMessageBox.information(self, "Can't stop yet", f"Wait until this finishes: {busy}.")
+            return
+        self.cancel_countdown(server.id)
         self._expected_stop.add(server.id)
         self._tracker_for(server).close_all_active()
         self._clear_online(server.id)
@@ -145,9 +169,14 @@ class PowerMixin:
         self._watchdog_attempts.pop(server.id, None)
         self._post_update_watch.pop(server.id, None)
 
-        def done(_result, sid=server.id):
-            self._known_running[sid] = False
+        def done(stopped, sid=server.id, srv=server):
             self._expected_stop.discard(sid)
+            if stopped is False:
+                self._known_running[sid] = True
+                self._notify(srv, process_manager.STILL_RUNNING_MESSAGE, title="Couldn't Stop")
+            else:
+                self._known_running[sid] = False
+                self._record_event(srv, "stop")
             self._refresh_chrome()
 
         self._run_op(lambda: process_manager.graceful_stop(server), on_done=done,
@@ -165,6 +194,11 @@ class PowerMixin:
     def _handle_scheduled_restart(self, server: ServerConfig) -> None:
         """A scheduled restart checks for a server update first and updates
         instead of a plain restart if one is available."""
+        if self._with_warning(server, "restart", lambda srv=server: self._scheduled_restart_now(srv)) == "wait":
+            self._notify(server, "Today's restart is waiting for players to leave.", title="Restart Waiting")
+
+    def _scheduled_restart_now(self, server: ServerConfig) -> None:
+        self._record_event(server, "scheduled_restart")
         if server.id in self._update_check_workers or server.id in self._update_apply_workers:
             self._restart_unattended(server)  # an update is already in flight; just restart plainly
             return
@@ -211,18 +245,24 @@ class PowerMixin:
 
     def _on_health_check_finished(self, results: list) -> None:
         self._health_worker = None
-        by_id = {sid: (running, info) for sid, running, info in results}
+        by_id = {r[0]: (r[1], r[2], r[3] if len(r) > 3 else None) for r in results}
         for server in self.config.servers:
             if server.id not in by_id:
                 continue  # removed from config, or added after this check started -- picked up next tick
-            running_now, info = by_id[server.id]
+            running_now, info, stats = by_id[server.id]
             was_running = self._known_running.get(server.id, False)
+            self._record_sample(server, running_now, info, stats)
+            if not running_now:
+                self._answered_since_start.discard(server.id)
+            elif info is not None:
+                self._answered_since_start.add(server.id)
 
             if was_running and not running_now and server.id not in self._expected_stop and server.id not in self._automation_locked:
                 self._tracker_for(server).close_all_active()
                 self._clear_online(server.id)
                 self._notify_with_cause(server, "The server process stopped unexpectedly (crash or external kill).",
                                         title="Server Crashed")
+                self._record_event(server, "crash")
                 self._unresponsive_since.pop(server.id, None)
                 self._known_running[server.id] = False
                 if self._post_update_failure(server, "crashed"):
@@ -249,9 +289,15 @@ class PowerMixin:
         if since is None:
             self._unresponsive_since[server.id] = now
             return
-        if now - since < self._HUNG_THRESHOLD_SECONDS:
+        # A server still loading (big world, many mods) doesn't answer yet:
+        # only one that has answered since it started can "stop" answering.
+        limit = (self._HUNG_THRESHOLD_SECONDS if server.id in self._answered_since_start
+                 else self._STARTUP_GRACE_SECONDS)
+        if now - since < limit:
             return
         self._unresponsive_since.pop(server.id, None)
+        self._record_event(server, "hang", "" if server.id in self._answered_since_start
+                           else "never answered after starting")
         if self._post_update_failure(server, "stopped responding"):
             return
         if server.desired_running and not server.update_hold:
@@ -314,6 +360,7 @@ class PowerMixin:
             self._known_running[sid] = True
             if need_stop_first:
                 self._expected_stop.discard(sid)
+            self._record_event(server, "watchdog", f"{reason}, attempt {attempt_num}")
             self._notify(
                 server,
                 f"Watchdog restarted this server ({reason}) -- attempt {attempt_num} of "

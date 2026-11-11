@@ -304,7 +304,8 @@ def test_install_page_progress_bar_clamps_to_valid_range():
 def _make_backup_zip(path: str) -> None:
     import zipfile
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("Saved/game.db", b"fake db content")
+        from tests.worlds import world_bytes
+        zf.writestr("Saved/game.db", world_bytes("fake db content"))
         zf.writestr("Saved/Config/ServerSettings.ini", "[Foo]\nBar=1\n")
 
 

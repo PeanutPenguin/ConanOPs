@@ -480,7 +480,9 @@ def test_backup_now_refreshes_the_apps_list(web, monkeypatch):
     s1.backup_destination = dest
     win._load_active_server()
 
-    def fake_backup(server, destination, trigger):
+    win.RUN_OPS_INLINE = True
+
+    def fake_backup(server, destination, trigger, label=""):
         path = os.path.join(destination, "20260101-120000_manual.zip")
         with open(path, "wb") as f:
             f.write(b"x" * 10)
@@ -497,6 +499,7 @@ def test_backup_failure_is_explained(web, monkeypatch):
     win, c = web
     s1 = win.config.servers[0]
     s1.backup_destination = os.path.dirname(s1.install_dir)
+    win.RUN_OPS_INLINE = True
     monkeypatch.setattr(backup_manager, "create_backup_for_server", lambda *a: None)
     r = c.post("/api/servers/s1/backups/create")
     assert r["ok"] is False and "world save" in r["message"]

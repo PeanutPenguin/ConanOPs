@@ -46,8 +46,11 @@ class ServerRemovalWorker(QThread):
         problems: List[str] = []
         s = self.server
         try:
+            stopped = True
             if (self.delete_files or self.delete_backups) and not _stop_and_wait(s):
-                problems.append(f"{s.name} didn't stop in time, so some of its files may still be in use.")
+                stopped = False
+                problems.append(f"{s.name} didn't stop, so its files were left in place: deleting a running "
+                                "server's files could leave a damaged copy behind. Stop it and remove it again.")
             # Ticking "delete files" is the person's explicit choice, adopted or not.
             plan = cleanup.server_paths(s, self.others, include_adopted_files=True)
             program_dirs = [s.install_dir] if s.install_dir else []
@@ -60,11 +63,12 @@ class ServerRemovalWorker(QThread):
                 )
             except Exception as e:  # noqa: BLE001
                 _log.warning(f"Router forward removal failed: {e}")
-            if self.delete_files:
+            # Backups kept by choice may sit inside a folder being deleted
+            # (by default they're in the server's own ConanOps folder).
+            keep = "" if self.delete_backups or not plan["backups"] else plan["backups"][0]
+            if self.delete_files and stopped:
                 for path in plan["files"]:
-                    err = cleanup.remove_path(path)
-                    if err:
-                        problems.append(err)
+                    problems.extend(cleanup.remove_path_except(path, keep))
             if self.delete_backups and plan["backups"]:
                 problems.extend(cleanup.remove_backups(*plan["backups"]))
             for path in plan["always"]:

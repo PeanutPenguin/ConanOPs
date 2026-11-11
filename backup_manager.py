@@ -6,11 +6,13 @@ The filename encodes time and trigger, e.g. 20260919-110243_scheduled.zip.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import shutil
+import sqlite3
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import applog
@@ -20,6 +22,10 @@ _log = applog.get_logger(__name__)
 TRIGGER_SCHEDULED = "scheduled"
 TRIGGER_MANUAL = "manual"
 TRIGGER_PRE_UPDATE = "pre-update"
+TRIGGER_SAFETY = "pre-restore-safety"
+AUTOMATIC_SAFETY_TRIGGERS = (TRIGGER_PRE_UPDATE, TRIGGER_SAFETY)
+MANIFEST_NAME = "conanops-backup.json"
+_SNAPSHOT_PREFIX = ".conanops-snapshot-"
 
 
 @dataclass
@@ -28,6 +34,7 @@ class BackupEntry:
     when: datetime
     trigger: str
     size_bytes: int
+    verified: bool = True  # every world database in it passed SQLite's check
 
     @property
     def size_label(self) -> str:
@@ -106,72 +113,212 @@ def cleanup_partial_backups(destination: str) -> None:
             os.remove(path)
         except OSError:
             pass
+    for path in glob.glob(os.path.join(destination, _SNAPSHOT_PREFIX + "*")):
+        shutil.rmtree(path, ignore_errors=True)
 
 
-def create_backup(install_dir: str, destination: str, trigger: str, label: str = "") -> Optional[BackupEntry]:
+def _snapshot_dir_name(destination: str) -> str:
+    return os.path.join(destination, f"{_SNAPSHOT_PREFIX}{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}")
+
+
+def _sqlite_uri(path: str) -> str:
+    from urllib.request import pathname2url
+    return f"file:{pathname2url(os.path.abspath(path))}?mode=ro"
+
+
+def _quick_check(path: str) -> Optional[bool]:
+    """SQLite's own check that a database file is whole: True, False (damaged,
+    or not a database at all), or None when it couldn't be checked (the file
+    couldn't be opened), which says nothing about the file itself."""
+    try:
+        con = sqlite3.connect(_sqlite_uri(path), uri=True, timeout=30)
+        try:
+            row = con.execute("PRAGMA quick_check").fetchone()
+        finally:
+            con.close()
+        return bool(row) and str(row[0]).lower() == "ok"
+    except sqlite3.OperationalError as e:
+        if "unable to open" in str(e).lower():
+            _log.warning(f"Couldn't open {path} to check it: {e}")
+            return None
+        _log.warning(f"{path} failed SQLite's check: {e}")
+        return False
+    except sqlite3.Error as e:
+        _log.warning(f"{path} failed SQLite's check: {e}")
+        return False
+
+
+def _journal_mode(path: str) -> str:
+    try:
+        con = sqlite3.connect(_sqlite_uri(path), uri=True, timeout=30)
+        try:
+            return str(con.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return ""
+
+
+def _sqlite_copy(src: str, dst: str) -> bool:
+    """A consistent copy of the database as of one moment, made by SQLite
+    itself, so a server writing to it can't leave a torn copy."""
+    try:
+        source = sqlite3.connect(_sqlite_uri(src), uri=True, timeout=60)
+        try:
+            target = sqlite3.connect(dst)
+            try:
+                source.backup(target)  # one step: one consistent read
+            finally:
+                target.close()
+        finally:
+            source.close()
+        return True
+    except sqlite3.Error as e:
+        _log.warning(f"SQLite couldn't copy {src} ({e}); copying the file instead.")
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+        return False
+
+
+def _file_copy(src: str, dst: str) -> None:
+    """The database file plus its -wal, which holds changes not yet merged in."""
+    shutil.copyfile(src, dst)
+    if os.path.exists(src + "-wal"):
+        shutil.copyfile(src + "-wal", dst + "-wal")
+
+
+def _snapshot_worlds(saved: str, snap_dir: str, live: bool, settle=None) -> tuple:
+    """Copies every world database into snap_dir. Returns (paths, verified).
+    A database in WAL mode, or one no server is using, is copied by SQLite in
+    one consistent read. A live database in the older journal mode is copied
+    as a file once the server has finished saving (a long SQLite read could
+    make its next save wait). Every copy is then checked by SQLite; a copy that
+    fails is made again once."""
+    os.makedirs(snap_dir, exist_ok=True)
+    out, verified = [], True
+    for src in sorted(glob.glob(os.path.join(saved, "*.db"))):
+        dst = os.path.join(snap_dir, os.path.basename(src))
+        ok = False
+        for attempt in range(2):
+            for leftover in (dst, dst + "-wal"):
+                if os.path.exists(leftover):
+                    os.remove(leftover)
+            use_sqlite = not live or _journal_mode(src) == "wal"
+            if not (use_sqlite and _sqlite_copy(src, dst)):
+                if live and settle is not None:
+                    settle()
+                _file_copy(src, dst)
+            ok = _quick_check(dst) is not False
+            if ok:
+                break
+            _log.warning(f"The copy of {os.path.basename(src)} didn't pass SQLite's check"
+                         f"{'; trying once more' if attempt == 0 else ''}.")
+            if settle is not None:
+                settle()
+        if not ok:
+            verified = False
+        out.append(dst)
+        if os.path.exists(dst + "-wal"):
+            out.append(dst + "-wal")
+    return out, verified
+
+
+def _world_bytes(saved: str) -> int:
+    total = 0
+    for f in glob.glob(os.path.join(saved, "*.db")) + glob.glob(os.path.join(saved, "*.db-wal")):
+        try:
+            total += os.path.getsize(f)
+        except OSError:
+            pass
+    return total
+
+
+def create_backup(install_dir: str, destination: str, trigger: str, label: str = "",
+                  live: Optional[bool] = None, settle=None, info: Optional[dict] = None) -> Optional[BackupEntry]:
+    """Zips a consistent, SQLite-checked copy of the world plus Saved/Config.
+    live: whether a server is using the world now (None: find out). settle:
+    called to wait until the server has finished saving. None if there's
+    nothing to back up; raises BackupSpaceError or OSError on failure."""
     if not destination:
         return None
     saved = _saved_dir(install_dir)
     if not os.path.isdir(saved):
         return None
     os.makedirs(destination, exist_ok=True)
+    if live is None:
+        import process_manager
+        live = process_manager.find_running_pid(install_dir) is not None
 
     ts = datetime.now()
     suffix = f"_{label}" if label else ""
     out_path = _unique_path(destination, f"{ts.strftime('%Y%m%d-%H%M%S')}_{trigger}{suffix}")
-
-    db_files = glob.glob(os.path.join(saved, "*.db")) + \
-        glob.glob(os.path.join(saved, "*.db-wal")) + \
-        glob.glob(os.path.join(saved, "*.db-shm"))
     config_dir = os.path.join(saved, "Config")
-    _ensure_space_for_backup(db_files, config_dir, destination)
+    # Room for the copy of the world made first, and the zip made from it.
+    _ensure_space_for_backup(glob.glob(os.path.join(saved, "*.db")) * 2, config_dir, destination)
 
-    # Written under a temporary name and renamed only once verified, so a
-    # crash or full disk part-way through never leaves a broken .zip that
-    # looks like a good backup (and could count towards the ones kept).
+    snap_dir = _snapshot_dir_name(destination)
     partial = out_path + _PARTIAL_SUFFIX
     try:
-        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in db_files:
+        worlds, verified = _snapshot_worlds(saved, snap_dir, live, settle)
+        manifest = dict(info or {}, format=1, made=ts.isoformat(timespec="seconds"), trigger=trigger,
+                        verified=verified, worlds=[os.path.basename(w) for w in worlds],
+                        world_bytes=_world_bytes(saved), server_running=bool(live))
+        # Written under a temporary name and renamed only once verified, so a
+        # crash or full disk part-way through never leaves a broken .zip that
+        # looks like a good backup.
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for f in worlds:
                 zf.write(f, arcname=os.path.join("Saved", os.path.basename(f)))
             if os.path.isdir(config_dir):
                 for root, _dirs, files in os.walk(config_dir):
                     for fn in files:
                         full = os.path.join(root, fn)
-                        rel = os.path.relpath(full, saved)
-                        zf.write(full, arcname=os.path.join("Saved", rel))
-
-        # Check every entry's CRC so a truncated zip is never reported as a good backup.
+                        zf.write(full, arcname=os.path.join("Saved", os.path.relpath(full, saved)))
+            zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=1))
         try:
             with zipfile.ZipFile(partial, "r") as zf:
                 bad_entry = zf.testzip()
         except zipfile.BadZipFile:
             bad_entry = "(the file itself)"
         if bad_entry is not None:
-            _log.error(f"Backup {out_path} failed integrity verification (bad entry: {bad_entry}) -- deleting it.")
+            _log.error(f"Backup {out_path} failed its zip check (bad entry: {bad_entry}) -- deleting it.")
             return None
         os.replace(partial, out_path)
     finally:
+        shutil.rmtree(snap_dir, ignore_errors=True)
         if os.path.exists(partial):
             try:
                 os.remove(partial)
             except OSError as e:
                 _log.error(f"Couldn't delete the unfinished backup {partial}: {e}")
 
-    size = os.path.getsize(out_path)
-    return BackupEntry(path=out_path, when=ts, trigger=trigger, size_bytes=size)
+    entry = BackupEntry(path=out_path, when=ts, trigger=trigger, size_bytes=os.path.getsize(out_path))
+    entry.verified = verified
+    return entry
 
 
 def create_backup_for_server(server, destination: str, trigger: str, label: str = "") -> Optional[BackupEntry]:
-    """create_backup(), after a best-effort RCON "saveworld" so the copied files are fresh.
-    Not an atomic snapshot; SQLite WAL keeps a live copy restorable."""
-    if server.rcon_enabled:
+    """create_backup() of a server: asks it to save first (RCON) and waits for
+    the save to finish, so the backup has the latest world."""
+    import process_manager
+    pid = process_manager.find_running_pid(server.install_dir) if server.install_dir else None
+    live = pid is not None
+
+    def settle():
+        if pid is not None:
+            process_manager._wait_for_save_to_settle(server.install_dir, pid, max_wait=90.0)
+
+    if live and server.rcon_enabled:
         import rcon
         try:
             rcon.send_command("127.0.0.1", server.rcon_port, server.rcon_password, "saveworld")
+            settle()
         except rcon.RconError as e:
-            _log.warning(f"Couldn't request a save via RCON before backing up {server.name}: {e}")
-    return create_backup(server.install_dir, destination, trigger, label)
+            _log.warning(f"Couldn't ask {server.name} to save before backing up: {e}")
+    info = {"server": getattr(server, "name", ""), "build": getattr(server, "installed_buildid", "")}
+    return create_backup(server.install_dir, destination, trigger, label, live=live, settle=settle, info=info)
 
 
 def list_backups(destination: str) -> List[BackupEntry]:
@@ -185,9 +332,16 @@ def list_backups(destination: str) -> List[BackupEntry]:
             trigger = rest.rsplit(".", 1)[0].split("_")[0]
             when = datetime.strptime(date_part, "%Y%m%d-%H%M%S")
         except ValueError:
-            when = datetime.fromtimestamp(os.path.getmtime(path))
+            try:
+                when = datetime.fromtimestamp(os.path.getmtime(path))
+            except OSError:
+                continue
             trigger = "unknown"
-        entries.append(BackupEntry(path=path, when=when, trigger=trigger, size_bytes=os.path.getsize(path)))
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue  # deleted while listing
+        entries.append(BackupEntry(path=path, when=when, trigger=trigger, size_bytes=size))
     entries.sort(key=lambda e: e.when, reverse=True)
     return entries
 
@@ -235,68 +389,209 @@ def _restore_target_path(name: str, saved: str) -> Optional[str]:
     return target
 
 
+class ServerRunningError(RuntimeError):
+    pass
+
+
 def restore_backup(install_dir: str, backup: BackupEntry) -> None:
-    """Extracts a backup into Saved/, after taking a safety backup of the current
-    state. The caller must stop the server first and restart it after."""
+    """Puts a backup's world and settings back into Saved/. The server must
+    be stopped. A safety backup of the current state is made first; the
+    backup's files are unpacked and checked beside Saved/ before any current
+    file is replaced, so a damaged backup changes nothing."""
+    import process_manager
+    if process_manager.find_running_pid(install_dir) is not None:
+        raise ServerRunningError("The server is still running, so nothing was restored. Stop it first.")
     saved = _saved_dir(install_dir)
     os.makedirs(saved, exist_ok=True)
 
-    safety_dest = os.path.dirname(backup.path)
-    create_backup(install_dir, safety_dest, trigger="pre-restore-safety")
+    has_world = bool(glob.glob(os.path.join(saved, "*.db")))
+    safety = create_backup(install_dir, os.path.dirname(backup.path), trigger=TRIGGER_SAFETY, live=False)
+    if has_world and safety is None:
+        raise OSError("Couldn't make a safety copy of the current world first, so nothing was restored.")
 
-    # A leftover -wal from the current DB would be replayed onto the restored
-    # .db and corrupt it; the backup brings its own -wal/-shm if it had any.
-    for stale in glob.glob(os.path.join(saved, "*.db-wal")) + glob.glob(os.path.join(saved, "*.db-shm")):
-        try:
+    stage = os.path.join(os.path.dirname(saved), f"{_SNAPSHOT_PREFIX}restore-{datetime.now():%Y%m%d-%H%M%S-%f}")
+    try:
+        placed = []
+        with zipfile.ZipFile(backup.path, "r") as zf:
+            for member in zf.infolist():
+                target = _restore_target_path(member.filename, saved)
+                if target is None:
+                    continue
+                staged = os.path.join(stage, os.path.relpath(target, os.path.dirname(saved)))
+                os.makedirs(os.path.dirname(staged), exist_ok=True)
+                with zf.open(member) as src, open(staged, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                placed.append((staged, target))
+        for staged, _target in placed:
+            if staged.endswith(".db") and _quick_check(staged) is False:
+                raise OSError(f"{os.path.basename(staged)} in this backup is damaged (it failed SQLite's check), "
+                              "so nothing was restored. Try an older backup.")
+        # A leftover -wal from the current DB would be replayed onto the
+        # restored .db and corrupt it; the backup brings its own if it had one.
+        for stale in glob.glob(os.path.join(saved, "*.db-wal")) + glob.glob(os.path.join(saved, "*.db-shm")):
             os.remove(stale)
-        except OSError as exc:
-            _log.warning(f"Couldn't remove stale WAL/SHM file {stale} before restore: {exc}")
-
-    with zipfile.ZipFile(backup.path, "r") as zf:
-        for member in zf.infolist():
-            target = _restore_target_path(member.filename, saved)
-            if target is None:
-                continue
+        for staged, target in placed:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            with zf.open(member) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+            os.replace(staged, target)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
-def prune_backups(destination: str, daily_keep: int, weekly_keep: int) -> List[str]:
-    """Keeps the newest `daily_keep` scheduled backups plus one per week for
-    `weekly_keep` weeks; deletes the rest. Returns deleted paths.
-    Only "scheduled" backups are ever pruned, and at least one backup always remains."""
+# Safety copies made automatically (before an update or a restore): the newest
+# few of each kind, and any from the last two weeks, are kept.
+SAFETY_KEEP = 3
+SAFETY_KEEP_DAYS = 14
+
+
+def prune_backups(destination: str, daily_keep: int, weekly_keep: int,
+                  now: Optional[datetime] = None) -> List[str]:
+    """Scheduled backups: every one from the last 24 hours, then the newest of
+    each day for `daily_keep` days, then the newest of each week for
+    `weekly_keep` weeks before that. Pre-update and pre-restore copies: the
+    newest SAFETY_KEEP of each, plus any from the last SAFETY_KEEP_DAYS.
+    Manual and imported backups are never deleted, and at least one backup
+    always remains. Returns the deleted paths."""
     cleanup_partial_backups(destination)
     entries = list_backups(destination)
     if not entries:
         return []
+    now = now or datetime.now()
+    keep = set()
 
-    prunable = [e for e in entries if e.trigger == TRIGGER_SCHEDULED]
-    protected = [e for e in entries if e.trigger != TRIGGER_SCHEDULED]
+    scheduled = [e for e in entries if e.trigger == TRIGGER_SCHEDULED]  # newest first
+    keep |= {e.path for e in scheduled if now - e.when <= timedelta(hours=24)}
+    days = []
+    for e in scheduled:
+        if not days or days[-1][0] != e.when.date():
+            days.append((e.when.date(), e))
+    for _day, e in days[:max(daily_keep, 0)]:
+        keep.add(e.path)
+    oldest_daily = days[min(max(daily_keep, 0), len(days)) - 1][0] if daily_keep > 0 and days else None
+    weeks = []
+    for e in scheduled:
+        if oldest_daily is not None and e.when.date() >= oldest_daily:
+            continue
+        week = e.when.isocalendar()[:2]
+        if not weeks or weeks[-1][0] != week:
+            weeks.append((week, e))
+    for _week, e in weeks[:max(weekly_keep, 0)]:
+        keep.add(e.path)
 
-    keep_paths = {e.path for e in protected}
-    keep_paths |= {e.path for e in prunable[:max(daily_keep, 0)]}
-    older = prunable[max(daily_keep, 0):]
+    for trigger in AUTOMATIC_SAFETY_TRIGGERS:
+        safety = [e for e in entries if e.trigger == trigger]
+        keep |= {e.path for e in safety[:SAFETY_KEEP]}
+        keep |= {e.path for e in safety if now - e.when <= timedelta(days=SAFETY_KEEP_DAYS)}
 
-    seen_weeks = set()
-    for e in older:
-        week_key = e.when.isocalendar()[:2]  # (ISO year, ISO week)
-        if week_key not in seen_weeks and len(seen_weeks) < weekly_keep:
-            seen_weeks.add(week_key)
-            keep_paths.add(e.path)
-
-    if not keep_paths:
-        keep_paths.add(entries[0].path)  # entries is newest-first; never end up with zero backups
+    pruned_kinds = {TRIGGER_SCHEDULED, *AUTOMATIC_SAFETY_TRIGGERS}
+    keep |= {e.path for e in entries if e.trigger not in pruned_kinds}
+    if not keep:
+        keep.add(entries[0].path)  # newest-first: never end up with zero backups
 
     deleted = []
     for e in entries:
-        if e.path not in keep_paths:
+        if e.path not in keep:
             try:
                 os.remove(e.path)
                 deleted.append(e.path)
             except OSError as exc:
                 _log.warning(f"Couldn't delete old backup {e.path} during pruning: {exc}")
     return deleted
+
+
+def _same_folder(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def sync_copies(destination: str, copy_destination: str, daily_keep: int, weekly_keep: int) -> tuple:
+    """Copies every backup in `destination` that `copy_destination` doesn't
+    have yet (so one missed while that drive was unplugged catches up), then
+    applies the same retention there. Never deletes anything in the main
+    folder. Returns (copied paths, error message or "")."""
+    if not copy_destination or not destination or _same_folder(destination, copy_destination):
+        return [], ""
+    try:
+        os.makedirs(copy_destination, exist_ok=True)
+    except OSError as e:
+        return [], f"Couldn't open the second backup folder {copy_destination}: {e}"
+    have = {os.path.basename(e.path) for e in list_backups(copy_destination)}
+    copied, error = [], ""
+    for entry in reversed(list_backups(destination)):  # oldest first, so the newest lands last
+        name = os.path.basename(entry.path)
+        if name in have:
+            continue
+        target = os.path.join(copy_destination, name)
+        partial = target + _PARTIAL_SUFFIX
+        try:
+            try:
+                free = shutil.disk_usage(copy_destination).free
+            except OSError:
+                free = None
+            if free is not None and free < entry.size_bytes + _BACKUP_HEADROOM_BYTES:
+                error = (f"Not enough free space in the second backup folder {copy_destination} for "
+                         f"{name} ({entry.size_label}).")
+                break
+            shutil.copyfile(entry.path, partial)
+            with zipfile.ZipFile(partial, "r") as zf:
+                if zf.testzip() is not None:
+                    raise OSError("the copy didn't match the original")
+            os.replace(partial, target)
+            copied.append(target)
+        except (OSError, zipfile.BadZipFile) as e:
+            error = f"Couldn't copy {name} to the second backup folder {copy_destination}: {e}"
+            break
+        finally:
+            if os.path.exists(partial):
+                try:
+                    os.remove(partial)
+                except OSError:
+                    pass
+    prune_backups(copy_destination, daily_keep, weekly_keep)
+    return copied, error
+
+
+@dataclass
+class BackupOutcome:
+    entry: Optional[BackupEntry] = None
+    error: str = ""           # why there's no backup ("" when made)
+    copy_error: str = ""      # the backup was made, but the second copy wasn't
+    copied: int = 0
+    pruned: int = 0
+
+
+def run_backup_job(server, trigger: str, label: str = "") -> BackupOutcome:
+    """One complete backup: make it, check it, copy it to the second folder,
+    then thin out old ones in both. Never raises."""
+    out = BackupOutcome()
+    try:
+        out.entry = create_backup_for_server(server, server.backup_destination, trigger, label)
+    except BackupSpaceError as e:
+        out.error = str(e)
+        return out
+    except Exception as e:  # noqa: BLE001 - reported, never raised from a worker
+        _log.error(f"Backup of {getattr(server, 'name', '?')} failed: {e}")
+        out.error = f"The backup couldn't be written: {e}"
+        return out
+    if out.entry is None:
+        saved = saved_dir(server.install_dir)
+        out.error = ("The backup file didn't pass its own check after being written, so it was deleted. This "
+                     "usually means a disk problem on the backup folder's drive." if os.path.isdir(saved) else
+                     "There's no world save to back up yet: Conan Exiles creates it the first time the server "
+                     "starts.")
+        return out
+    try:
+        out.pruned = len(prune_backups(server.backup_destination, server.backup_daily_keep,
+                                       server.backup_weekly_keep))
+    except OSError as e:
+        _log.warning(f"Couldn't thin out old backups: {e}")
+    copy_to = getattr(server, "backup_copy_destination", "")
+    if copy_to:
+        try:
+            copied, out.copy_error = sync_copies(server.backup_destination, copy_to,
+                                                 server.backup_daily_keep, server.backup_weekly_keep)
+            out.copied = len(copied)
+        except Exception as e:  # noqa: BLE001
+            out.copy_error = f"Couldn't copy the backup to the second folder: {e}"
+    return out
 
 
 TRIGGER_IMPORTED = "imported"

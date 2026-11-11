@@ -28,6 +28,8 @@ class WebActionsMixin:
             return "Testing mods (in the app)"
         if sid in self._restore_workers:
             return "Restoring a backup"
+        if sid in getattr(self, "_backup_workers", {}):
+            return "Backing up"
         if (sid in self._update_apply_workers or sid in self._manual_update_in_progress
                 or sid in self.updates_page._update_workers):
             return "Updating"
@@ -74,7 +76,7 @@ class WebActionsMixin:
         return ""
 
     def start_server(self, server) -> str:
-        problem = self._ready(server, allow_busy=())
+        problem = self._ready(server, allow_busy=("Backing up",))
         if problem:
             return problem
         if self.is_running(server):
@@ -93,6 +95,7 @@ class WebActionsMixin:
         """A manual Start: launch, keep running through reboots, and clear any hold."""
         process_manager.launch(server)
         self._known_running[server.id] = True
+        self._record_event(server, "start")
         server.desired_running = True
         server.update_hold = ""
         server.mod_recovery = {}
@@ -111,12 +114,13 @@ class WebActionsMixin:
         return ""
 
     def restart_server(self, server) -> str:
-        problem = self._ready(server, allow_busy=())
+        problem = self._ready(server, allow_busy=("Backing up",))
         if problem:
             return problem
         problem = self._preflight_problem(server, "restart")
         if problem:
             return problem
+        self.cancel_countdown(server.id)  # restarting now supersedes a counted-down restart
         # manual="web": failures go to alerts, not a PC dialog nobody sees.
         self._warn_then_restart(server, manual="web")
         self._refresh_chrome()
@@ -178,23 +182,7 @@ class WebActionsMixin:
             return "This server isn't set up yet -- finish setup in the app on the PC."
         if not server.backup_destination:
             return "Set a backup folder for this server first (Server Settings → Backups)."
-        busy = self.server_busy(server)
-        if busy in ("Restoring a backup", "Updating", "Finding a broken mod", "Testing mods (in the app)"):
-            return f"Wait until this finishes: {busy}."
-        try:
-            entry = backup_manager.create_backup_for_server(server, server.backup_destination,
-                                                            backup_manager.TRIGGER_MANUAL)
-        except backup_manager.BackupSpaceError as e:
-            return str(e)
-        if entry is None:
-            saved = backup_manager.saved_dir(server.install_dir)
-            if os.path.isdir(saved):
-                return ("The backup didn't pass its own integrity check after being written, so it was deleted. "
-                        "This usually means a disk problem (full or failing) on the backup drive -- see conanops.log.")
-            return ("There's no world save to back up yet -- Conan Exiles creates it the first time the server "
-                    "starts.")
-        self.backups_changed(server)
-        return ""
+        return self.start_backup(server, backup_manager.TRIGGER_MANUAL)
 
     def backups_changed(self, server) -> None:
         if self.config.active_server_id == server.id:

@@ -66,7 +66,9 @@ class UpdateWorker(QThread):
 
         if self.stop_server is not None and self.stop_server.install_dir and process_manager.is_running(self.stop_server.install_dir):
             self.progress.emit("Stopping the server (saving the world first if RCON is on)…")
-            process_manager.graceful_stop(self.stop_server)
+            if process_manager.graceful_stop(self.stop_server) is False:
+                return steamcmd.UpdateResult(False, process_manager.STILL_RUNNING_MESSAGE + " Nothing was changed.",
+                                             reason="still_running")
 
         if self.backup_server is not None and self.backup_destination:
             self.progress.emit("Backing up the world before updating…")

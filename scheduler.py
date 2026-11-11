@@ -130,8 +130,9 @@ class Scheduler(QObject):
         if server.last_restart_date == today:
             return  # already handled (fired or explicitly skipped) today
 
-        if self.is_online(server):
-            # Not stamped: keep checking in case players leave before the window ends.
+        if self.is_online(server) and not (server.when_players_online == "warn" and server.rcon_enabled):
+            # Set to wait (or no RCON to warn them with). Not stamped: keep
+            # checking in case players leave before the window ends.
             skip_key = (server.id, today)
             if skip_key not in self._skip_notified:
                 self._skip_notified.add(skip_key)

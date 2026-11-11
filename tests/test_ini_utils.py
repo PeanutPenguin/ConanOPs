@@ -161,3 +161,15 @@ def test_backup_ini_does_not_clobber_a_same_second_backup(tmp_path, monkeypatch)
     contents = [open(tmp_path / b).read() for b in backups]
     assert any("ServerName=Original" in c for c in contents)
     assert any("ServerName=First" in c for c in contents)
+
+
+def test_every_copy_of_a_repeated_key_is_changed(tmp_path):
+    """2.0: Unreal reads the last copy of a key, so changing only the first
+    left the setting as it was."""
+    p = tmp_path / "ServerSettings.ini"
+    p.write_text("[ServerSettings]\nPVPEnabled=False\nMaxPlayers=10\nPVPEnabled=False\n"
+                 "[Other]\nPVPEnabled=keep\n[ServerSettings]\nPVPEnabled=False\n")
+    ini_utils.apply_known_keys(str(p), {"PVPEnabled": ("ServerSettings", "True")})
+    text = p.read_text()
+    assert text.count("PVPEnabled=True") == 3 and "PVPEnabled=keep" in text
+    assert ini_utils.read_known_keys(str(p), {"PVPEnabled": "ServerSettings"})["PVPEnabled"] == "True"

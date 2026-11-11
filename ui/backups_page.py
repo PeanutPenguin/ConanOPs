@@ -19,6 +19,7 @@ class BackupsPage(QWidget):
         super().__init__(parent)
         self.server: Optional[ServerConfig] = None
         self.on_restore_confirmed = None  # set by main_window: callable(server, backup_entry)
+        self.on_back_up_now = None  # set by main_window: callable(server) -> "" when started, else why not
 
         root = QVBoxLayout(self)
         # embedded: shown inside another page, so skip our own title and margins.
@@ -111,31 +112,16 @@ class BackupsPage(QWidget):
                 "Set a backup destination folder for this server first, on the Settings -> Backups page.",
             )
             return
-        try:
-            entry = backup_manager.create_backup_for_server(
-                self.server, self.server.backup_destination, backup_manager.TRIGGER_MANUAL
-            )
-        except backup_manager.BackupSpaceError as e:
-            QMessageBox.warning(self, "Not enough space", str(e))
+        if self.on_back_up_now is None:
             return
-        if entry is None:
-            saved = backup_manager.saved_dir(self.server.install_dir)
-            if os.path.isdir(saved):
-                QMessageBox.warning(
-                    self, "Backup failed",
-                    "The backup file didn't pass its own integrity check after being written, and "
-                    "was deleted rather than left behind looking valid when it isn't. Check the app's "
-                    "log for details -- this usually means a disk problem (full, or failing) on the "
-                    "backup destination's drive.",
-                )
-            else:
-                QMessageBox.warning(
-                    self, "Backup failed",
-                    f"Could not find the server's Saved folder ({saved}). Conan Exiles creates this the "
-                    f"first time the server actually starts up -- check the Diagnostics settings tab for more.",
-                )
-            return
-        self.refresh()
+        why = self.on_back_up_now(self.server)
+        if why:
+            QMessageBox.warning(self, "Backup not started", why)
+
+    def set_busy(self, busy: bool) -> None:
+        """While a backup is being made: the button says so and can't start another."""
+        self.backup_now_btn.setEnabled(not busy)
+        self.backup_now_btn.setText("Backing Up…" if busy else "Back Up Now")
 
     def _confirm_restore(self, entry) -> None:
         if not self.server:

@@ -53,6 +53,8 @@ def isolated_home(tmp_path, monkeypatch):
     # to be inside it at all.
     monkeypatch.setattr(conanops_paths, "app_install_dir", lambda: str(tmp_path / "app"))
     yield tmp_path
+    import history
+    history.close()  # each test's history files live in its own HOME
 
 
 @pytest.fixture(autouse=True)

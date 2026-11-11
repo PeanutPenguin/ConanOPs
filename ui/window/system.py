@@ -61,6 +61,8 @@ class SystemMixin:
             return "a server update"
         if self._restore_workers:
             return "a backup restore"
+        if self._backup_workers:
+            return "a backup"
         if self._mod_refresh_workers:
             return "a mod download"
         if getattr(self.mods_page, "_active_bisect_dialog", None) is not None:
@@ -108,7 +110,7 @@ class SystemMixin:
         if any(self._online_by_server.get(s.id) for s in running):
             return  # wait for everyone to leave (the window is checked again next minute)
         if (self._update_apply_workers or self._restore_workers or self._mod_refresh_workers
-                or getattr(self.mods_page, "_active_bisect_dialog", None) is not None):
+                or self._backup_workers or getattr(self.mods_page, "_active_bisect_dialog", None) is not None):
             return
 
         self._update_restart_started = True

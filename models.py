@@ -59,6 +59,19 @@ class ServerConfig:
     backup_weekly_keep: int = 4
     backup_interval_hours: int = 6
     backup_destination: str = ""
+    backup_copy_destination: str = ""
+    # When players are online and something needs a restart (the daily
+    # restart, a game or mod update, a scheduled event): "warn" counts down in
+    # game chat at warning_minutes, then goes ahead; "wait" waits until
+    # everyone has left. Warnings need RCON; without it ConanOps always waits.
+    when_players_online: str = "warn"
+    warning_minutes: List[int] = field(default_factory=lambda: [15, 5, 1])
+    # Restart for updated Workshop mods as soon as they come out (with the
+    # same warnings), instead of only picking them up at the next restart.
+    mod_auto_update: bool = True
+    mod_versions: Dict[str, int] = field(default_factory=dict)  # workshop id -> its time_updated when downloaded
+    # Settings changes and messages on a schedule (scheduled_events.py).
+    scheduled_events: List[dict] = field(default_factory=list)  # a second folder (another drive, a synced cloud folder) each backup is copied to
     backup_before_update: bool = True
 
     # --- Restart schedule ---
@@ -177,7 +190,25 @@ class ServerConfig:
         cfg = ServerConfig(**clean)
         cfg._undecryptable = undecryptable
         cfg.ensure_gameplay_defaults()
+        cfg._sanitize_automation()
         return cfg
+
+    def _sanitize_automation(self) -> None:
+        """Hand-edited or damaged values fall back to safe defaults."""
+        if self.when_players_online not in ("warn", "wait"):
+            self.when_players_online = "warn"
+        try:
+            minutes = sorted({int(m) for m in self.warning_minutes if 0 < int(m) <= 120}, reverse=True)
+        except (TypeError, ValueError):
+            minutes = []
+        self.warning_minutes = minutes or [15, 5, 1]
+        if not isinstance(self.mod_versions, dict):
+            self.mod_versions = {}
+        self.mod_versions = {str(k): int(v) for k, v in self.mod_versions.items()
+                             if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        if not isinstance(self.scheduled_events, list):
+            self.scheduled_events = []
+        self.scheduled_events = [dict(e) for e in self.scheduled_events if isinstance(e, dict)]
 
     def ensure_gameplay_defaults(self) -> None:
         """Backfill missing `gameplay` keys from ini_field_specs."""
@@ -273,6 +304,12 @@ class AppConfig:
     ignored_rivals: List[str] = field(default_factory=list)
     # What ConanOps switched off when taking servers over (takeover.restore() undoes these).
     takeover_records: List[dict] = field(default_factory=list)
+    # A weekly summary of each server (uptime, crashes, players, backups) sent
+    # to the alert links: weekday (0 = Monday) and hour.
+    weekly_report_enabled: bool = True
+    weekly_report_day: int = 0
+    weekly_report_hour: int = 9
+    last_weekly_report: str = ""  # ISO week ("2026-W46") it was last sent for
 
     # ---------------------------------------------------------------- io --
     @staticmethod
@@ -393,18 +430,16 @@ class AppConfig:
             duckdns_domain=raw.get("duckdns_domain", ""),
             workshop_update_cutoff=raw.get("workshop_update_cutoff", "2026-09-01"),
         )
-        try:
-            cfg.steam_api_key = secrets_store.unprotect(raw.get("steam_api_key", ""))
-        except secrets_store.DecryptionError:
-            cfg.steam_api_key = ""
-        try:
-            cfg.duckdns_token = secrets_store.unprotect(raw.get("duckdns_token", ""))
-        except secrets_store.DecryptionError:
-            cfg.duckdns_token = ""
-        try:
-            cfg.discord_bot_token = secrets_store.unprotect(raw.get("discord_bot_token", ""))
-        except secrets_store.DecryptionError:
-            cfg.discord_bot_token = ""
+        cfg._undecryptable = {}
+        for attr in ("steam_api_key", "duckdns_token", "discord_bot_token"):
+            cfg._load_secret(attr, raw.get(attr, ""))
+        cfg.weekly_report_enabled = bool(raw.get("weekly_report_enabled", True))
+        for attr, low, high, default in (("weekly_report_day", 0, 6, 0), ("weekly_report_hour", 0, 23, 9)):
+            try:
+                setattr(cfg, attr, min(high, max(low, int(raw.get(attr, default)))))
+            except (TypeError, ValueError):
+                setattr(cfg, attr, default)
+        cfg.last_weekly_report = str(raw.get("last_weekly_report", "") or "")
         cfg.discord_bot_channel_id = str(raw.get("discord_bot_channel_id", "") or "")
         cfg.discord_bot_admin_ids = str(raw.get("discord_bot_admin_ids", "") or "")
         cfg.ignored_server_dirs = [str(x) for x in raw.get("ignored_server_dirs", []) if x]
@@ -417,10 +452,7 @@ class AppConfig:
         cfg.takeover_records = [dict(x) for x in raw.get("takeover_records", []) if isinstance(x, dict)]
         if "alert_discord_url" in raw or "alert_ntfy_url" in raw:
             for attr in ("alert_discord_url", "alert_ntfy_url"):
-                try:
-                    setattr(cfg, attr, secrets_store.unprotect(raw.get(attr, "")))
-                except secrets_store.DecryptionError:
-                    setattr(cfg, attr, "")
+                cfg._load_secret(attr, raw.get(attr, ""))
             cfg.discord_status_enabled = bool(raw.get("discord_status_enabled", False))
         else:
             # Older configs had per-server alert links; use the first server's.
@@ -432,6 +464,26 @@ class AppConfig:
         if cfg.active_server_id not in {s.id for s in cfg.servers}:
             cfg.active_server_id = cfg.servers[0].id
         return cfg
+
+    def _load_secret(self, attr: str, raw_value: str) -> None:
+        """A secret Windows can't decrypt (config moved to another PC or
+        Windows account, or the account's password was reset) loads blank,
+        but its stored form is kept and saved back unchanged until a new
+        value is entered, so opening ConanOps once can't destroy it."""
+        try:
+            setattr(self, attr, secrets_store.unprotect(raw_value))
+        except secrets_store.DecryptionError:
+            setattr(self, attr, "")
+            self._undecryptable[attr] = raw_value
+
+    def _protect(self, attr: str) -> str:
+        value = getattr(self, attr)
+        kept = getattr(self, "_undecryptable", {}).get(attr)
+        if not value and kept:
+            return kept
+        if value and kept:
+            self._undecryptable.pop(attr, None)
+        return secrets_store.protect(value)
 
     def save(self, path: Optional[str] = None) -> None:
         path = path or self.default_path()
@@ -462,20 +514,24 @@ class AppConfig:
             "auto_check_app_updates": self.auto_check_app_updates,
             "auto_install_app_updates": self.auto_install_app_updates,
             "last_app_update_check": self.last_app_update_check,
-            "steam_api_key": secrets_store.protect(self.steam_api_key),
+            "steam_api_key": self._protect("steam_api_key"),
             "duckdns_domain": self.duckdns_domain,
             "workshop_update_cutoff": self.workshop_update_cutoff,
-            "duckdns_token": secrets_store.protect(self.duckdns_token),
-            "alert_discord_url": secrets_store.protect(self.alert_discord_url),
-            "alert_ntfy_url": secrets_store.protect(self.alert_ntfy_url),
+            "duckdns_token": self._protect("duckdns_token"),
+            "alert_discord_url": self._protect("alert_discord_url"),
+            "alert_ntfy_url": self._protect("alert_ntfy_url"),
             "discord_status_enabled": self.discord_status_enabled,
-            "discord_bot_token": secrets_store.protect(self.discord_bot_token),
+            "discord_bot_token": self._protect("discord_bot_token"),
             "discord_bot_channel_id": self.discord_bot_channel_id,
             "discord_bot_admin_ids": self.discord_bot_admin_ids,
             "ignored_server_dirs": self.ignored_server_dirs,
             "ignored_rivals": self.ignored_rivals,
             "snoozed_until": self.snoozed_until,
             "takeover_records": self.takeover_records,
+            "weekly_report_enabled": self.weekly_report_enabled,
+            "weekly_report_day": self.weekly_report_day,
+            "weekly_report_hour": self.weekly_report_hour,
+            "last_weekly_report": self.last_weekly_report,
         }
         text = json.dumps(data, indent=2)
         fileio.write_text_atomic(path, text)

@@ -39,6 +39,8 @@ from ui.web_actions import WebActionsMixin
 from ui.window.alerts import AlertsMixin
 from ui.window.backups import BackupsMixin
 from ui.window.finder import FinderMixin
+from ui.window.history import HistoryMixin
+from ui.window.countdown import CountdownMixin
 from ui.window.diagnostic_fixes import DiagnosticFixesMixin
 from ui.window.common import APP_INSTALL_DIR, _NotifyWorker, _sessions_path_for
 from ui.window.network import NetworkMixin
@@ -98,7 +100,7 @@ PAGE_HEADERS = {
 
 
 class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
-                 ModRecoveryMixin, WebActionsMixin):
+                 ModRecoveryMixin, WebActionsMixin, HistoryMixin, CountdownMixin):
     # From the Cloudflare tunnel's thread: (link or "", status text).
     web_tunnel_changed = Signal(str, str)
     admin_mode_problem = Signal(str)
@@ -132,6 +134,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         # Watchdog crash-restart state (per session, not persisted).
         self._watchdog_attempts: Dict[str, int] = {}       # server id -> consecutive crash-restarts this session
         self._watchdog_last_attempt: Dict[str, float] = {} # server id -> time.monotonic() of the last attempt
+        self._init_countdowns()
+        self._answered_since_start: set = set()  # server ids that have answered a query since they started
         self._unresponsive_since: Dict[str, float] = {}    # server id -> time.monotonic() it first stopped answering queries
         self._mod_refresh_workers: Dict[str, ModDownloadWorker] = {}
         self._update_failure_streak: Dict[str, int] = {}   # server id -> consecutive AUTOMATIC update failures
@@ -145,6 +149,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self._files_repaired: set = set()  # server ids whose game files were repaired this crash streak
         self._manual_update_in_progress: set = set()  # server ids with a manual update (Updates page) running
         self._restore_workers: Dict[str, backup_runner.RestoreWorker] = {}
+        self._backup_workers: Dict[str, backup_runner.BackupWorker] = {}
+        self._backup_retry_at: Dict[str, float] = {}   # server id -> monotonic time a failed scheduled backup retries
+        self._backup_copy_alerted: set = set()
+        self._restoring_name: Dict[str, str] = {}
         self._firewall_workers: List[network_setup_runner.FirewallReconcileWorker] = []
         self._notify_workers: List[_NotifyWorker] = []
         # Workers leave the dicts above when their result signal fires, which
@@ -238,6 +246,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.settings_network_page.on_repair_network = self._repair_network_for_active
         self.settings_backups_page.on_apply = self._apply_backups_settings
         self.settings_backups_page.backups_widget.on_restore_confirmed = self._handle_restore
+        self.settings_backups_page.backups_widget.on_back_up_now = (
+            lambda srv: self.start_backup(srv, backup_manager.TRIGGER_MANUAL))
         self.settings_restart_page.on_apply = self._apply_restart
         self.settings_alerts_page.on_apply = self._apply_alerts
 
@@ -877,6 +887,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.players_page.set_server(server)
         self.players_page.set_online_players(online)
         self.settings_backups_page.set_server(server)
+        self._refresh_backup_status(server)
         self.updates_page.set_server(server)
         self.mods_page.set_server(server)
         self.access_page.set_server(server)
@@ -1085,6 +1096,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
     # Unanswered queries for this long mean hung. Generous, so a slow-loading
     # server isn't restarted just before it comes up.
     _HUNG_THRESHOLD_SECONDS = 300
+    # A server that hasn't answered once since it started is still loading.
+    _STARTUP_GRACE_SECONDS = 20 * 60
 
     # Consecutive automatic update failures before an extra "needs attention" alert.
     _UPDATE_FAILURE_ALERT_THRESHOLD = 3
@@ -1250,6 +1263,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             *self._update_check_workers.values(),
             *self._update_apply_workers.values(),
             *self._restore_workers.values(),
+            *self._backup_workers.values(),
             *self._firewall_workers,
         ]
         for worker in still_running:
