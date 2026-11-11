@@ -21,6 +21,8 @@ NAV_SECTIONS = [
         ("dashboard", "Dashboard", "dashboard"),
         ("players", "Players", "players"),
         ("mods", "Mods", "mods"),
+        ("history", "History & World", "history"),
+        ("events", "Events", "events"),
         ("console", "Console", "console"),
         ("settings", "Server Settings", "settings"),
     ]),

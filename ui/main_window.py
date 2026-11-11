@@ -96,6 +96,8 @@ PAGE_HEADERS = {
     "dashboard": ("Dashboard", "{server} at a glance: status, automation and who's online"),
     "players": ("Players", "Everyone who has joined {server}, plus the whitelist and bans"),
     "mods": ("Mods", "Workshop mods, load order and update status"),
+    "history": ("History & World", "{server} over time, and what's in its world"),
+    "events": ("Events", "Settings changes and messages on a schedule for {server}"),
     "console": ("Console", "Send RCON commands to the running server"),
     "settings": ("Server Settings", "Everything ConanOps writes to {server}'s settings files"),
     "app": ("App Settings", "ConanOps itself: startup, remote access, integrations and appearance"),
@@ -313,6 +315,17 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.players_tabs = TabbedPage([("players", "Players", self.players_page),
                                         ("access", "Access (whitelist & bans)", self.access_page)])
 
+        from ui.events_page import EventsPage
+        from ui.history_page import HistoryPage
+        from ui.world_page import WorldPage
+        self.history_page = HistoryPage()
+        self.world_page = WorldPage()
+        self.history_tabs = TabbedPage([("history", "History", self.history_page),
+                                        ("world", "World report", self.world_page)])
+        self.events_page = EventsPage()
+        self.events_page.on_save = self.save_scheduled_event
+        self.events_page.on_delete = self.delete_scheduled_event
+
         self.web_control = web_control.WebControlServer(
             get_active_server=self._active, save_config=self.config.save,
             get_password_hash=lambda: self.config.web_password_hash,
@@ -340,6 +353,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             "dashboard": self.dashboard_page,
             "players": self.players_tabs,
             "mods": self.mods_page,
+            "history": self.history_tabs,
+            "events": self.events_page,
             "console": self.console_page,
             "settings": self.settings_container,
             "app": self.app_settings_page,
@@ -898,6 +913,9 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.players_page.set_online_players(online)
         self.settings_backups_page.set_server(server)
         self._refresh_backup_status(server)
+        self.history_page.set_server(server)
+        self.world_page.set_server(server)
+        self.events_page.set_server(server)
         self.updates_page.set_server(server)
         self.mods_page.set_server(server)
         self.access_page.set_server(server)
@@ -1266,6 +1284,11 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         if active_bisect is not None:
             active_bisect.reject()
 
+        try:
+            self._report_timer.stop()
+            self.world_page.shutdown()
+        except (AttributeError, RuntimeError):
+            pass
         for monitor in self._log_monitors.values():
             monitor.stop()
         for monitor in self._log_monitors.values():

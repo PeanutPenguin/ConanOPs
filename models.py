@@ -207,9 +207,10 @@ class ServerConfig:
             self.mod_versions = {}
         self.mod_versions = {str(k): int(v) for k, v in self.mod_versions.items()
                              if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        import scheduled_events
         if not isinstance(self.scheduled_events, list):
             self.scheduled_events = []
-        self.scheduled_events = [dict(e) for e in self.scheduled_events if isinstance(e, dict)]
+        self.scheduled_events = scheduled_events.load_events(self.scheduled_events)
 
     def ensure_gameplay_defaults(self) -> None:
         """Backfill missing `gameplay` keys from ini_field_specs."""
