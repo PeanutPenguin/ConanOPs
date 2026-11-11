@@ -254,12 +254,16 @@ class WebActionsMixin:
             "backup_weekly_keep": server.backup_weekly_keep,
             "backup_interval_hours": server.backup_interval_hours,
             "backup_destination": server.backup_destination,
+            "backup_copy_destination": server.backup_copy_destination,
             "backup_before_update": server.backup_before_update,
         }
         values["restart"] = {
             "restart_enabled": server.restart_enabled,
             "restart_start": server.restart_start,
             "restart_end": server.restart_end,
+            "when_players_online": server.when_players_online,
+            "warning_minutes": ", ".join(str(m) for m in server.warning_minutes),
+            "mod_auto_update": server.mod_auto_update,
         }
         values["alerts"] = {
             "rcon_enabled": server.rcon_enabled,

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from PySide6.QtWidgets import (
     QLabel, QLineEdit, QCheckBox, QHBoxLayout, QVBoxLayout, QPushButton,
-    QFrame,
+    QFrame, QComboBox,
 )
 
 from theme_config import load_theme
@@ -18,6 +18,32 @@ def _valid_hhmm(s: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def parse_minutes(text) -> "list | None":
+    """ "15, 5, 1" -> [15, 5, 1] (largest first, no repeats); None if it isn't valid."""
+    if isinstance(text, (list, tuple)):
+        parts = [str(p) for p in text]
+    else:
+        parts = [p for p in str(text or "").replace(";", ",").replace(" ", ",").split(",") if p.strip()]
+    try:
+        values = sorted({int(p.strip()) for p in parts}, reverse=True)
+    except ValueError:
+        return None
+    if not values or len(values) > 6 or any(v < 1 or v > 60 for v in values):
+        return None
+    return values
+
+
+def format_minutes(value) -> str:
+    vals = parse_minutes(value)
+    return ", ".join(str(v) for v in vals) if vals else str(value or "")
+
+
+def normalize_minutes(text: str) -> str:
+    """The text as it's saved, so "1,5,15" and "15, 5, 1" count as the same."""
+    vals = parse_minutes(text)
+    return ", ".join(str(v) for v in vals) if vals else text.strip()
 
 
 def _row(label_text: str, widget) -> QVBoxLayout:
@@ -85,12 +111,14 @@ class SettingsRestartPage(SettingsPageBase):
         self.suggestion_label.setWordWrap(True)
         panel_layout.addWidget(self.suggestion_label)
 
-        note = QLabel("If anyone's online during this window, ConanOps skips that day and retries next time.")
+        note = QLabel("The restart happens once a day inside this window. What happens if people are "
+                      "playing is set below.")
         note.setObjectName("Dim")
         note.setWordWrap(True)
         panel_layout.addWidget(note)
         card_layout.addWidget(self.panel)
         self.form_layout.addWidget(schedule_card)
+        self.form_layout.addWidget(self._build_warning_card())
 
         activity_card = QFrame()
         activity_card.setObjectName("Card")
@@ -140,6 +168,80 @@ class SettingsRestartPage(SettingsPageBase):
 
         self._refresh_suggestion()
 
+    def _build_warning_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("Card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+        title = QLabel("When players are online")
+        title.setObjectName("SectionTitle")
+        lay.addWidget(title)
+        intro = QLabel("Applies to the daily restart, game and mod updates, and scheduled events.")
+        intro.setObjectName("Dim")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        self.players_combo = QComboBox()
+        self.players_combo.addItem("Warn them in game chat, then restart", "warn")
+        self.players_combo.addItem("Wait until everyone has left", "wait")
+        self.players_combo.setToolTip("Warnings are sent with RCON. With RCON off, ConanOps always waits.")
+        lay.addLayout(_row("If people are playing", self.players_combo))
+        self.register_field("when_players_online", self.players_combo, lambda w: w.currentData(),
+                            lambda w, v: w.setCurrentIndex(max(0, w.findData(v))), self.players_combo.currentIndexChanged)
+
+        self.warning_edit = QLineEdit()
+        self.warning_edit.setPlaceholderText("15, 5, 1")
+        self.warning_edit.setFixedWidth(200)
+        self.warning_edit.setToolTip("Minutes before the restart to post a warning, largest first, e.g. 15, 5, 1. "
+                                     "The first one is how long the countdown takes.")
+        lay.addLayout(_row("Warn at (minutes before)", self.warning_edit))
+        self.register_field("warning_minutes", self.warning_edit, lambda w: normalize_minutes(w.text()),
+                            lambda w, v: w.setText(format_minutes(v)), self.warning_edit.textChanged)
+        self.warning_edit.textChanged.connect(self._check_times)
+        self.players_combo.currentIndexChanged.connect(lambda _i: self._sync_warning_enabled())
+
+        self.rcon_note = QLabel("")
+        self.rcon_note.setObjectName("Dim")
+        self.rcon_note.setWordWrap(True)
+        lay.addWidget(self.rcon_note)
+        self.warning_note = QLabel("If everyone leaves during the countdown, the restart goes ahead straight away. "
+                                   "Starting, stopping or restarting the server yourself calls it off.")
+        self.warning_note.setObjectName("Dim")
+        self.warning_note.setWordWrap(True)
+        lay.addWidget(self.warning_note)
+
+        self.mod_update_check = QCheckBox("Update Workshop mods automatically")
+        self.mod_update_check.setToolTip("ConanOps checks the Workshop every hour. When a mod you use is updated, "
+                                         "it warns players, then restarts the server with the new version.")
+        lay.addWidget(self.mod_update_check)
+        self.register_field("mod_auto_update", self.mod_update_check, lambda w: w.isChecked(),
+                            lambda w, v: w.setChecked(bool(v)), self.mod_update_check.toggled)
+        mod_note = QLabel("Checks the Steam Workshop every hour. When one of this server's mods is updated, "
+                          "players get the same warning, then the server restarts with the new version so "
+                          "people can keep joining.")
+        mod_note.setObjectName("Dim")
+        mod_note.setWordWrap(True)
+        lay.addWidget(mod_note)
+        self.rcon_enabled = True
+        self._sync_warning_enabled()
+        return card
+
+    def set_rcon_enabled(self, on: bool) -> None:
+        """Warnings need RCON; shown so "warn" isn't a silent wait."""
+        self.rcon_enabled = bool(on)
+        self._sync_warning_enabled()
+
+    def _sync_warning_enabled(self) -> None:
+        warn = self.players_combo.currentData() == "warn"
+        self.warning_edit.setEnabled(warn)
+        if warn and not self.rcon_enabled:
+            self.rcon_note.setText("RCON is off for this server, so ConanOps can't post warnings and will wait "
+                                   "until everyone has left. Turn RCON on under Alerts & RCON.")
+            self.rcon_note.show()
+        else:
+            self.rcon_note.hide()
+
     def _sync_chart_window(self) -> None:
         def hour(text: str):
             return datetime.strptime(text.strip(), "%H:%M").hour if _valid_hhmm(text) else None
@@ -154,7 +256,8 @@ class SettingsRestartPage(SettingsPageBase):
     def _check_times(self) -> None:
         start_ok = _valid_hhmm(self.start_edit.text())
         end_ok = _valid_hhmm(self.end_edit.text())
-        self._times_valid = start_ok and end_ok
+        minutes_ok = parse_minutes(self.warning_edit.text()) is not None
+        self._times_valid = start_ok and end_ok and minutes_ok
         self._sync_chart_window()
         self.time_error_label.setVisible(not self._times_valid)
         if not self._times_valid:
@@ -163,7 +266,13 @@ class SettingsRestartPage(SettingsPageBase):
                 bad.append("start")
             if not end_ok:
                 bad.append("end")
-            self.time_error_label.setText(f"Quiet hours {' and '.join(bad)} time must be in HH:MM (24-hour) format.")
+            problems = []
+            if bad:
+                problems.append(f"Quiet hours {' and '.join(bad)} time must be in HH:MM (24-hour) format.")
+            if not minutes_ok:
+                problems.append("Warn at: enter up to 6 whole minutes between 1 and 60, separated by commas, "
+                                "like 15, 5, 1.")
+            self.time_error_label.setText(" ".join(problems))
         # Re-check explicitly: signal connection order would leave Apply one keystroke stale.
         self._update_pending_ui()
 

@@ -790,6 +790,8 @@ class WebApi:
                 "duckdns_domain": c.duckdns_domain, "duckdns_token_set": bool(c.duckdns_token),
                 "alert_discord_set": bool(c.alert_discord_url), "alert_ntfy_set": bool(c.alert_ntfy_url),
                 "discord_status_enabled": bool(c.discord_status_enabled),
+                "weekly_report": {"enabled": bool(c.weekly_report_enabled), "day": c.weekly_report_day,
+                                  "hour": c.weekly_report_hour},
                 "discord_bot_token_set": bool(c.discord_bot_token), "discord_bot_channel_id": c.discord_bot_channel_id,
                 "discord_bot_admin_ids": c.discord_bot_admin_ids,
                 "discord_bot_problem": getattr(self.win, "discord_bot_problem", ""),
@@ -827,6 +829,8 @@ class WebApi:
             "alert_discord_url": lambda v: self._set_alerts(discord=str(v or "")),
             "alert_ntfy_url": lambda v: self._set_alerts(ntfy=str(v or "")),
             "discord_status_enabled": lambda v: self._set_alerts(status=bool(v)),
+            "weekly_report": self._set_weekly_report,
+            "send_weekly_report": lambda v: self._send_weekly_report(),
             "discord_bot_token": lambda v: self._set_bot(token=str(v or "")),
             "discord_bot_channel_id": lambda v: self._set_bot(channel=str(v or "")),
             "discord_bot_admin_ids": lambda v: self._set_bot(admins=str(v or "")),
@@ -868,6 +872,25 @@ class WebApi:
             except ValueError as e:
                 raise WebActionError(str(e)) from None
         return self._result(self.gui(act)[1], "Saved.")
+
+    def _set_weekly_report(self, value) -> dict:
+        if not isinstance(value, dict):
+            raise WebActionError("Nothing to save.")
+
+        def act():
+            c = self.win.config
+            try:
+                self.win.app_settings_page.set_weekly_report(
+                    bool(value.get("enabled", c.weekly_report_enabled)),
+                    int(value.get("day", c.weekly_report_day)), int(value.get("hour", c.weekly_report_hour)))
+            except (TypeError, ValueError) as e:
+                raise WebActionError(str(e) if isinstance(e, ValueError) and "Pick" in str(e)
+                                     else "Pick a day of the week and an hour.") from None
+        return self._result(self.gui(act)[1], "Saved.")
+
+    def _send_weekly_report(self) -> dict:
+        message = self.gui(self.win.send_weekly_report_now)[0]
+        return {"ok": True, "message": message or "Sent."}
 
     def _set_bot(self, token=None, channel=None, admins=None) -> dict:
         def act():

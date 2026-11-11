@@ -899,6 +899,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
                 page.load_committed(values)
         self.settings_identity_page.set_install_dir(server.install_dir)
         self.settings_restart_page._refresh_suggestion()
+        self.settings_restart_page.set_rcon_enabled(server.rcon_enabled)
         self.diagnostics_page.on_server_switched()
 
     def _reserved_ports_for_active(self) -> set:
@@ -1006,8 +1007,11 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.config.save()
 
     def _apply_restart(self, values: dict, server: Optional[ServerConfig] = None) -> None:
+        from ui.settings_restart_page import parse_minutes
         s = server or self._active()
         for k, v in values.items():
+            if k == "warning_minutes":
+                v = parse_minutes(v) or [15, 5, 1]
             setattr(s, k, v)
         self.config.save()
 
@@ -1027,6 +1031,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             })
         if self.config.active_server_id == s.id:
             self.console_page.set_server(s)
+            self.settings_restart_page.set_rcon_enabled(s.rcon_enabled)
 
 
     # ---------------------------------------------------------- actions --

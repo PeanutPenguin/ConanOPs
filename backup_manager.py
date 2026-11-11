@@ -168,6 +168,8 @@ def _sqlite_copy(src: str, dst: str) -> bool:
             target = sqlite3.connect(dst)
             try:
                 source.backup(target)  # one step: one consistent read
+                if str(target.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+                    target.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # everything into the .db file
             finally:
                 target.close()
         finally:
@@ -206,11 +208,17 @@ def _snapshot_worlds(saved: str, snap_dir: str, live: bool, settle=None) -> tupl
                 if os.path.exists(leftover):
                     os.remove(leftover)
             use_sqlite = not live or _journal_mode(src) == "wal"
-            if not (use_sqlite and _sqlite_copy(src, dst)):
+            via_sqlite = use_sqlite and _sqlite_copy(src, dst)
+            if not via_sqlite:
                 if live and settle is not None:
                     settle()
                 _file_copy(src, dst)
             ok = _quick_check(dst) is not False
+            # SQLite's own copy is complete in the .db file; checking it can
+            # leave empty -wal/-shm files beside it, which don't belong in a backup.
+            for extra in (dst + "-shm", dst + "-wal"):
+                if os.path.exists(extra) and (extra.endswith("-shm") or via_sqlite or os.path.getsize(extra) == 0):
+                    os.remove(extra)
             if ok:
                 break
             _log.warning(f"The copy of {os.path.basename(src)} didn't pass SQLite's check"
