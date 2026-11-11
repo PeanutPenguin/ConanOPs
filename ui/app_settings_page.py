@@ -54,6 +54,9 @@ class _CallWorker(QThread):
         self.finished_call.emit(result)
 
 
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
 def _color_row(label_text: str, initial_hex: str):
     row = QWidget()
     row.setObjectName("TransparentRow")
@@ -809,12 +812,75 @@ class AppSettingsPage(QWidget):
         lay.addWidget(self.discord_bot_guide)
         lay = card_lay
 
+        # Weekly report: a summary of the week for each server, sent with the alerts.
+        report_title = QLabel("Weekly report")
+        report_title.setObjectName("SectionTitle")
+        lay.addWidget(report_title)
+        report_note = QLabel("Once a week, each server's uptime, crashes, restarts, players and backups for the "
+                             "past seven days, sent to the Discord and ntfy links above.")
+        report_note.setObjectName("Dim")
+        report_note.setWordWrap(True)
+        lay.addWidget(report_note)
+        self.weekly_report_check = QCheckBox("Send a weekly report")
+        self.weekly_report_check.setChecked(self.config.weekly_report_enabled)
+        lay.addWidget(self.weekly_report_check)
+        when_row = QHBoxLayout()
+        self.weekly_report_day_combo = QComboBox()
+        for i, day in enumerate(WEEKDAYS):
+            self.weekly_report_day_combo.addItem(day, i)
+        self.weekly_report_day_combo.setCurrentIndex(self.config.weekly_report_day)
+        self.weekly_report_hour_combo = QComboBox()
+        for h in range(24):
+            self.weekly_report_hour_combo.addItem(f"{h:02d}:00", h)
+        self.weekly_report_hour_combo.setCurrentIndex(self.config.weekly_report_hour)
+        when_row.addWidget(QLabel("Send it on"))
+        when_row.addWidget(self.weekly_report_day_combo)
+        when_row.addWidget(QLabel("at"))
+        when_row.addWidget(self.weekly_report_hour_combo)
+        when_row.addStretch(1)
+        lay.addLayout(when_row)
+        self.weekly_report_send_btn = QPushButton("Send This Week's Report Now")
+        lay.addWidget(self.weekly_report_send_btn)
+        self.send_weekly_report_now = None  # set by MainWindow
+        self.weekly_report_send_btn.clicked.connect(
+            lambda: self.send_weekly_report_now() if callable(self.send_weekly_report_now) else None)
+        self.weekly_report_check.toggled.connect(lambda _on: self._on_weekly_report_changed())
+        self.weekly_report_day_combo.currentIndexChanged.connect(lambda _i: self._on_weekly_report_changed())
+        self.weekly_report_hour_combo.currentIndexChanged.connect(lambda _i: self._on_weekly_report_changed())
+        self._sync_weekly_report_enabled()
+
         self.alert_error_label = QLabel("")
         self.alert_error_label.setObjectName("ErrorText")
         self.alert_error_label.setWordWrap(True)
         self.alert_error_label.hide()
         lay.addWidget(self.alert_error_label)
         return card
+
+    def _sync_weekly_report_enabled(self) -> None:
+        on = self.weekly_report_check.isChecked()
+        self.weekly_report_day_combo.setEnabled(on)
+        self.weekly_report_hour_combo.setEnabled(on)
+
+    def _on_weekly_report_changed(self) -> None:
+        self.set_weekly_report(self.weekly_report_check.isChecked(), self.weekly_report_day_combo.currentData(),
+                               self.weekly_report_hour_combo.currentData())
+
+    def set_weekly_report(self, enabled: bool, day: int, hour: int) -> None:
+        """Saves the weekly report settings (from this page or the web version)."""
+        day, hour = int(day), int(hour)
+        if not 0 <= day <= 6 or not 0 <= hour <= 23:
+            raise ValueError("Pick a day of the week and an hour.")
+        self.config.weekly_report_enabled = bool(enabled)
+        self.config.weekly_report_day = day
+        self.config.weekly_report_hour = hour
+        self.save_config()
+        for widget, setter, value in ((self.weekly_report_check, "setChecked", bool(enabled)),
+                                      (self.weekly_report_day_combo, "setCurrentIndex", day),
+                                      (self.weekly_report_hour_combo, "setCurrentIndex", hour)):
+            widget.blockSignals(True)
+            getattr(widget, setter)(value)
+            widget.blockSignals(False)
+        self._sync_weekly_report_enabled()
 
     def _alert_test_row(self, lay, fn, edit: QLineEdit):
         row = QHBoxLayout()

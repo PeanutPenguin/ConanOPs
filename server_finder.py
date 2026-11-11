@@ -11,6 +11,9 @@ GUI thread.
 """
 from __future__ import annotations
 
+import functools
+import glob
+import ipaddress
 import os
 import re
 import string
@@ -20,8 +23,10 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
 import applog
+import fileio
 import ini_field_specs
 import ini_utils
+import models
 import process_manager
 
 _log = applog.get_logger(__name__)
@@ -32,7 +37,8 @@ EXE_NAME = os.path.basename(process_manager.EXE_RELATIVE_PATH).lower()
 
 # Launch arguments ConanOps sets itself (build_launch_args); everything else
 # an existing launcher used is kept in ServerConfig.extra_launch_args.
-_OWN_ARGS = ("port", "queryport", "maxplayers", "multihome", "log")
+_OWN_ARGS = ("port", "queryport", "maxplayers", "multihome", "log", "rconport", "rconpassword",
+             "servername", "serverpassword", "adminpassword")
 # These move the Saved folder (world, settings, logs) somewhere ConanOps
 # doesn't look, so taking such a server over could start an empty world.
 _BLOCKING_ARGS = ("usedir", "userdir", "saveddir", "savedir")
@@ -67,6 +73,11 @@ class FoundServer:
     blocker: str = ""                                          # non-empty: can't be taken over safely
     steam_client: bool = False                                 # installed by the Steam app, not SteamCMD
     rivals: list = field(default_factory=list)                 # takeover.Rival entries that also run it
+    admin_password_source: str = ""                            # where it was found (never the value)
+    world_saved_at: float = 0.0                                # newest world save's time; 0: no world
+    world_bytes: int = 0
+    replaced_by: str = ""                                      # Steam says this library's install is another folder
+    likely_leftover: str = ""                                  # why it isn't ticked by default
 
 
 def _norm(path: str) -> str:
@@ -75,6 +86,22 @@ def _norm(path: str) -> str:
 
 def is_install(path: str) -> bool:
     return bool(path) and os.path.isfile(process_manager.server_exe_path(path))
+
+
+def identity(install: str) -> tuple:
+    """What makes two paths the same install: the same server exe on disk,
+    however it's reached (a junction, a symlink, a short 8.3 name, a subst drive)."""
+    try:
+        st = os.stat(process_manager.server_exe_path(install))
+        if st.st_ino:
+            return (st.st_dev, st.st_ino)
+    except OSError:
+        pass
+    return (_norm(os.path.realpath(install)),)
+
+
+def same_install(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and identity(a) == identity(b)
 
 
 def install_root_for(path: str) -> Optional[str]:
@@ -98,7 +125,6 @@ def install_root_for(path: str) -> Optional[str]:
     hits = []
     for sub in ("*", os.path.join("*", "*"), os.path.join("steamapps", "common", "*")):
         try:
-            import glob
             hits += [d for d in glob.glob(os.path.join(glob.escape(p), sub)) if is_install(d)]
         except OSError:
             continue
@@ -106,8 +132,10 @@ def install_root_for(path: str) -> Optional[str]:
     return unique[0] if len(unique) == 1 else None
 
 
-_EXE_TAIL = re.compile(r"^(.+?)[\\/]+ConanSandbox[\\/]+Binaries[\\/]+Win64[\\/]+"
-                       r"ConanSandboxServer-Win64-Shipping\.exe$", re.IGNORECASE)
+# Either the real server exe or the small ConanSandboxServer.exe starter in
+# the install's main folder, which is what most scripts and guides run.
+_EXE_TAIL = re.compile(r"^(.+?)[\\/]+(?:ConanSandbox[\\/]+Binaries[\\/]+Win64[\\/]+"
+                       r"ConanSandboxServer-Win64-Shipping|ConanSandboxServer)\.exe$", re.IGNORECASE)
 
 
 def _install_from_exe(exe: str) -> Optional[str]:
@@ -116,13 +144,23 @@ def _install_from_exe(exe: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+@functools.lru_cache(maxsize=512)
+def _resolved(p: str) -> str:
+    """The real path, through junctions and short names, so a script naming one
+    spelling of a folder still matches the install found under another."""
+    try:
+        return os.path.realpath(p)
+    except OSError:
+        return os.path.abspath(p)
+
+
 def path_key(p: str) -> str:
     """A path as Windows compares it: one slash style, no trailing slash, any case."""
     p = (p or "").strip().strip('"')
     if not p:
         return ""
     if os.name == "nt":
-        p = os.path.abspath(p)
+        p = _resolved(p)
     return re.sub(r"[\\/]+", lambda _m: "\\", p).rstrip("\\").casefold()
 
 
@@ -135,6 +173,7 @@ def same_path(a: str, b: str) -> bool:
 class RunningScan:
     by_install: Dict[str, List[str]] = field(default_factory=dict)  # normalized install dir -> cmdline
     unreadable: int = 0  # servers running whose folder Windows wouldn't show us (started as admin)
+    paths: Dict[str, str] = field(default_factory=dict)  # normalized install dir -> as Windows spells it
 
 
 def scan_running() -> RunningScan:
@@ -160,6 +199,7 @@ def scan_running() -> RunningScan:
             install = _install_from_exe(exe) or (_install_from_exe(cmdline[0]) if cmdline else None)
             if install:
                 out.by_install[_norm(install)] = cmdline
+                out.paths[_norm(install)] = install
             else:
                 out.unreadable += 1
         except (psutil.Error, OSError):
@@ -326,11 +366,163 @@ def _ini(install: str, name: str) -> str:
 
 
 def _arg(cmdline: List[str], key: str) -> str:
+    """A launch setting, as -Key=value or in the map argument (Map?Key=value)."""
     for a in cmdline:
         m = re.match(rf"^-?{key}=(.+)$", a.strip(), re.IGNORECASE)
         if m:
-            return m.group(1).strip().strip('"')
+            return _usable(m.group(1))
+        if not a.strip().startswith("-") and "?" in a:
+            m = re.search(rf"\?{key}=([^?]*)", a, re.IGNORECASE)
+            if m and m.group(1).strip():
+                return _usable(m.group(1))
     return ""
+
+
+def _usable(value: str) -> str:
+    """A value without its quotes (Unreal drops them too); "" for a script
+    variable that was never filled in, like %IP%."""
+    value = _unquote(value)
+    return "" if _SCRIPT_VAR.search(value) else value
+
+
+def _unquote(value: str) -> str:
+    value = (value or "").strip()
+    return value[1:-1].strip() if len(value) >= 2 and value[0] == value[-1] == '"' else value
+
+
+# Only in launch options: in an .ini these characters are just part of the
+# value, and a password like 100%sure%! has to survive.
+_SCRIPT_VAR = re.compile(r"%~?\w+%|%~?\d\b|%\*|(?:^|=)!\w+!$")
+# A map argument, or a switch: anything else is left over from reading a
+# script's source (Python list punctuation, a stray comma).
+_MAP_ARG = re.compile(r"^[\w/.]+(\?.*)?$")
+_OWN_URL_OPTION = re.compile(r"\?(?:" + "|".join(_OWN_ARGS) + r")=[^?]*", re.IGNORECASE)
+
+
+def _config_files(install: str) -> List[str]:
+    """Every .ini a setting could be in, in the order the server prefers them."""
+    default = os.path.join(install, "ConanSandbox", "Config")
+    return ([_ini(install, n) for n in ("ServerSettings.ini", "Engine.ini", "Game.ini")] +
+            [os.path.join(default, n) for n in ("DefaultServerSettings.ini", "DefaultEngine.ini", "DefaultGame.ini")])
+
+
+def _search(install: str, args: List[str], key: str, section: str = "") -> tuple:
+    """(value, where, misplaced) for a setting that may not be where it should
+    be. A value in `section` wins over one in the wrong section of any file,
+    since the server ignores those; misplaced says that's all there was."""
+    value = _arg(args, key)
+    if value:
+        return value, "its launch options", False
+    if section:
+        for path in _config_files(install):
+            try:
+                value = _unquote(ini_utils.read_known_keys(path, {key: section}).get(key, ""))
+            except OSError:
+                continue
+            if value:
+                return value, os.path.basename(path), False
+    for path in _config_files(install):
+        try:
+            value = _unquote(ini_utils.read_key_anywhere(path, key))
+        except OSError:
+            continue
+        if value:
+            return value, os.path.basename(path), bool(section)
+    return "", "", False
+
+
+def _read_list(install: str, name: str) -> List[str]:
+    """whitelist.txt / blacklist.txt: one player per line."""
+    try:
+        text = fileio.read_text_detect(os.path.join(install, "ConanSandbox", "Saved", name))[0]
+    except OSError:
+        return []
+    return [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith(("#", ";"))]
+
+
+def _manifests(install: str) -> List[str]:
+    """Where its Steam manifest can be: inside it (SteamCMD's +force_install_dir)
+    or in the library it sits in (<library>\\steamapps\\common\\<install>)."""
+    common = os.path.dirname(install.rstrip("\\/"))
+    return [os.path.join(install, "steamapps", f"appmanifest_{APP_ID}.acf"),
+            os.path.join(os.path.dirname(common), f"appmanifest_{APP_ID}.acf")]
+
+
+def installed_build(install: str) -> str:
+    """The build it's on, so ConanOps doesn't treat it as out of date just
+    because it never recorded one."""
+    folder = os.path.basename(install.rstrip("\\/")).casefold()
+    for i, path in enumerate(_manifests(install)):
+        try:
+            text = fileio.read_text_detect(path)[0]
+        except OSError:
+            continue
+        named = re.search(r'"installdir"\s*"([^"]+)"', text)
+        if i == 1 and not (named and named.group(1).casefold() == folder):
+            continue  # the library's manifest only speaks for the folder it names
+        m = re.search(r'"buildid"\s*"(\d+)"', text)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _replaced_by(install: str) -> str:
+    """The folder Steam says this library's server is in, when that isn't this
+    one: Funcom renamed the folder, and the old one can stay behind."""
+    inside, library = _manifests(install)
+    if os.path.isfile(inside) or os.path.basename(os.path.dirname(install.rstrip("\\/"))).lower() != "common":
+        return ""
+    try:
+        m = re.search(r'"installdir"\s*"([^"]+)"', fileio.read_text_detect(library)[0])
+    except OSError:
+        return ""
+    if not m or m.group(1).casefold() == os.path.basename(install.rstrip("\\/")).casefold():
+        return ""
+    current = os.path.join(os.path.dirname(install.rstrip("\\/")), m.group(1))
+    return m.group(1) if is_install(current) else ""
+
+
+def _read_world(found: FoundServer) -> None:
+    saved = os.path.join(found.install_dir, "ConanSandbox", "Saved")
+    for path in glob.glob(os.path.join(glob.escape(saved), "*.db")):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        found.world_saved_at = max(found.world_saved_at, st.st_mtime)
+        found.world_bytes += st.st_size
+
+
+def mark_leftovers(found: List[FoundServer]) -> None:
+    """When several installs turn up, works out which are old copies rather
+    than servers in use, so they aren't ticked by default. Never one that's
+    running, and only ever a suggestion: each can still be ticked."""
+    for f in found:
+        f.likely_leftover = ""
+    usable = sorted((f for f in found if not f.blocker),
+                    key=lambda f: (not f.running, -f.world_saved_at))
+    if len(usable) < 2:
+        return
+    keep: List[FoundServer] = []
+
+    def ports(f):
+        return (f.values.get("game_port", models.ServerConfig.game_port),
+                f.values.get("query_port", models.ServerConfig.query_port))
+    for f in usable:
+        if f.running:
+            keep.append(f)
+        elif f.replaced_by:
+            f.likely_leftover = f"Steam's install for this library is \"{f.replaced_by}\", so this looks like the old folder."
+        elif not f.world_saved_at and any(g.running or g.world_saved_at for g in usable):
+            f.likely_leftover = "It has no world save, so it looks like a spare copy."
+        else:
+            clash = next((k for k in keep if set(ports(k)) & set(ports(f))), None)
+            if clash:
+                f.likely_leftover = (f"It uses the same ports as \"{clash.name}\", which "
+                                     f"{'is running' if clash.running else 'has the newer world'}; "
+                                     "the two can't run at once.")
+            else:
+                keep.append(f)
 
 
 def split_args(cmdline: List[str]) -> tuple:
@@ -342,6 +534,12 @@ def split_args(cmdline: List[str]) -> tuple:
         a = a.strip()
         if not a:
             continue
+        if _SCRIPT_VAR.search(a):
+            continue  # a script's variable: it means nothing outside that script
+        if not a.startswith("-"):
+            if not _MAP_ARG.match(a):
+                continue
+            a = _OWN_URL_OPTION.sub("", a)  # ConanOps sets these itself
         key = re.match(r"^-?([A-Za-z_]+)", a)
         k = key.group(1).lower() if key else ""
         if a.startswith("-") and k in _OWN_ARGS:
@@ -374,14 +572,44 @@ def windows_split(command: str) -> List[str]:
 
 # The path may hold spaces but never another "X:\", so "nssm.exe E:\Srv\..." starts at E:.
 _EXE_IN_TEXT = re.compile(r'"?([A-Za-z]:\\(?:(?![A-Za-z]:\\)[^"\r\n*?<>|])*?\\ConanSandbox\\Binaries\\Win64\\'
-                          r'ConanSandboxServer-Win64-Shipping\.exe)"?([^\r\n&|]*)', re.IGNORECASE)
+                          r'ConanSandboxServer-Win64-Shipping\.exe)"?([^\r\n&|<>]*)', re.IGNORECASE)
+_STUB_IN_TEXT = re.compile(r'"?([A-Za-z]:\\(?:(?![A-Za-z]:\\)[^"\r\n*?<>|])*?\\ConanSandboxServer\.exe)"?([^\r\n&|<>]*)',
+                           re.IGNORECASE)
+
+
+def exe_matches(text: str) -> list:
+    """(exe path, arguments) for each server exe a script or task names."""
+    return [(m.group(1), m.group(2)) for rx in (_EXE_IN_TEXT, _STUB_IN_TEXT) for m in rx.finditer(text or "")]
+
+
+def _is_comment(line: str) -> bool:
+    low = line.strip().lower()
+    return low.startswith(("::", "#", "//")) or low == "rem" or low.startswith("rem ")
+
+
+_PS_SWITCHES = re.compile(r"(?<!\S)-(?:ArgumentList|NoNewWindow|PassThru|Wait|WindowStyle\s+\w+)(?!\S)", re.IGNORECASE)
+
+
+def _launch_tokens(rest: str) -> List[str]:
+    """Arguments from the text after the exe, including PowerShell's
+    Start-Process form: -ArgumentList "-log -Port=7777" or '-log','-Port=7777'."""
+    tokens = []
+    for t in windows_split(re.sub(r"\s\d$", "", _PS_SWITCHES.sub(" ", rest).strip())):
+        for part in re.split(r"'\s*,\s*'", t):
+            part = part.strip(" ,'[]")
+            tokens += part.split() if part.startswith("-") and " -" in part else [part]
+    return [t for t in tokens if t]
 
 
 def launch_line_in(text: str, install_dir: str) -> Optional[List[str]]:
     """The server command line a script or task uses for this install, if any."""
-    for m in _EXE_IN_TEXT.finditer(text or ""):
-        if same_path(_install_from_exe(m.group(1)) or "", install_dir):
-            return [m.group(1)] + windows_split(m.group(2).strip())
+    for line in (text or "").splitlines():
+        if _is_comment(line):
+            continue
+        for exe, rest in exe_matches(line):
+            if same_path(_install_from_exe(exe) or "", install_dir):
+                # A redirect's stream number ("2>&1") is cut off just before the ">".
+                return [exe] + _launch_tokens(rest)
     return None
 
 
@@ -405,15 +633,22 @@ def _read_mods(found: FoundServer) -> None:
     in modlist.txt is kept as a line, in its place."""
     path = os.path.join(found.install_dir, "ConanSandbox", "Mods", "modlist.txt")
     try:
-        with open(path, encoding="utf-8-sig", errors="replace") as f:
-            lines = [ln.rstrip("\r\n") for ln in f]
+        lines = fileio.read_text_detect(path)[0].splitlines()
     except OSError:
         return
     last_id, missing = "", []
     mods_dir = os.path.dirname(path)
     for raw in lines:
         line = raw.strip()
-        if not line or line.startswith(("#", ";")):
+        if line.startswith(("#", ";")):
+            # A mod switched off by commenting it out: keep it, switched off.
+            pak = line.lstrip("#; \t*").strip().strip('"')
+            m = re.search(r"440900[\\/](\d+)[\\/]", pak)
+            if m and not any(x["id"] == m.group(1) for x in found.mods):
+                name = os.path.splitext(re.split(r"[\\/]", pak)[-1])[0]
+                found.mods.append({"id": m.group(1), "name": name, "enabled": False, "pak": pak})
+            continue
+        if not line:
             continue
         pak = line.lstrip("*").strip().strip('"')
         m = re.search(r"440900[\\/](\d+)[\\/]", pak)
@@ -447,13 +682,16 @@ def read_server(install: str, cmdline: Optional[List[str]] = None, launcher_line
     # reader) used [OnlineSubsystem], so take that as a fallback.
     keys = ("ServerName", "ServerPassword", "GameServerQueryPort")
     eng = ini_utils.read_known_keys(ini_eng, {k: "OnlineSubsystem" for k in keys})
-    eng.update(ini_utils.read_known_keys(ini_eng, {k: "OnlineSubsystemSteam" for k in keys}))
+    # A blank line in one section must not hide the real value in the other.
+    eng.update({k: val for k, val in ini_utils.read_known_keys(
+        ini_eng, {k: "OnlineSubsystemSteam" for k in keys}).items() if val.strip()})
     eng.update(ini_utils.read_known_keys(ini_eng, {"Port": "URL", "MultiHome": "URL"}))
     game = ini_utils.read_known_keys(_ini(install, "Game.ini"), {
         "RconEnabled": "RconPlugin", "RconPassword": "RconPlugin", "RconPort": "RconPlugin",
         "MaxPlayers": "/Script/Engine.GameSession"})
     v = found.values
-    found.name = eng.get("ServerName", "").strip() or os.path.basename(install.rstrip("\\/")) or "Conan Server"
+    server_name = _unquote(eng.get("ServerName", "")) or _search(install, args, "ServerName")[0]
+    found.name = server_name or os.path.basename(install.rstrip("\\/")) or "Conan Server"
 
     def num(*vals) -> Optional[int]:
         for x in vals:
@@ -462,26 +700,58 @@ def read_server(install: str, cmdline: Optional[List[str]] = None, launcher_line
         return None
     for attr, value in (("game_port", num(_arg(args, "Port"), eng.get("Port"))),
                         ("query_port", num(_arg(args, "QueryPort"), eng.get("GameServerQueryPort"))),
-                        ("max_players", num(_arg(args, "MaxPlayers"), game.get("MaxPlayers"))),
-                        ("rcon_port", num(game.get("RconPort")))):
+                        ("max_players", num(_arg(args, "MaxPlayers"), game.get("MaxPlayers"),
+                                            _search(install, args, "MaxPlayers")[0])),
+                        ("rcon_port", num(_arg(args, "RconPort"), game.get("RconPort")))):
         if value:
             v[attr] = value
-    if "ServerPassword" in eng:
-        v["password"] = eng["ServerPassword"].strip()
+    join_password = _arg(args, "ServerPassword") or _unquote(eng.get("ServerPassword", "")) or \
+        _search(install, args, "ServerPassword")[0]
+    if join_password or "ServerPassword" in eng:
+        v["password"] = join_password
     if "RconEnabled" in game:
         v["rcon_enabled"] = game["RconEnabled"].strip().lower() in ("true", "1")
-    if game.get("RconPassword"):
-        v["rcon_password"] = game["RconPassword"].strip()
-    bind = _arg(args, "MULTIHOME") or eng.get("MultiHome", "").strip()
+    rcon_password = _unquote(game.get("RconPassword", "")) or _search(install, args, "RconPassword")[0]
+    if rcon_password:
+        v["rcon_password"] = rcon_password
+    bind = _arg(args, "MULTIHOME") or _unquote(eng.get("MultiHome", ""))
     if bind:
-        v["bind_ip"] = bind
+        try:
+            ipaddress.ip_address(bind)
+            v["bind_ip"] = bind
+        except ValueError:  # an unfilled placeholder like YOUR_PUBLIC_IP
+            found.warnings.append(f"Its launch settings bind it to \"{bind}\", which isn't an IP address, so "
+                                  "ConanOps picks this PC's address instead.")
     found.extra_args, found.blocker = split_args(args)
 
     wanted = {k: spec.section for k, spec in ini_field_specs.ALL_FIELDS_BY_KEY.items() if not k.startswith("__")}
-    for key, raw in ini_utils.read_known_keys(_ini(install, "ServerSettings.ini"), wanted).items():
-        value = _coerce(ini_field_specs.ALL_FIELDS_BY_KEY[key], raw)
-        if value is not None:
-            found.gameplay[key] = value
+    # The server reads its Default file, then the Saved one on top.
+    default_settings = os.path.join(install, "ConanSandbox", "Config", "DefaultServerSettings.ini")
+    for path in (default_settings, _ini(install, "ServerSettings.ini")):
+        for key, raw in ini_utils.read_known_keys(path, wanted).items():
+            value = _coerce(ini_field_specs.ALL_FIELDS_BY_KEY[key], _unquote(raw))
+            if value is not None:
+                found.gameplay[key] = value
+    # Wherever it is, and a blank line in one file doesn't count as "no password".
+    admin, source, misplaced = _search(install, args, "AdminPassword", "ServerSettings")
+    found.gameplay["AdminPassword"] = admin
+    found.admin_password_source = source
+    if admin:
+        _log.info(f"Admin password for {install} read from {source}.")
+        if misplaced:
+            found.warnings.append(f"Its admin password is in {source}, but not under [ServerSettings], so the server "
+                                  "may not be using it. ConanOps will put it in the right place the next time it "
+                                  "starts the server.")
+    else:
+        found.warnings.append("No admin password was found in its settings or launch options, so none is set in "
+                              "ConanOps. If it has one, enter it in Settings.")
+    enabled = ini_utils.read_known_keys(_ini(install, "ServerSettings.ini"), {"EnableWhitelist": "ServerSettings"})
+    if "EnableWhitelist" in enabled:
+        v["whitelist_enabled"] = ini_utils.ini_to_bool(enabled["EnableWhitelist"])
+    for attr, name in (("whitelist_ids", "whitelist.txt"), ("banned_ids", "blacklist.txt")):
+        ids = _read_list(install, name)
+        if ids:
+            v[attr] = ids
 
     # SteamCMD installs put the server at <steamcmd>\steamapps\common\<app>;
     # the Steam app puts it in one of its libraries.
@@ -505,7 +775,17 @@ def read_server(install: str, cmdline: Optional[List[str]] = None, launcher_line
                 break
 
     saved = os.path.join(install, "ConanSandbox", "Saved")
-    if not found.blocker and not os.path.isdir(saved):
+    if found.running and not (v.get("rcon_enabled") and v.get("rcon_password")):
+        found.warnings.append("RCON isn't set up on this running server, so ConanOps can't ask it to save before its "
+                              "first restart: anything since its last autosave would be lost. ConanOps only restarts "
+                              "it automatically when nobody's online; if you restart it yourself, have players log "
+                              "off first. After that restart, saves work normally.")
+    _read_world(found)
+    found.replaced_by = _replaced_by(install)
+    build = installed_build(install)
+    if build:
+        v["installed_buildid"] = build
+    if not found.blocker and not found.world_saved_at:
         found.warnings.append("It has no world save yet, so it will start a new world.")
     return found
 
@@ -516,6 +796,8 @@ def find_unmanaged(managed_dirs: List[str], ignored_dirs: List[str] = (), extra_
     """Servers on this PC that aren't managed (or dismissed) yet; running ones first.
     `launch_lines`: normalized install dir -> command line found in a launcher."""
     skip = {_norm(d) for d in list(managed_dirs) + list(ignored_dirs) if d}
+    skip_ids = {identity(d) for d in list(managed_dirs) + list(ignored_dirs) if d}
+    seen_ids = set()
     if running is None:
         try:
             running = RunningScan(by_install=_running())
@@ -523,7 +805,7 @@ def find_unmanaged(managed_dirs: List[str], ignored_dirs: List[str] = (), extra_
             _log.warning(f"Couldn't list running servers: {e}")
             running = RunningScan()
     seen, out = set(), []
-    for d in list(running.by_install) + candidate_dirs(extra_roots, deep=deep, hints=hints):
+    for d in [running.paths.get(k, k) for k in running.by_install] + candidate_dirs(extra_roots, deep=deep, hints=hints):
         if cancel_event.is_set():
             break
         nd = _norm(d)
@@ -531,9 +813,15 @@ def find_unmanaged(managed_dirs: List[str], ignored_dirs: List[str] = (), extra_
             continue
         seen.add(nd)
         if is_install(d):
+            # One install reached by two paths (a junction, say) is one server.
+            ident = identity(d)
+            if ident in skip_ids or ident in seen_ids:
+                continue
+            seen_ids.add(ident)
             try:
                 out.append(read_server(d, running.by_install.get(nd), (launch_lines or {}).get(path_key(d))))
             except Exception as e:  # noqa: BLE001
                 _log.warning(f"Couldn't read the server at {d}: {e}")
-    out.sort(key=lambda f: (bool(f.blocker), not f.running))
+    mark_leftovers(out)
+    out.sort(key=lambda f: (bool(f.blocker), bool(f.likely_leftover), not f.running))
     return out

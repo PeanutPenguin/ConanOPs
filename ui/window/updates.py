@@ -25,8 +25,25 @@ class UpdatesMixin:
         self._notify(server, f"Updated to build {buildid}.", title="Update Applied")
         self._update_failure_streak.pop(server.id, None)  # a success (manual or automatic) clears any building streak
 
+    def _settle_unknown_build(self, server: ServerConfig, latest_buildid) -> None:
+        """A taken-over server with no Steam manifest: its build can't be known,
+        and "unknown" mustn't count as out of date, or ConanOps would stop and
+        update it the moment nobody's online. Counts from the current build, so
+        the next real update is caught."""
+        if not latest_buildid or server.installed_buildid or not server.adopted:
+            return
+        import server_finder
+        found = server_finder.installed_build(server.install_dir) if server.install_dir else ""
+        server.installed_buildid = found or latest_buildid
+        self.config.save()
+        if not found:
+            self._notify(server, "ConanOps couldn't tell which game build this server is on, so it will update when "
+                                 "the next one comes out. If players can't join because it's out of date, run an "
+                                 "update from the Updates page.", title="Server Build Unknown")
+
     def _on_restart_update_check(self, server: ServerConfig, latest_buildid) -> None:
         self._update_check_workers.pop(server.id, None)
+        self._settle_unknown_build(server, latest_buildid)
         if latest_buildid and latest_buildid != server.installed_buildid:
             self._notify(server, f"Update {latest_buildid} found during scheduled restart -- updating now.", title="Scheduled Restart")
             self._start_update_apply(server)
@@ -62,13 +79,17 @@ class UpdatesMixin:
             return  # not stamped, so a failed check retries soon
         server.last_update_check_at = datetime.now().isoformat()
         self.config.save()
+        self._settle_unknown_build(server, latest_buildid)
         if latest_buildid == server.installed_buildid:
             return
-        online = bool(self._online_by_server.get(server.id))
-        if online:
-            return  # leave it pending -- next check, or the next scheduled restart, will catch it
-        self._notify(server, f"Update {latest_buildid} detected and nobody's online -- updating now.", title="Auto-Update")
-        self._start_update_apply(server)
+        def update_now(srv=server, build=latest_buildid):
+            if self._is_update_busy(srv):
+                return
+            self._notify(srv, f"Game update {build} found -- updating now.", title="Auto-Update")
+            self._start_update_apply(srv)
+        # With players online: warned in game first, or (set to wait) left
+        # for the next check or the next scheduled restart.
+        self._with_warning(server, "update", update_now)
 
     def _start_update_apply(self, server: ServerConfig, relaunch_after: bool = False) -> None:
         """Automatic update: UpdateWorker stops the server, backs up the closed
@@ -108,12 +129,14 @@ class UpdatesMixin:
             self._update_retry_pending.discard(server.id)
             self.config.save()
             self._notify(server, f"Updated to build {server.installed_buildid}.", title="Update Applied")
+            self._record_event(server, "update", f"build {server.installed_buildid}")
             self._update_failure_streak.pop(server.id, None)
             self.updates_page.record_result(server, True, automatic=True)
             self._update_mods_then_relaunch(server, was_running, watch=True)
             return
 
         self.updates_page.record_result(server, False, automatic=True)
+        self._record_event(server, "update_failed", (result.output or "")[-300:])
         streak = self._update_failure_streak.get(server.id, 0) + 1
         self._update_failure_streak[server.id] = streak
         self._handle_update_failure(server, result, was_running)
@@ -137,6 +160,11 @@ class UpdatesMixin:
                         "locked). See the app's console output for SteamCMD's log.",
         }
         why = reasons.get(getattr(result, "reason", ""), "The update didn't finish -- see the app's console output.")
+        if getattr(result, "reason", "") == "still_running":
+            # Nothing was changed and the server is still up on its old build.
+            self._known_running[server.id] = True
+            self._notify(server, f"Automatic update not done. {result.output}", title="Update Failed")
+            return
         if not was_running:
             self._notify(server, f"Automatic update failed. {why}", title="Update Failed")
             return
@@ -171,6 +199,7 @@ class UpdatesMixin:
         # All mods, so a disabled one isn't stale when re-enabled.
         mod_ids = [m["id"] for m in server.mods]
         if not mod_ids or not server.steamcmd_dir:
+            self._after_mod_download(server, False)
             self._relaunch_if_was_running(server, was_running, watch=watch)
             return
         existing = self._mod_refresh_workers.get(server.id)
@@ -191,6 +220,7 @@ class UpdatesMixin:
 
     def _on_post_update_mod_refresh_finished(self, server: ServerConfig, result, was_running: bool, watch: bool = False) -> None:
         self._mod_refresh_workers.pop(server.id, None)
+        self._after_mod_download(server, bool(result.success))
         # Rewrite modlist.txt before relaunch: .pak paths may have changed.
         self._handle_mods_changed(server)
         self.mods_changed_elsewhere(server)
@@ -311,6 +341,7 @@ class UpdatesMixin:
         self._mod_refresh_workers.pop(server.id, None)
         # Stamped even on failure: this low-urgency check just retries in ~24h.
         server.last_mod_check_at = datetime.now().isoformat()
+        self._after_mod_download(server, bool(result.success))
         self._handle_mods_changed(server)
         self.mods_changed_elsewhere(server)
         if not result.success:

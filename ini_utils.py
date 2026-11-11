@@ -92,6 +92,20 @@ def read_known_keys(path: str, wanted: Dict[str, str]) -> Dict[str, str]:
     return found
 
 
+def read_key_anywhere(path: str, key: str) -> str:
+    """The first non-blank value of `key` in any section of the file ("" if
+    none). For finding a setting on an existing server, wherever it was put."""
+    if not os.path.exists(path):
+        return ""
+    key_cf = key.casefold()
+    lines, _encoding = _read_lines(path)
+    for line in lines:
+        m = _KEY_RE.match(line)
+        if m and m.group("key").strip().casefold() == key_cf and m.group("val").strip():
+            return m.group("val").strip()
+    return ""
+
+
 def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
     """updates: {key_name: (section_name, new_value_str)}.
     Updates existing keys in place, appends missing ones under their section
@@ -109,6 +123,7 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
 
     # {casefolded key: (original key name, casefolded section name, value)}
     remaining = {k.casefold(): (k, section.casefold(), value) for k, (section, value) in updates.items()}
+    wanted = dict(remaining)
     current_section_cf = None
     # {casefolded section name: (last line index in that section, original on-disk casing)}
     section_end_index: Dict[str, Tuple[int, str]] = {}
@@ -126,10 +141,12 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
         if not km:
             continue
         key_cf = km.group("key").strip().casefold()
-        hit = remaining.get(key_cf)
+        hit = wanted.get(key_cf)
         if hit and hit[1] == current_section_cf:
+            # Every copy, not just the first: when a key is in a file twice
+            # (or its section is), Unreal uses the last one.
             orig_key, _section_cf, value = hit
-            del remaining[key_cf]
+            remaining.pop(key_cf, None)
             lines[i] = f"{km.group('key').strip()}={value}\n"
 
     by_section_cf: Dict[str, List[Tuple[str, str]]] = {}

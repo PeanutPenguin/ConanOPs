@@ -39,6 +39,11 @@ from ui.web_actions import WebActionsMixin
 from ui.window.alerts import AlertsMixin
 from ui.window.backups import BackupsMixin
 from ui.window.finder import FinderMixin
+from ui.window.history import HistoryMixin
+from ui.window.countdown import CountdownMixin
+from ui.window.events import EventsMixin
+from ui.window.mod_watch import ModWatchMixin
+from ui.window.reports import ReportsMixin
 from ui.window.diagnostic_fixes import DiagnosticFixesMixin
 from ui.window.common import APP_INSTALL_DIR, _NotifyWorker, _sessions_path_for
 from ui.window.network import NetworkMixin
@@ -91,6 +96,8 @@ PAGE_HEADERS = {
     "dashboard": ("Dashboard", "{server} at a glance: status, automation and who's online"),
     "players": ("Players", "Everyone who has joined {server}, plus the whitelist and bans"),
     "mods": ("Mods", "Workshop mods, load order and update status"),
+    "history": ("History & World", "{server} over time, and what's in its world"),
+    "events": ("Events", "Settings changes and messages on a schedule for {server}"),
     "console": ("Console", "Send RCON commands to the running server"),
     "settings": ("Server Settings", "Everything ConanOps writes to {server}'s settings files"),
     "app": ("App Settings", "ConanOps itself: startup, remote access, integrations and appearance"),
@@ -98,7 +105,8 @@ PAGE_HEADERS = {
 
 
 class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
-                 ModRecoveryMixin, WebActionsMixin):
+                 ModRecoveryMixin, WebActionsMixin, HistoryMixin, CountdownMixin, ModWatchMixin, ReportsMixin,
+                 EventsMixin):
     # From the Cloudflare tunnel's thread: (link or "", status text).
     web_tunnel_changed = Signal(str, str)
     admin_mode_problem = Signal(str)
@@ -132,6 +140,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         # Watchdog crash-restart state (per session, not persisted).
         self._watchdog_attempts: Dict[str, int] = {}       # server id -> consecutive crash-restarts this session
         self._watchdog_last_attempt: Dict[str, float] = {} # server id -> time.monotonic() of the last attempt
+        self._init_countdowns()
+        self._init_mod_watch()
+        self._init_reports()
+        self._answered_since_start: set = set()  # server ids that have answered a query since they started
         self._unresponsive_since: Dict[str, float] = {}    # server id -> time.monotonic() it first stopped answering queries
         self._mod_refresh_workers: Dict[str, ModDownloadWorker] = {}
         self._update_failure_streak: Dict[str, int] = {}   # server id -> consecutive AUTOMATIC update failures
@@ -145,6 +157,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self._files_repaired: set = set()  # server ids whose game files were repaired this crash streak
         self._manual_update_in_progress: set = set()  # server ids with a manual update (Updates page) running
         self._restore_workers: Dict[str, backup_runner.RestoreWorker] = {}
+        self._backup_workers: Dict[str, backup_runner.BackupWorker] = {}
+        self._backup_retry_at: Dict[str, float] = {}   # server id -> monotonic time a failed scheduled backup retries
+        self._backup_copy_alerted: set = set()
+        self._restoring_name: Dict[str, str] = {}
         self._firewall_workers: List[network_setup_runner.FirewallReconcileWorker] = []
         self._notify_workers: List[_NotifyWorker] = []
         # Workers leave the dicts above when their result signal fires, which
@@ -238,6 +254,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.settings_network_page.on_repair_network = self._repair_network_for_active
         self.settings_backups_page.on_apply = self._apply_backups_settings
         self.settings_backups_page.backups_widget.on_restore_confirmed = self._handle_restore
+        self.settings_backups_page.backups_widget.on_back_up_now = (
+            lambda srv: self.start_backup(srv, backup_manager.TRIGGER_MANUAL))
         self.settings_restart_page.on_apply = self._apply_restart
         self.settings_alerts_page.on_apply = self._apply_alerts
 
@@ -297,6 +315,17 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.players_tabs = TabbedPage([("players", "Players", self.players_page),
                                         ("access", "Access (whitelist & bans)", self.access_page)])
 
+        from ui.events_page import EventsPage
+        from ui.history_page import HistoryPage
+        from ui.world_page import WorldPage
+        self.history_page = HistoryPage()
+        self.world_page = WorldPage()
+        self.history_tabs = TabbedPage([("history", "History", self.history_page),
+                                        ("world", "World report", self.world_page)])
+        self.events_page = EventsPage()
+        self.events_page.on_save = self.save_scheduled_event
+        self.events_page.on_delete = self.delete_scheduled_event
+
         self.web_control = web_control.WebControlServer(
             get_active_server=self._active, save_config=self.config.save,
             get_password_hash=lambda: self.config.web_password_hash,
@@ -324,6 +353,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             "dashboard": self.dashboard_page,
             "players": self.players_tabs,
             "mods": self.mods_page,
+            "history": self.history_tabs,
+            "events": self.events_page,
             "console": self.console_page,
             "settings": self.settings_container,
             "app": self.app_settings_page,
@@ -385,7 +416,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.scheduler.restart_skipped_online.connect(self._handle_restart_skipped_online)
         self.scheduler.update_check_due.connect(self._handle_update_check_due)
         self.scheduler.mod_refresh_due.connect(self._handle_mod_refresh_due)
+        self.scheduler.mod_watch_due.connect(self._handle_mod_watch_due)
+        self.scheduler.events_due.connect(self._handle_events_due)
         self.scheduler.start()
+        self._start_reports()
 
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._start_health_check)
@@ -412,6 +446,9 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.app_settings_page.on_restart_elevated = self._restart_with_admin_rights
         self.app_settings_page.on_alerts_changed = self.alerts_changed
         self.app_settings_page.get_web_link_line = self.web_link_line
+        self.app_settings_page.send_weekly_report_now = self._send_weekly_report_from_page
+        self.dashboard_page.on_cancel_countdown = lambda: (
+            self.config.get_active() and self.call_off_countdown(self.config.get_active()))
         self.admin_mode_problem.connect(self.app_settings_page.show_admin_mode_problem)
         self.app_settings_page.web_tunnel = self.web_tunnel
         self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel
@@ -625,6 +662,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             self.dashboard_page.hold_notice.set_notice(
                 f"Held stopped. {active.update_hold}" if active.update_hold else ""
             )
+            self.dashboard_page.countdown_notice.set_notice(self.countdown_text(active.id))
             pending = self.updates_page.state_for(active).get("pending", "")
             self.dashboard_page.update_notice.set_notice(
                 f"{pending} -- it installs on its own if automatic updates are on, or install it now."
@@ -748,6 +786,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         server.desired_running = False
 
         others = [s for s in self.config.servers if s.id != server_id]
+        if server.install_dir and not delete_files:
+            # Its files stay, and removing it shouldn't bring it straight back
+            # as a "found" server at the next start. "Add server" still lists it.
+            self.config.ignored_server_dirs = sorted(set(self.config.ignored_server_dirs) | {server.install_dir})
         self.config.remove_server(server_id)
         self.config.save()
         self._refresh_sidebar()
@@ -873,6 +915,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.players_page.set_server(server)
         self.players_page.set_online_players(online)
         self.settings_backups_page.set_server(server)
+        self._refresh_backup_status(server)
+        self.history_page.set_server(server)
+        self.world_page.set_server(server)
+        self.events_page.set_server(server)
         self.updates_page.set_server(server)
         self.mods_page.set_server(server)
         self.access_page.set_server(server)
@@ -884,6 +930,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
                 page.load_committed(values)
         self.settings_identity_page.set_install_dir(server.install_dir)
         self.settings_restart_page._refresh_suggestion()
+        self.settings_restart_page.set_rcon_enabled(server.rcon_enabled)
         self.diagnostics_page.on_server_switched()
 
     def _reserved_ports_for_active(self) -> set:
@@ -921,6 +968,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         """Apply handler for every gameplay/identity page. Keys are Conan ini
         names; "__"-prefixed keys are stored but never written to an .ini."""
         s = server or self._active()
+        # Applying writes the whole page. On a server ConanOps took over, only
+        # write what changed, so anything it couldn't read isn't blanked or reset.
+        if s.adopted:
+            values = {k: v for k, v in values.items() if s.gameplay.get(k) != v}
         s.gameplay.update(values)
         self.config.save()
 
@@ -987,8 +1038,11 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.config.save()
 
     def _apply_restart(self, values: dict, server: Optional[ServerConfig] = None) -> None:
+        from ui.settings_restart_page import parse_minutes
         s = server or self._active()
         for k, v in values.items():
+            if k == "warning_minutes":
+                v = parse_minutes(v) or [15, 5, 1]
             setattr(s, k, v)
         self.config.save()
 
@@ -1008,6 +1062,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             })
         if self.config.active_server_id == s.id:
             self.console_page.set_server(s)
+            self.settings_restart_page.set_rcon_enabled(s.rcon_enabled)
 
 
     # ---------------------------------------------------------- actions --
@@ -1077,6 +1132,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
     # Unanswered queries for this long mean hung. Generous, so a slow-loading
     # server isn't restarted just before it comes up.
     _HUNG_THRESHOLD_SECONDS = 300
+    # A server that hasn't answered once since it started is still loading.
+    _STARTUP_GRACE_SECONDS = 20 * 60
 
     # Consecutive automatic update failures before an extra "needs attention" alert.
     _UPDATE_FAILURE_ALERT_THRESHOLD = 3
@@ -1230,6 +1287,11 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         if active_bisect is not None:
             active_bisect.reject()
 
+        try:
+            self._report_timer.stop()
+            self.world_page.shutdown()
+        except (AttributeError, RuntimeError):
+            pass
         for monitor in self._log_monitors.values():
             monitor.stop()
         for monitor in self._log_monitors.values():
@@ -1242,6 +1304,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
             *self._update_check_workers.values(),
             *self._update_apply_workers.values(),
             *self._restore_workers.values(),
+            *self._backup_workers.values(),
             *self._firewall_workers,
         ]
         for worker in still_running:

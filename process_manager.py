@@ -13,8 +13,12 @@ from typing import Optional
 
 import psutil
 
+import applog
+
 from models import ServerConfig
 from proc_utils import hidden_gui_window_kwargs
+
+_log = applog.get_logger(__name__)
 
 EXE_RELATIVE_PATH = os.path.join("ConanSandbox", "Binaries", "Win64", "ConanSandboxServer-Win64-Shipping.exe")
 PROCESS_NAME = "ConanSandboxServer-Win64-Shipping.exe"
@@ -136,6 +140,10 @@ def _sync_keys(path: str, wanted: dict) -> bool:
         return False  # never block a launch over this
 
 
+def server_settings_path(install_dir: str) -> str:
+    return os.path.join(os.path.dirname(game_ini_path(install_dir)), "ServerSettings.ini")
+
+
 def sync_server_ini(server: ServerConfig) -> bool:
     """Makes the name, password, ports and player limit in Engine.ini/Game.ini
     match ConanOps' before launch. The server reads its name only from
@@ -150,14 +158,60 @@ def sync_server_ini(server: ServerConfig) -> bool:
     if server.bind_ip:
         engine["MultiHome"] = ("URL", server.bind_ip)
     wrote = _sync_keys(engine_ini_path(server.install_dir), engine)
+    # Some setups also have the name and password under [OnlineSubsystem]
+    # (Funcom's launcher and older guides write them there). Keep those the
+    # same too, so an old value there can't win; never add the section.
+    try:
+        import ini_utils
+        path = engine_ini_path(server.install_dir)
+        there = ini_utils.read_known_keys(path, {"ServerName": "OnlineSubsystem", "ServerPassword": "OnlineSubsystem"}) \
+            if os.path.exists(path) else {}
+    except OSError:
+        there = {}
+    also = {k: ("OnlineSubsystem", v) for k, v in (("ServerName", server.name), ("ServerPassword", server.password or ""))
+            if k in there}
+    if also:
+        wrote = _sync_keys(engine_ini_path(server.install_dir), also) or wrote
     game = {"MaxPlayers": ("/script/engine.gamesession", str(server.max_players))}
-    return _sync_keys(game_ini_path(server.install_dir), game) or wrote
+    wrote = _sync_keys(game_ini_path(server.install_dir), game) or wrote
+    # A taken-over server's admin password may have come from its old launch
+    # options or another file; keep it in the one file ConanOps edits.
+    admin = str((getattr(server, "gameplay", None) or {}).get("AdminPassword") or "")
+    if getattr(server, "adopted", False) and admin:
+        import ini_utils
+        settings = server_settings_path(server.install_dir)
+        try:
+            # Only when the file has none: one set there (by hand, or from the
+            # game's own server settings) is newer and must not be overwritten.
+            has_one = os.path.exists(settings) and ini_utils.read_known_keys(
+                settings, {"AdminPassword": "ServerSettings"}).get("AdminPassword", "").strip()
+        except OSError:
+            has_one = True
+        if not has_one:
+            wrote = _sync_keys(settings, {"AdminPassword": ("ServerSettings", admin)}) or wrote
+    return wrote
 
 
-def launch(server: ServerConfig) -> subprocess.Popen:
+class StillRunningError(RuntimeError):
+    """The server couldn't be stopped. Usually it was started with admin
+    rights and ConanOps now runs without them, so Windows won't let it end
+    the server."""
+
+
+STILL_RUNNING_MESSAGE = ("The server is still running: Windows didn't let ConanOps stop it. This usually means it "
+                         "was started with admin rights and ConanOps now runs without them. Stop it from Task "
+                         "Manager, or turn on \"Run with admin rights\" in App Settings.")
+
+
+def launch(server: ServerConfig) -> Optional[subprocess.Popen]:
+    """Starts the server. Does nothing (returns None) if it's already running:
+    a second copy on the same folder would fight the first over its world."""
     exe = server_exe_path(server.install_dir)
     if not os.path.exists(exe):
         raise FileNotFoundError(f"Server executable not found: {exe}")
+    if find_running_pid(server.install_dir) is not None:
+        _log.info(f"Not starting {server.name}: it's already running.")
+        return None
     sync_server_ini(server)
     sync_rcon_ini(server)
     args = build_launch_args(server)
@@ -231,28 +285,39 @@ def graceful_stop(server: ServerConfig, timeout: float = 15.0) -> bool:
 
 
 def stop(install_dir: str, timeout: float = 10.0) -> bool:
+    """True once the server has really exited. False if it's still running:
+    Windows refused (it runs with admin rights and ConanOps doesn't) or it
+    didn't exit even when killed. Callers must not touch its files then."""
     pid = find_running_pid(install_dir)
     if pid is None:
         return True
     try:
         proc = psutil.Process(pid)
-        proc.terminate()
-        proc.wait(timeout=timeout)
+    except psutil.NoSuchProcess:
         return True
-    except psutil.TimeoutExpired:
+    for end, wait in ((proc.terminate, timeout), (proc.kill, 5.0)):
         try:
-            proc.kill()
-            # Wait for real exit so ports are free before a relaunch.
-            proc.wait(timeout=5.0)
+            end()
+            proc.wait(timeout=wait)  # real exit, so files and ports are free
             return True
+        except psutil.NoSuchProcess:
+            return True
+        except psutil.AccessDenied:
+            _log.error(f"Windows didn't let ConanOps stop the server in {install_dir} (it's probably running "
+                       "with admin rights).")
+            break
         except psutil.TimeoutExpired:
-            return True  # still didn't confirm exit, but nothing more this function can do -- caller's own backstop (if any) takes over
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return True
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return True
+            continue
+    try:
+        gone = not proc.is_running()
+    except psutil.Error:
+        gone = True
+    if not gone:
+        _log.error(f"The server in {install_dir} is still running after ConanOps tried to stop it.")
+    return gone
 
 
-def restart(server: ServerConfig) -> subprocess.Popen:
-    graceful_stop(server)
+def restart(server: ServerConfig) -> Optional[subprocess.Popen]:
+    if graceful_stop(server) is False:
+        raise StillRunningError(STILL_RUNNING_MESSAGE)
     return launch(server)

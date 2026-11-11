@@ -84,6 +84,9 @@ _ICON_PATHS: Dict[str, str] = {
                 '<circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     "app": '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1'
            'M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+    "history": '<path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/>',
+    "events": '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'
+              '<path d="M8 14h3v3H8z"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "power": '<path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1011.4 0"/>',
     "play": '<path d="M7 4.5v15l12-7.5z"/>',

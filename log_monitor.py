@@ -10,6 +10,7 @@ import re
 import time
 from typing import Optional
 
+import applog
 from PySide6.QtCore import QThread, Signal
 
 STATUS_RE = re.compile(
@@ -20,14 +21,22 @@ LEAVE_RE = re.compile(r"LogNet: Player disconnected: (?P<name>.+)")
 SAVE_RE = re.compile(r"LogSave: World save completed")
 
 
+_log = applog.get_logger(__name__)
+
+
 def find_latest_log(install_dir: str) -> Optional[str]:
     log_dir = os.path.join(install_dir, "ConanSandbox", "Saved", "Logs")
     if not os.path.isdir(log_dir):
         return None
-    candidates = glob.glob(os.path.join(log_dir, "*.log"))
-    if not candidates:
-        return None
-    return max(candidates, key=os.path.getmtime)
+    newest, newest_time = None, None
+    for path in glob.glob(os.path.join(log_dir, "*.log")):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue  # renamed or deleted since the folder was listed (Conan rotates logs at a restart)
+        if newest_time is None or mtime > newest_time:
+            newest, newest_time = path, mtime
+    return newest
 
 
 def _reconstruct_online_players(log_path: str) -> set:
@@ -84,39 +93,10 @@ class LogMonitor(QThread):
 
     def run(self) -> None:
         while self._running:
-            latest = self._latest()
-            if latest and latest != self._current_log:
-                self._current_log = latest
-                if not self._attached_once:
-                    # First attach (not a restart we saw): rebuild who's
-                    # already online, or restarts could kick them unwarned.
-                    self._attached_once = True
-                    online = _reconstruct_online_players(latest)
-                    if online:
-                        self.initial_online_snapshot.emit(online)
-                else:
-                    # A new log file means a restart: skip history and clear
-                    # the online set, so players whose leave line was never
-                    # written (crash) don't block restarts forever.
-                    self.initial_online_snapshot.emit(set())
-                try:
-                    self._position = os.path.getsize(latest)
-                except OSError:
-                    self._position = 0
-            elif latest and latest == self._current_log:
-                # Conan may reuse the filename across restarts; a file
-                # smaller than our position was recreated, so start over.
-                try:
-                    current_size = os.path.getsize(latest)
-                except OSError:
-                    current_size = 0
-                if current_size < self._position:
-                    self._position = 0
-                    self.initial_online_snapshot.emit(set())
-
-            if self._current_log and os.path.exists(self._current_log):
-                self._read_new_lines()
-
+            try:
+                self._poll_once()
+            except Exception as e:  # noqa: BLE001 - one bad read must never stop player tracking for good
+                _log.warning(f"Reading the server log failed this time ({e}); trying again.")
             # Sleep in small steps so stop() takes effect quickly; callers
             # wait() with a timeout, and destroying a running QThread crashes.
             slept = 0.0
@@ -124,6 +104,40 @@ class LogMonitor(QThread):
             while self._running and slept < self.poll_interval:
                 time.sleep(step)
                 slept += step
+
+    def _poll_once(self) -> None:
+        latest = self._latest()
+        if latest and latest != self._current_log:
+            self._current_log = latest
+            if not self._attached_once:
+                # First attach (not a restart we saw): rebuild who's
+                # already online, or restarts could kick them unwarned.
+                self._attached_once = True
+                online = _reconstruct_online_players(latest)
+                if online:
+                    self.initial_online_snapshot.emit(online)
+            else:
+                # A new log file means a restart: skip history and clear
+                # the online set, so players whose leave line was never
+                # written (crash) don't block restarts forever.
+                self.initial_online_snapshot.emit(set())
+            try:
+                self._position = os.path.getsize(latest)
+            except OSError:
+                self._position = 0
+        elif latest and latest == self._current_log:
+            # Conan may reuse the filename across restarts; a file
+            # smaller than our position was recreated, so start over.
+            try:
+                current_size = os.path.getsize(latest)
+            except OSError:
+                current_size = 0
+            if current_size < self._position:
+                self._position = 0
+                self.initial_online_snapshot.emit(set())
+
+        if self._current_log and os.path.exists(self._current_log):
+            self._read_new_lines()
 
     def _read_new_lines(self) -> None:
         try:

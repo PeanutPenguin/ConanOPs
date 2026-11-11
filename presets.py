@@ -127,8 +127,9 @@ BACKUPS = Group(
 
 RESTART = Group(
     "restart", "Daily restart",
-    "A restart once a day keeps the server running smoothly. It only happens when nobody is online; if "
-    "someone stays on for the whole window, that day is skipped.",
+    "A restart once a day keeps the server running smoothly. If people are playing, they're warned in game "
+    "chat 15, 5 and 1 minutes before (this needs RCON), and it goes ahead as soon as everyone has left. To wait "
+    "for an empty server instead, switch to Advanced.",
     [Option("quiet", "Quietest hours", "When players are usually offline, from this server's history.",
             {"restart_enabled": True, "restart_start": "04:00", "restart_end": "06:00"}, recommended=True),
      Option("early", "Early morning", "Every night between 4 and 6 AM.",

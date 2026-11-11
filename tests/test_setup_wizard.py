@@ -304,7 +304,8 @@ def test_install_page_progress_bar_clamps_to_valid_range():
 def _make_backup_zip(path: str) -> None:
     import zipfile
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("Saved/game.db", b"fake db content")
+        from tests.worlds import world_bytes
+        zf.writestr("Saved/game.db", world_bytes("fake db content"))
         zf.writestr("Saved/Config/ServerSettings.ini", "[Foo]\nBar=1\n")
 
 
@@ -757,3 +758,24 @@ def test_default_steamcmd_dir_skips_folders_steamcmd_cant_use():
     b = cfg.add_server("Other")
     b.steamcmd_dir = "C:\\ConanOps\\steamcmd"
     assert cfg.default_steamcmd_dir() == "C:\\ConanOps\\steamcmd"
+
+
+def test_paths_page_refuses_a_managed_install_under_another_path(tmp_path, monkeypatch):
+    import process_manager
+    real = tmp_path / "real" / "S"
+    exe = process_manager.server_exe_path(str(real))
+    os.makedirs(os.path.dirname(exe))
+    open(exe, "w").close()
+    try:
+        (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+    except OSError:
+        pytest.skip("no symlink rights")
+    said = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda _p, title, *a, **k: said.append(title)))
+    wizard = SetupWizard(ServerConfig(id="s2", name="Second"), get_reserved_ports=lambda: set(),
+                         get_reserved_dirs=lambda: {str(real)}, get_default_steamcmd_dir=lambda: "")
+    page = wizard.paths_page
+    page.steamcmd_edit.setText(str(tmp_path / "steamcmd"))
+    page.install_edit.setText(str(tmp_path / "link" / "S"))
+    assert page.validatePage() is False
+    assert "Folder already in use" in said

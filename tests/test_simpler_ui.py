@@ -47,7 +47,7 @@ def test_every_page_key_is_in_one_section():
 
 def test_sidebar_has_six_entries_and_keeps_servers(win):
     from ui.sidebar import NAV_ITEMS
-    assert [k for k, _l in NAV_ITEMS] == ["dashboard", "players", "mods", "console", "settings", "app"]
+    assert [k for k, _l in NAV_ITEMS] == ["dashboard", "players", "mods", "history", "events", "console", "settings", "app"]
     assert win.sidebar.add_server_btn.isVisible() or not win.isVisible()
 
 

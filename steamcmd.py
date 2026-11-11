@@ -31,6 +31,37 @@ _log = applog.get_logger(__name__)
 # (Missing configuration)".
 _FORCE_WINDOWS_PLATFORM_ARGS = ["+@sSteamCmdForcePlatformType", "windows"]
 
+# One SteamCMD at a time per SteamCMD folder: servers share one by default,
+# and two copies running from one folder (both servers updating to the same
+# new build, or a mod download during another server's update) fail or
+# damage its files. The others wait their turn.
+_folder_locks: dict = {}
+_folder_locks_guard = threading.Lock()
+
+
+def _folder_lock(steamcmd_dir: str) -> "threading.RLock":
+    key = os.path.normcase(os.path.abspath(steamcmd_dir or "."))
+    with _folder_locks_guard:
+        return _folder_locks.setdefault(key, threading.RLock())
+
+
+def one_at_a_time(fn):
+    """Runs fn(steamcmd_dir, ...) only while no other SteamCMD runs from that folder."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(steamcmd_dir, *args, **kwargs):
+        lock = _folder_lock(steamcmd_dir)
+        if not lock.acquire(blocking=False):
+            _log.info(f"Waiting for another SteamCMD task in {steamcmd_dir} to finish.")
+            lock.acquire()
+        try:
+            return fn(steamcmd_dir, *args, **kwargs)
+        finally:
+            lock.release()
+    return wrapper
+
+
 # e.g. "Update state (0x61) downloading, progress: 45.32 (390911489 / 862992488)"
 _PROGRESS_RE = re.compile(r"progress:\s*([\d.]+)")
 
@@ -114,6 +145,7 @@ def format_gb(n: int) -> str:
     return f"{n / 1024 ** 3:.1f} GB"
 
 
+@one_at_a_time
 def download_workshop_items(steamcmd_dir: str, workshop_ids: list, max_attempts: int = 2) -> "UpdateResult":
     """Downloads/updates Workshop items into steamapps/workshop/content/440900/<id>/,
     where mod_manager.workshop_pak_path() expects them."""
@@ -232,6 +264,7 @@ def _download(url: str, path: str) -> None:
         shutil.copyfileobj(resp, out)
 
 
+@one_at_a_time
 def install_steamcmd(steamcmd_dir: str, progress: Optional[Callable[[str], None]] = None,
                       should_cancel: Optional[Callable[[], bool]] = None) -> bool:
     """Downloads, extracts and bootstraps steamcmd.exe if missing."""
@@ -285,6 +318,7 @@ def install_steamcmd(steamcmd_dir: str, progress: Optional[Callable[[str], None]
 
 
 
+@one_at_a_time
 def update_server(
     steamcmd_dir: str,
     install_dir: str,
@@ -385,6 +419,7 @@ def get_installed_buildid(install_dir: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+@one_at_a_time
 def get_latest_buildid(steamcmd_dir: str) -> Optional[str]:
     """Current public-branch build id via anonymous app_info_print, or None."""
     exe = steamcmd_exe_path(steamcmd_dir)

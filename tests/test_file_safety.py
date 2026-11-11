@@ -1,4 +1,5 @@
 """1.0.18: state files survive crashes and odd encodings."""
+from tests.worlds import read_world, world_bytes, write_world
 import json
 import os
 
@@ -102,7 +103,7 @@ def test_rcon_rejects_a_reply_that_isnt_rcon():
 def _server_with_save(tmp_path):
     saved = tmp_path / "srv" / "ConanSandbox" / "Saved"
     saved.mkdir(parents=True)
-    (saved / "game.db").write_bytes(b"world")
+    write_world(saved / "game.db", "world")
     return str(tmp_path / "srv"), saved
 
 
@@ -112,12 +113,12 @@ def test_restore_never_writes_outside_the_saved_folder(tmp_path):
     install, saved = _server_with_save(tmp_path)
     evil = tmp_path / "evil.zip"
     with zipfile.ZipFile(evil, "w") as zf:
-        zf.writestr("Saved/game.db", b"restored")
+        zf.writestr("Saved/game.db", world_bytes("restored"))
         zf.writestr("Saved/../../../escaped.ini", b"x")
         zf.writestr("x/Saved/../../../../escaped2.db", b"x")
     entry = backup_manager.BackupEntry(path=str(evil), when=None, trigger="imported", size_bytes=0)
     backup_manager.restore_backup(install, entry)
-    assert (saved / "game.db").read_bytes() == b"restored"
+    assert read_world(saved / "game.db") == "restored"
     assert not any(p.name.startswith("escaped") for p in tmp_path.rglob("*"))
 
 

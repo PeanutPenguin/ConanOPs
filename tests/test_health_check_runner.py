@@ -43,7 +43,7 @@ def test_not_running_server_reports_no_query(monkeypatch, tmp_path):
 
     results = _run_worker_synchronously([server])
 
-    assert results == [("s1", False, None)]
+    assert results == [("s1", False, None, None)]
     assert queried == []  # never queries a server that isn't running
 
 
@@ -55,7 +55,7 @@ def test_running_server_gets_queried(monkeypatch, tmp_path):
 
     results = _run_worker_synchronously([server])
 
-    assert results == [("s1", True, info)]
+    assert [r[:3] for r in results] == [("s1", True, info)]
 
 
 def test_running_but_unresponsive_reports_none_info(monkeypatch, tmp_path):
@@ -65,7 +65,7 @@ def test_running_but_unresponsive_reports_none_info(monkeypatch, tmp_path):
 
     results = _run_worker_synchronously([server])
 
-    assert results == [("s1", True, None)]
+    assert [r[:3] for r in results] == [("s1", True, None)]
 
 
 def test_one_server_failing_does_not_drop_the_rest(monkeypatch, tmp_path):
@@ -84,4 +84,4 @@ def test_one_server_failing_does_not_drop_the_rest(monkeypatch, tmp_path):
 
     results = _run_worker_synchronously([broken_server, ok_server])
 
-    assert results == [("ok", False, None)]
+    assert results == [("ok", False, None, None)]

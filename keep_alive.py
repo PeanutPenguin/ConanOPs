@@ -75,12 +75,19 @@ def watcher_script() -> str:
     exe, args = _app_command()
     q = powershell.ps_str
     workdir = ntpath.dirname(exe) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    # ConanOps running with admin rights: an ordinary task can't read its
+    # path, so a process with ConanOps' own name counts (the packaged app
+    # only; from source it's python, which could be anything).
+    unreadable = ""
+    if getattr(sys, "frozen", False):
+        name = ntpath.splitext(ntpath.basename(exe))[0]
+        unreadable = f" -or ((-not $_.Path) -and ($_.ProcessName -ieq {q(name)}))"
     return (
         f"$exe = {q(exe)}; $on = {q(switch_file())}; $quit = {q(quit_marker())}; $gone = 0; "
         f"while (Test-Path -LiteralPath $on) {{ "
         f"Start-Sleep -Seconds {CHECK_SECONDS}; "
         f"if (Test-Path -LiteralPath $quit) {{ $gone = 0; continue }}; "
-        f"$running = Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -and ($_.Path -ieq $exe) }}; "
+        f"$running = Get-Process -ErrorAction SilentlyContinue | Where-Object {{ ($_.Path -and ($_.Path -ieq $exe)){unreadable} }}; "
         f"if ($running) {{ $gone = 0; continue }}; "
         f"$gone++; "
         f"if ($gone -ge 2 -and (Test-Path -LiteralPath $exe)) {{ "

@@ -39,6 +39,8 @@ const ICONS = {
   up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>',
   trash: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
   logout: '<path d="M14 5h5v14h-5M10 8l-4 4 4 4M6 12h10"/>',
+  history: '<path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/>',
+  events: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h3v3H8z"/>',
 };
 // replaceChildren()/append() would turn a null into the text "null".
 const clean = (kids) => kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false);
@@ -176,21 +178,24 @@ function showNoPassword() {
 // ------------------------------------------------------------------- shell
 // Same pages, order, groups and headings as the app on the PC.
 const NAV_SECTIONS = [
-  ["Manage", [["dashboard", "Dashboard"], ["players", "Players"], ["mods", "Mods"], ["console", "Console"],
-              ["settings", "Server Settings"]]],
+  ["Manage", [["dashboard", "Dashboard"], ["players", "Players"], ["mods", "Mods"], ["history", "History & World"],
+              ["events", "Events"], ["console", "Console"], ["settings", "Server Settings"]]],
   ["System", [["app", "App Settings"]]],
 ];
 const PAGE_HEADERS = {
   dashboard: ["Dashboard", "{server} at a glance: status, automation and who's online"],
   players: ["Players", "Everyone who has joined {server}, plus the whitelist and bans"],
   mods: ["Mods", "Workshop mods, load order and update status"],
+  history: ["History & World", "{server} over time, and what's in its world"],
+  events: ["Events", "Settings changes and messages on a schedule for {server}"],
   console: ["Console", "Send RCON commands to the running server"],
   settings: ["Server Settings", "Everything ConanOps writes to {server}'s settings files"],
   app: ["App Settings", "ConanOps itself: startup, remote access, integrations and appearance"],
   more: ["More", ""],
 };
 const TAB_NAV = [["dashboard", "Dashboard"], ["players", "Players"], ["mods", "Mods"], ["console", "Console"]];
-const MORE_NAV = [["settings", "Server Settings"], ["app", "App Settings"]];
+const MORE_NAV = [["history", "History & World"], ["events", "Events"], ["settings", "Server Settings"],
+                  ["app", "App Settings"]];
 const PC_WIDE = ["app", "more"];  // pages that aren't about one server
 
 function server() { return state.overview && state.overview.servers.find((s) => s.id === state.sid); }
@@ -384,6 +389,9 @@ async function viewDashboard(root) {
       : h("div", { class: "dim" }, "Finish this server's setup in the app on the PC.");
 
     const notices = [];
+    if (s.countdown) notices.push(notice(s.countdown, "",
+      h("button", { class: "btn small", onclick: (e) => act(e.currentTarget, () => api(sp("/countdown/cancel"), {}),
+        { after: paintSoon }) }, "Call It Off")));
     if (s.hold) notices.push(notice((s.running ? "" : "Held stopped. ") + s.hold, "",
       s.running || s.busy ? null : h("button", { class: "btn small", onclick: (e) => act(e.currentTarget,
         () => api(sp("/start"), {}), { after: paintSoon }) }, "Start Anyway")));
@@ -1237,7 +1245,8 @@ async function viewApp(root) {
             textSetting("discord_bot_channel_id", "Channel ID", d.discord_bot_channel_id, { placeholder: "123456789012345678" }),
             textSetting("discord_bot_admin_ids", "Who can use !restart (Discord user IDs, comma-separated)",
               d.discord_bot_admin_ids, { placeholder: "123456789012345678, 234567890123456789" }),
-            foldOutGuide(d.alert_guides.discord_bot))];
+            foldOutGuide(d.alert_guides.discord_bot)),
+          weeklyReportCard(d.weekly_report, refresh)];
       },
       workshop: () => [h("div", { class: "card" },
         textSetting("steam_api_key", "Steam Web API key", d.steam_api_key_set, { secret: true,
@@ -1275,6 +1284,354 @@ async function viewApp(root) {
   poll(panel, paint, 10000);
 }
 
+// ------------------------------------------------------------ history
+const SVGNS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) el.setAttribute(k, v);
+  for (const kid of kids.flat(Infinity)) if (kid) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  for (let mag = -2; mag < 13; mag++) for (const step of [1, 2, 2.5, 5]) { const n = step * 10 ** mag; if (n >= v) return n; }
+  return v;
+}
+function timeLabel(ts, span) {
+  const d = new Date(ts * 1000);
+  if (span <= 36 * 3600) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (span <= 10 * 86400) return d.toLocaleDateString([], { weekday: "short" }) + " " +
+    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+// points: [[unix time, value or null for a gap]]. Drawn in a fixed box and
+// scaled to the card's width, so it needs no layout measuring.
+function lineChart(points, since, until, fmt, color, title, width) {
+  // Drawn at the width it's shown at (less the card's padding), so the text stays its normal size.
+  const W = Math.max(280, Math.round((width || 640) - 34)), H = 170, L = 46, R = 8, T = 8, B = 22;
+  const pw = W - L - R, ph = H - T - B;
+  const vals = points.map((p) => p[1]).filter((v) => v !== null && v !== undefined);
+  const top = niceMax(vals.length ? Math.max(...vals) * 1.1 : 1);
+  const span = Math.max(1, until - since);
+  const x = (t) => L + ((t - since) / span) * pw;
+  const y = (v) => T + ph - Math.min(1, Math.max(0, v / top)) * ph;
+  const kids = [];
+  for (let i = 0; i <= 3; i++) {
+    const yy = T + ph - (ph * i) / 3;
+    kids.push(svg("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: "grid-line" }),
+      svg("text", { x: L - 6, y: yy + 4, "text-anchor": "end", class: "axis" }, fmt((top * i) / 3)));
+  }
+  [[0, "start"], [0.5, "middle"], [1, "end"]].forEach(([f, anchor]) =>
+    kids.push(svg("text", { x: L + pw * f, y: H - 6, "text-anchor": anchor, class: "axis" }, timeLabel(since + span * f, span))));
+  if (!vals.length) {
+    kids.push(svg("text", { x: L + pw / 2, y: T + ph / 2, "text-anchor": "middle", class: "axis" }, "No readings in this period yet"));
+  } else {
+    const runs = [[]];
+    for (const [t, v] of points) {
+      if (v === null || v === undefined) { if (runs[runs.length - 1].length) runs.push([]); continue; }
+      runs[runs.length - 1].push([x(t), y(v), t, v]);
+    }
+    for (const run of runs) {
+      if (!run.length) continue;
+      if (run.length === 1) { kids.push(svg("circle", { cx: run[0][0], cy: run[0][1], r: 2.5, fill: color })); continue; }
+      const line = run.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+      kids.push(svg("path", { d: `${line} L${run[run.length - 1][0].toFixed(1)} ${T + ph} L${run[0][0].toFixed(1)} ${T + ph} Z`,
+        fill: color, "fill-opacity": "0.15", stroke: "none" }));
+      kids.push(svg("path", { d: line, fill: "none", stroke: color, "stroke-width": "1.8", "stroke-linejoin": "round" }));
+    }
+  }
+  const tip = h("div", { class: "chart-tip", hidden: true });
+  const el = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img",
+    "aria-label": vals.length ? `${title}: from ${fmt(Math.min(...vals))} to ${fmt(Math.max(...vals))}` : `${title}: no readings` }, kids);
+  const wrap = h("div", { class: "chart-wrap" }, el, tip);
+  const pts = points.filter((p) => p[1] !== null && p[1] !== undefined);
+  el.addEventListener("pointermove", (e) => {
+    if (!pts.length) return;
+    const box = el.getBoundingClientRect();
+    const t = since + ((e.clientX - box.left) / box.width * W - L) / pw * span;
+    let best = pts[0];
+    for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+    tip.hidden = false;
+    tip.textContent = `${new Date(best[0] * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })} · ${fmt(best[1])}`;
+  });
+  el.addEventListener("pointerleave", () => { tip.hidden = true; });
+  return wrap;
+}
+function chartPoints(d, key, scale) {
+  const step = Math.max(d.sample_every * 2.5, (d.until - d.since) / 240 * 2.5);
+  const out = [];
+  let prev = null;
+  for (const r of d.samples) {
+    if (prev !== null && r.ts - prev > step) out.push([prev + 1, null]);
+    const v = r[key];
+    out.push([r.ts, r.up && v !== null && v !== undefined ? v / (scale || 1) : null]);
+    prev = r.ts;
+  }
+  return out;
+}
+
+async function viewHistoryTabs(root) {
+  const tab = state.sub === "world" ? "world" : "history";
+  const body = h("div", { class: "stack" });
+  put(root, h("div", { class: "tabs", role: "tablist" }, [["history", "History"], ["world", "World report"]].map(([k, label]) =>
+    h("button", { class: "tab-btn" + (k === tab ? " active" : ""), role: "tab", "aria-selected": String(k === tab),
+      onclick: () => go("history", k === "history" ? "" : k) }, label))), body);
+  return tab === "world" ? viewWorld(body) : viewHistory(body);
+}
+
+const RANGES = [[86400, "24 hours"], [7 * 86400, "7 days"], [30 * 86400, "30 days"], [90 * 86400, "90 days"]];
+async function viewHistory(root) {
+  state.historyRange = state.historyRange || 86400;
+  const paint = async () => {
+    const d = await api(sp(`/history?range=${state.historyRange}${state.problemsOnly ? "&problems=1" : ""}`));
+    const sm = d.summary;
+    const theme = (state.overview && state.overview.theme) || {};
+    const watched = d.samples.length ? `ConanOps was watching ${Math.round(sm.watched_seconds / (d.until - d.since) * 100)}% of this time`
+      : "ConanOps records a reading every 5 minutes while it's open on the PC";
+    const chartCard = (title, key, fmt, color, scale) => h("div", { class: "card" }, h("h3", {}, title),
+      lineChart(chartPoints(d, key, scale), d.since, d.until, fmt, color, title, root.clientWidth));
+    put(root,
+      h("div", { class: "row" }, h("div", { class: "seg", role: "group", "aria-label": "Period shown" },
+        RANGES.map(([secs, label]) => h("button", { class: "seg-btn" + (secs === state.historyRange ? " active" : ""),
+          "aria-pressed": String(secs === state.historyRange),
+          onclick: () => { state.historyRange = secs; paint().catch((e) => toast(e.message, "bad")); } }, label))),
+        h("div", { class: "spacer" }), h("span", { class: "dim" }, watched)),
+      h("div", { class: "grid stats" },
+        statCard("Uptime", sm.uptime_percent === null ? "—" : `${sm.uptime_percent.toFixed(1)}%`, ""),
+        statCard("Most players", d.samples.length ? String(sm.peak_players) : "—",
+          sm.avg_players === null ? "" : `${sm.avg_players.toFixed(1)} on average`),
+        statCard("Average CPU", sm.avg_cpu === null ? "—" : `${Math.round(sm.avg_cpu)}%`,
+          sm.peak_mem_mb ? `memory up to ${(sm.peak_mem_mb / 1024).toFixed(1)} GB` : ""),
+        statCard("Crashes and freezes", String(sm.crashes), "")),
+      chartCard("Players online", "players", (v) => v.toFixed(0), theme.accent || "#c9752f"),
+      chartCard("CPU (share of the whole PC)", "cpu", (v) => `${v.toFixed(0)}%`, theme.yellow || "#f0b54a"),
+      chartCard("Memory used by the server", "mem_mb", (v) => `${v.toFixed(1)} GB`, theme.green || "#5fd38a", 1024),
+      h("div", { class: "card" },
+        h("div", { class: "row" }, h("h3", { style: "margin:0" }, "Timeline"), h("div", { class: "spacer" }),
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: !!state.problemsOnly,
+            onchange: (e) => { state.problemsOnly = e.target.checked; paint().catch(() => {}); } }), "Problems only")),
+        d.events.length ? h("div", { class: "list", style: "margin-top:8px" }, d.events.map((e) => h("div", { class: "item" },
+          h("div", { class: "grow" }, h("div", { class: "name" + (e.problem ? " bad-text" : "") }, e.label),
+            e.detail ? h("div", { class: "dim" }, e.detail) : null),
+          h("span", { class: "dim", style: "white-space:nowrap" }, new Date(e.ts * 1000).toLocaleString([], { weekday: "short", day: "numeric",
+            month: "short", hour: "2-digit", minute: "2-digit" })))))
+          : h("div", { class: "empty" }, "Nothing has happened in this period yet.")));
+  };
+  await paint();
+  poll(root, paint, 60000);
+}
+
+function fmtAgo(ts) {
+  if (!ts) return "unknown";
+  const days = Math.floor((Date.now() / 1000 - ts) / 86400);
+  const when = new Date(ts * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+  return days >= 1 ? `${when} (${days} days ago)` : `${when} (today)`;
+}
+const num = (n) => (n === null || n === undefined ? "—" : Number(n).toLocaleString());
+
+async function viewWorld(root) {
+  const paint = async () => {
+    const d = await api(sp("/world"));
+    const rep = d.report;
+    const make = h("button", { class: "btn primary", disabled: d.busy, onclick: (e) =>
+      act(e.currentTarget, () => api(sp("/world"), {}), { after: () => paint() }) },
+      d.busy ? "Making the report…" : rep ? "Make a New Report" : "Make Report");
+    const intro = h("p", { class: "muted", style: "margin:0" }, "Read from the newest backup, never the live world, so " +
+      "it's safe while people play. Funcom doesn't publish how the world is stored, so anything ConanOps can't find " +
+      "in it is left out.");
+    if (!rep || rep.error) {
+      put(root, h("div", { class: "card stack" }, intro, h("div", { class: "row" }, make,
+        h("span", { class: "dim" }, d.busy ? "Unpacking the newest backup and reading the world… a big world takes a minute."
+          : rep ? rep.error : "Make a report to see this server's clans, buildings and inactive players."))));
+      return d.busy;
+    }
+    const theme = (state.overview && state.overview.theme) || {};
+    const growth = rep.growth.map((g) => [Date.parse(g.when) / 1000, g.bytes / 1048576]);
+    put(root,
+      h("div", { class: "card stack" }, intro, h("div", { class: "row" }, make,
+        h("span", { class: "dim" }, `From the backup made ${new Date(rep.backup_when).toLocaleString()}.`))),
+      h("div", { class: "grid stats" },
+        statCard("Characters", num(rep.characters), ""),
+        statCard("Clans", num(rep.clan_count), ""),
+        statCard("Building pieces", num(rep.pieces_total), rep.solo_pieces ? `${num(rep.solo_pieces)} outside clans` : ""),
+        statCard(`Not on for ${rep.inactive_days}+ days`, num(rep.inactive_count),
+          rep.inactive_pieces ? `${num(rep.inactive_pieces)} pieces theirs` : "")),
+      h("div", { class: "card" }, h("h3", {}, "Clans, by how much they've built"),
+        rep.clans.length ? h("div", { class: "list" }, rep.clans.map((c) => h("div", { class: "item" },
+          h("div", { class: "grow" }, h("div", { class: "name" }, c.name),
+            h("div", { class: "dim" }, `${c.members} member${c.members === 1 ? "" : "s"}` +
+              (c.last_active ? ` · last on ${fmtAgo(c.last_active)}` : ""))),
+          h("span", { class: "mono" }, `${num(c.pieces)} pieces`))))
+          : h("div", { class: "empty" }, "No clans found.")),
+      h("div", { class: "card" }, h("h3", {}, `Not on for ${rep.inactive_days}+ days`),
+        rep.inactive.length ? h("div", { class: "list" }, rep.inactive.map((p) => h("div", { class: "item" },
+          h("div", { class: "grow" }, h("div", { class: "name" }, p.name),
+            h("div", { class: "dim" }, [p.clan || "No clan", p.level !== null ? `level ${p.level}` : null,
+              `last on ${fmtAgo(p.last_online)}`].filter(Boolean).join(" · "))),
+          p.pieces ? h("span", { class: "mono" }, `${num(p.pieces)} pieces`) : null)))
+          : h("div", { class: "empty" }, rep.inactive_count === null ? "This world doesn't record when players were last on."
+            : "Everyone has been on recently.")),
+      h("div", { class: "card" }, h("h3", {}, "World file size in each backup"),
+        lineChart(growth, growth.length ? growth[0][0] - (growth.length > 1 ? 0 : 3600) : 0,
+          growth.length ? growth[growth.length - 1][0] : 1, (v) => `${v.toFixed(0)} MB`, theme.accent || "#c9752f", "World size",
+          root.clientWidth)),
+      rep.notes.length ? h("div", { class: "dim", style: "white-space:pre-line" }, rep.notes.join("\n")) : null);
+    return d.busy;
+  };
+  const busy = await paint();
+  state.timer = setInterval(() => { paint().then((b) => { if (!b) stopTimer(); }).catch(() => {}); }, 3000);
+  if (!busy) stopTimer();
+}
+
+// ----------------------------------------------------------------- events
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAYS_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const REPEAT_LABEL = { 0: "Just once", 15: "Every 15 minutes", 30: "Every 30 minutes", 60: "Every hour",
+  120: "Every 2 hours", 180: "Every 3 hours", 240: "Every 4 hours", 360: "Every 6 hours" };
+
+async function viewEvents(root) {
+  let meta = null;
+  const paint = async () => {
+    meta = await api(sp("/events"));
+    const full = meta.events.length >= meta.max_events;
+    put(root,
+      h("p", { class: "muted", style: "margin:0" }, "Change settings on a schedule, such as double XP at weekends, or " +
+        "post a message in game chat at set times. Times are the PC's time."),
+      meta.rcon_enabled ? null : notice("RCON is off for this server, so scheduled messages can't be posted and " +
+        "players won't get warnings before an event's restart (it waits until nobody's on instead)."),
+      h("div", { class: "row" },
+        h("button", { class: "btn primary", disabled: full, onclick: () => editEvent({ kind: "settings", enabled: true,
+          start_day: 4, start: "18:00", end_day: 6, end: "23:00", changes: { PlayerXPRateMultiplier: 2 }, motd: "" }) },
+          "New Settings Event"),
+        h("button", { class: "btn", disabled: full, onclick: () => editEvent({ kind: "message", enabled: true,
+          days: [0, 1, 2, 3, 4, 5, 6], time: "20:00", repeat_minutes: 0, text: "" }) }, "New Scheduled Message")),
+      h("div", { class: "card" }, meta.events.length ? h("div", { class: "list" }, meta.events.map((ev) => h("div", { class: "item" },
+        h("div", { class: "grow" }, h("div", { class: "name" }, ev.name), h("div", { class: "dim" }, ev.when),
+          h("div", { class: "dim" }, ev.what)),
+        h("span", { class: "pill " + (ev.status.startsWith("On") ? "on" : ev.status === "Paused" ? "" : "plain") }, ev.status),
+        h("button", { class: "btn small", onclick: () => editEvent(ev) }, "Edit"),
+        h("button", { class: "btn small danger", "aria-label": `Delete ${ev.name}`, onclick: async (e) => {
+          const b = e.currentTarget;
+          const extra = ev.status.startsWith("On") ? " Its settings are put back now (with a restart if the server's running)." : "";
+          if (await confirmBox(`Delete “${ev.name}”?`, "This can't be undone." + extra, "Delete", true))
+            act(b, () => api(sp("/events/delete"), { id: ev.id }), { after: paint });
+        } }, icon("trash")))))
+        : h("div", { class: "empty" }, "No events yet. Try a settings event for a weekend of double XP, or a message " +
+          "that reminds players of the rules every few hours.")));
+  };
+
+  const editEvent = (ev) => {
+    const settings = meta.settings;
+    const byKey = Object.fromEntries(settings.map((f) => [f.key, f]));
+    const err = h("div", { class: "notice bad", hidden: true });
+    const name = h("input", { type: "text", value: ev.name || "", maxlength: 60,
+      placeholder: ev.kind === "settings" ? "e.g. Double XP weekend" : "e.g. Discord link" });
+    const enabled = h("input", { type: "checkbox", class: "switch", checked: ev.enabled !== false });
+    const fields = [];
+    let collect;
+    if (ev.kind === "settings") {
+      const daily = h("input", { type: "checkbox", checked: !!ev.daily });
+      const daySel = (d) => h("select", { style: "width:auto" }, DAYS_FULL.map((n, i) => h("option", { value: i, selected: i === d }, n)));
+      const sDay = daySel(ev.start_day ?? 4), eDay = daySel(ev.end_day ?? 6);
+      const sTime = h("input", { type: "time", value: ev.start || "18:00", style: "width:auto" });
+      const eTime = h("input", { type: "time", value: ev.end || "23:00", style: "width:auto" });
+      const syncDaily = () => { sDay.hidden = daily.checked; eDay.hidden = daily.checked; };
+      daily.addEventListener("change", syncDaily);
+      syncDaily();
+      const rows = h("div", { class: "stack" });
+      const addRow = (key, value) => {
+        const sel = h("select", {}, settings.map((f) => h("option", { value: f.key, selected: f.key === key }, f.label)));
+        const val = h("input", { type: "text", value: value === undefined ? "" : String(value), style: "width:120px" });
+        const hint = () => {
+          const f = byKey[sel.value];
+          if (!f) return;
+          val.placeholder = f.kind === "bool" ? "true / false" : f.kind === "choice" ? f.choices.map((c) => c.value).join(" / ")
+            : f.min !== null && f.max !== null ? `${f.min} to ${f.max}` : `normally ${f.default}`;
+        };
+        sel.addEventListener("change", hint);
+        hint();
+        const row = h("div", { class: "row change-row" }, h("div", { style: "flex:1;min-width:180px" }, sel), val,
+          h("button", { class: "btn small", type: "button", onclick: () => row.remove() }, "Remove"));
+        row.pair = () => [sel.value, val.value.trim()];
+        rows.append(row);
+      };
+      Object.entries(ev.changes || {}).forEach(([k, v]) => addRow(k, v));
+      if (!rows.children.length) addRow("PlayerXPRateMultiplier", "2");
+      const motd = h("input", { type: "text", value: ev.motd || "", placeholder: "e.g. Double XP until Sunday night!" });
+      fields.push(
+        h("label", { class: "check" }, daily, "Every day (instead of once a week)"),
+        h("div", { class: "row" }, h("span", { class: "dim" }, "From"), sDay, sTime, h("span", { class: "dim" }, "until"), eDay, eTime),
+        h("label", {}, "Settings to change while it's on"), rows,
+        h("button", { class: "btn small", type: "button", onclick: () => addRow(settings[0].key, "") }, "Add a Setting"),
+        h("label", {}, "Message of the day while it's on (optional)"), motd,
+        h("div", { class: "help dim" }, "The server restarts when the event starts and again when it ends, with in-game " +
+          "warnings if people are on. A setting you change by hand during the event is kept when it ends."));
+      collect = () => ({ daily: daily.checked, start_day: Number(sDay.value), start: sTime.value, end_day: Number(eDay.value),
+        end: eTime.value, motd: motd.value,
+        changes: Object.fromEntries([...rows.children].map((r) => r.pair()).filter(([k, v]) => k && v !== "")) });
+    } else {
+      const checks = DAYS.map((d, i) => h("input", { type: "checkbox", checked: (ev.days || []).includes(i), "aria-label": d }));
+      const time = h("input", { type: "time", value: ev.time || "20:00", style: "width:auto" });
+      const repeat = h("select", { style: "width:auto" }, (meta.repeat_choices || [0]).map((m) =>
+        h("option", { value: m, selected: m === (ev.repeat_minutes || 0) }, REPEAT_LABEL[m] + (m ? " after that, until midnight" : ""))));
+      const text = h("input", { type: "text", value: ev.text || "", maxlength: meta.max_message,
+        placeholder: "e.g. Join our Discord: discord.gg/..." });
+      fields.push(
+        h("label", {}, "Days"), h("div", { class: "row" }, DAYS.map((d, i) => h("label", { class: "check" }, checks[i], d))),
+        h("div", { class: "row" }, h("span", { class: "dim" }, "At"), time, repeat),
+        h("label", {}, "Message"), text,
+        h("div", { class: "help dim" }, "Posted in game chat with RCON while the server is running."));
+      collect = () => ({ days: checks.map((c, i) => (c.checked ? i : -1)).filter((i) => i >= 0), time: time.value,
+        repeat_minutes: Number(repeat.value), text: text.value });
+    }
+    const close = () => back.remove();
+    const form = h("form", { class: "modal wide stack", onsubmit: async (e) => {
+      e.preventDefault();
+      err.hidden = true;
+      const body = Object.assign({ id: ev.id, kind: ev.kind, name: name.value, enabled: enabled.checked }, collect());
+      const btn = e.submitter;
+      btn.disabled = true;
+      try {
+        await api(sp("/events/save"), { event: body });
+        close();
+        toast("Saved.", "good");
+        paint().catch(() => {});
+      } catch (x) {
+        put(err, h("div", { class: "text" }, x.message));
+        err.hidden = false;
+      } finally { btn.disabled = false; }
+    } },
+      h("h2", {}, (ev.id ? "Edit " : "New ") + (ev.kind === "settings" ? "Settings Event" : "Scheduled Message")),
+      h("label", {}, "Name"), name,
+      h("div", { class: "field" }, h("div", { class: "top" }, h("label", {}, "Turned on"), enabled)),
+      fields, err,
+      h("div", { class: "row end" }, h("button", { type: "button", class: "btn", onclick: close }, "Cancel"),
+        h("button", { type: "submit", class: "btn primary" }, "Save")));
+    const back = h("div", { class: "modal-back", onclick: (e) => { if (e.target === back) close(); } }, form);
+    document.body.append(back);
+    name.focus();
+  };
+  await paint();
+  poll(root, paint, 15000);
+}
+
+function weeklyReportCard(w, refresh) {
+  const enabled = h("input", { type: "checkbox", class: "switch", checked: w.enabled, id: "a_weekly" });
+  const day = h("select", { style: "width:auto", "aria-label": "Day" }, DAYS_FULL.map((n, i) => h("option", { value: i, selected: i === w.day }, n)));
+  const hour = h("select", { style: "width:auto", "aria-label": "Hour" }, Array.from({ length: 24 }, (_, i) =>
+    h("option", { value: i, selected: i === w.hour }, `${String(i).padStart(2, "0")}:00`)));
+  const save = () => act(null, () => api("/api/app/weekly_report", { value: { enabled: enabled.checked,
+    day: Number(day.value), hour: Number(hour.value) } }), { after: refresh });
+  [enabled, day, hour].forEach((el) => el.addEventListener("change", save));
+  return h("div", { class: "card" }, h("h3", {}, "Weekly report"),
+    h("p", { class: "muted", style: "margin:6px 0 10px" }, "Once a week, each server's uptime, crashes, restarts, " +
+      "players and backups for the past seven days, sent to the Discord and ntfy links above."),
+    h("div", { class: "field" }, h("div", { class: "top" }, h("label", { for: "a_weekly" }, "Send a weekly report"), enabled)),
+    h("div", { class: "row" }, h("span", { class: "dim" }, "Send it on"), day, h("span", { class: "dim" }, "at"), hour),
+    h("button", { class: "btn small", style: "margin-top:10px", type: "button", onclick: (e) =>
+      act(e.currentTarget, () => api("/api/app/send_weekly_report", { value: true })) }, "Send This Week's Report Now"));
+}
+
 async function viewMore(root) {
   put(root, h("div", { class: "more-grid" }, MORE_NAV.map(([k, label]) =>
     h("button", { class: "btn", onclick: () => go(k) }, icon(k), label))),
@@ -1282,7 +1639,7 @@ async function viewMore(root) {
 }
 
 const VIEWS = { dashboard: viewDashboard, players: viewPlayersTabs, mods: viewMods, console: viewConsole,
-  settings: viewSettings, app: viewApp, more: viewMore };
+  history: viewHistoryTabs, events: viewEvents, settings: viewSettings, app: viewApp, more: viewMore };
 
 // -------------------------------------------------------------------- boot
 async function start() {

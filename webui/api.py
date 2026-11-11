@@ -202,6 +202,13 @@ class WebApi:
         a("GET", "/api/servers/{sid}/port-guide", self.port_guide)
         a("POST", "/api/servers/{sid}/install-vc-runtime", self.install_vc_runtime)
         a("POST", "/api/servers/{sid}/repair-network", self.repair_network)
+        a("POST", "/api/servers/{sid}/countdown/cancel", self.countdown_cancel)
+        a("GET", "/api/servers/{sid}/history", self.history)
+        a("GET", "/api/servers/{sid}/world", self.world)
+        a("POST", "/api/servers/{sid}/world", self.world_make)
+        a("GET", "/api/servers/{sid}/events", self.events)
+        a("POST", "/api/servers/{sid}/events/save", self.event_save)
+        a("POST", "/api/servers/{sid}/events/delete", self.event_delete)
         a("GET", "/api/app", self.app_options)
         a("POST", "/api/app/{option}", self.app_set)
 
@@ -217,6 +224,7 @@ class WebApi:
             "address": f"{s.bind_ip or '(no ip)'}:{s.game_port}",
             "hold": s.update_hold or "",
             "busy": w.server_busy(s),
+            "countdown": w.countdown_text(s.id),
             "waiting_for_mod_fix": bool(rec.get("culprits")),
         }
 
@@ -272,6 +280,96 @@ class WebApi:
     def enable_rcon(self, req: Request) -> dict:
         return self._do(req, lambda s: self.win.enable_rcon(s) or "",
                         "RCON is on. It works after the server's next restart.")
+
+    def countdown_cancel(self, req: Request) -> dict:
+        def act():
+            s = self._server(req.params["sid"])
+            return self.win.call_off_countdown(s, "the web version")
+        ok = self.gui(act)[0]
+        return {"ok": bool(ok), "message": "Called off; players have been told." if ok else
+                "There's no countdown to call off."}
+
+    # ------------------------------------------------------------ history --
+    def history(self, req: Request) -> dict:
+        import history
+        from ui.history_page import CHART_POINTS
+        try:
+            span = int(req.query.get("range", "86400"))
+        except ValueError:
+            span = 86400
+        span = max(3600, min(span, history.KEEP_SAMPLES_DAYS * 86400))
+        problems = req.query.get("problems") == "1"
+
+        def read():
+            s = self._server(req.params["sid"])
+            until = time.time()
+            since = until - span
+            rows = history.samples(s.id, since, until, max_points=CHART_POINTS)
+            summ = history.summary(s.id, since, until)
+            evs = history.events(s.id, since, limit=300, kinds=sorted(history.PROBLEM_KINDS) if problems else None)
+            return {
+                "since": since, "until": until, "sample_every": history.SAMPLE_EVERY_SECONDS,
+                "samples": [{"ts": r.ts, "up": r.up, "players": r.players, "cpu": r.cpu, "mem_mb": r.mem_mb}
+                            for r in rows],
+                "summary": {"uptime_percent": summ.uptime_percent, "peak_players": summ.peak_players,
+                            "avg_players": summ.avg_players, "avg_cpu": summ.avg_cpu,
+                            "peak_mem_mb": summ.peak_mem_mb, "watched_seconds": summ.sampled_seconds,
+                            "crashes": summ.count("crash") + summ.count("hang")},
+                "events": [{"ts": e.ts, "kind": e.kind, "label": e.label, "detail": e.detail, "problem": e.problem}
+                           for e in evs],
+            }
+        return self.gui(read)[0]
+
+    def world(self, req: Request) -> dict:
+        def read():
+            s = self._server(req.params["sid"])
+            page = self.win.world_page
+            rep = page.report_for(s.id)
+            return {"busy": page.is_busy(s.id), "report": rep.as_json() if rep is not None else None}
+        return self.gui(read)[0]
+
+    def world_make(self, req: Request) -> dict:
+        def act():
+            return self.win.world_page.make_report(self._server(req.params["sid"]))
+        why = self.gui(act)[0]
+        return {"ok": not why, "message": why or "Making the report… it shows here when it's ready."}
+
+    # ------------------------------------------------------------- events --
+    def events(self, req: Request) -> dict:
+        import scheduled_events as se
+        from ui.events_page import status_text
+
+        def read():
+            s = self._server(req.params["sid"])
+            return [dict(e, when=se.describe_when(e), what=se.describe_what(e), status=status_text(e))
+                    for e in s.scheduled_events], bool(s.rcon_enabled)
+        evs, rcon = self.gui(read)[0]
+        settings = [{"key": f.key, "label": f.label, "kind": f.kind, "min": f.min, "max": f.max,
+                     "default": f.default, "choices": [{"label": l, "value": v} for l, v in (f.choices or [])]}
+                    for f in se.event_settings()]
+        return {"events": evs, "settings": settings, "rcon_enabled": rcon, "max_events": se.MAX_EVENTS,
+                "repeat_choices": list(se.REPEAT_CHOICES), "max_message": se.MAX_MESSAGE}
+
+    def event_save(self, req: Request) -> dict:
+        raw = req.body.get("event")
+        if not isinstance(raw, dict):
+            raise WebActionError("Nothing to save.")
+
+        def act():
+            try:
+                return self.win.save_scheduled_event(self._server(req.params["sid"]), raw)
+            except ValueError as e:
+                raise WebActionError(str(e)) from None
+        ev = self.gui(act)[0]
+        return {"ok": True, "message": "Saved.", "id": ev["id"]}
+
+    def event_delete(self, req: Request) -> dict:
+        eid = str(req.body.get("id", ""))
+
+        def act():
+            return self.win.delete_scheduled_event(self._server(req.params["sid"]), eid)
+        ok = self.gui(act)[0]
+        return {"ok": bool(ok), "message": "Deleted." if ok else "That event isn't there anymore."}
 
     # ------------------------------------------------------------ players --
     def players(self, req: Request) -> dict:
@@ -414,7 +512,8 @@ class WebApi:
                              "trigger": e.trigger, "size_mb": round(e.size_bytes / 2 ** 20, 1)} for e in entries]}
 
     def backup_now(self, req: Request) -> dict:
-        return self._do(req, self.win.back_up_now, "Backed up.", timeout=900)
+        return self._do(req, self.win.back_up_now,
+                        "Backup started. It shows in the list when it's done, and you'll get an alert if it fails.")
 
     def restore(self, req: Request) -> dict:
         import backup_manager
@@ -789,6 +888,8 @@ class WebApi:
                 "duckdns_domain": c.duckdns_domain, "duckdns_token_set": bool(c.duckdns_token),
                 "alert_discord_set": bool(c.alert_discord_url), "alert_ntfy_set": bool(c.alert_ntfy_url),
                 "discord_status_enabled": bool(c.discord_status_enabled),
+                "weekly_report": {"enabled": bool(c.weekly_report_enabled), "day": c.weekly_report_day,
+                                  "hour": c.weekly_report_hour},
                 "discord_bot_token_set": bool(c.discord_bot_token), "discord_bot_channel_id": c.discord_bot_channel_id,
                 "discord_bot_admin_ids": c.discord_bot_admin_ids,
                 "discord_bot_problem": getattr(self.win, "discord_bot_problem", ""),
@@ -826,6 +927,8 @@ class WebApi:
             "alert_discord_url": lambda v: self._set_alerts(discord=str(v or "")),
             "alert_ntfy_url": lambda v: self._set_alerts(ntfy=str(v or "")),
             "discord_status_enabled": lambda v: self._set_alerts(status=bool(v)),
+            "weekly_report": self._set_weekly_report,
+            "send_weekly_report": lambda v: self._send_weekly_report(),
             "discord_bot_token": lambda v: self._set_bot(token=str(v or "")),
             "discord_bot_channel_id": lambda v: self._set_bot(channel=str(v or "")),
             "discord_bot_admin_ids": lambda v: self._set_bot(admins=str(v or "")),
@@ -867,6 +970,25 @@ class WebApi:
             except ValueError as e:
                 raise WebActionError(str(e)) from None
         return self._result(self.gui(act)[1], "Saved.")
+
+    def _set_weekly_report(self, value) -> dict:
+        if not isinstance(value, dict):
+            raise WebActionError("Nothing to save.")
+
+        def act():
+            c = self.win.config
+            try:
+                self.win.app_settings_page.set_weekly_report(
+                    bool(value.get("enabled", c.weekly_report_enabled)),
+                    int(value.get("day", c.weekly_report_day)), int(value.get("hour", c.weekly_report_hour)))
+            except (TypeError, ValueError) as e:
+                raise WebActionError(str(e) if isinstance(e, ValueError) and "Pick" in str(e)
+                                     else "Pick a day of the week and an hour.") from None
+        return self._result(self.gui(act)[1], "Saved.")
+
+    def _send_weekly_report(self) -> dict:
+        message = self.gui(self.win.send_weekly_report_now)[0]
+        return {"ok": True, "message": message or "Sent."}
 
     def _set_bot(self, token=None, channel=None, admins=None) -> dict:
         def act():

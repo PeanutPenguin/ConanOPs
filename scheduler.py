@@ -34,9 +34,13 @@ class Scheduler(QObject):
     restart_skipped_online = Signal(object)      # ServerConfig
     update_check_due = Signal(object)            # ServerConfig -- time to ask SteamCMD for the latest build
     mod_refresh_due = Signal(object)             # ServerConfig -- time to re-check enabled mods for Workshop updates
+    mod_watch_due = Signal(object)               # ServerConfig -- time to ask the Workshop if a mod was updated
+    events_due = Signal(object, object)          # ServerConfig, datetime -- check its scheduled events
 
     # Mods update on their own schedule, separate from server builds.
     _MOD_REFRESH_INTERVAL_HOURS = 24
+    # How often the Workshop is asked whether a server's mods changed.
+    _MOD_WATCH_INTERVAL_SECONDS = 3600
 
     # Backoff between attempts while checks keep failing.
     _MIN_RETRY_SECONDS = 300
@@ -70,6 +74,7 @@ class Scheduler(QObject):
         # last_mod_check_at is stamped only when a refresh finishes, so this
         # stops re-emitting every tick while one is still running.
         self._last_mod_check_attempt: dict = {}
+        self._last_mod_watch: dict = {}
 
     def start(self, interval_ms: int = 60_000) -> None:
         self._timer.start(interval_ms)
@@ -84,6 +89,9 @@ class Scheduler(QObject):
             self._check_restart(server, now)
             self._check_auto_update(server, now)
             self._check_mod_refresh(server, now)
+            self._check_mod_watch(server, now)
+            if server.scheduled_events:
+                self.events_due.emit(server, now)
 
     def _check_backup(self, server: ServerConfig, now: datetime) -> None:
         if not server.backup_destination:
@@ -130,8 +138,9 @@ class Scheduler(QObject):
         if server.last_restart_date == today:
             return  # already handled (fired or explicitly skipped) today
 
-        if self.is_online(server):
-            # Not stamped: keep checking in case players leave before the window ends.
+        if self.is_online(server) and not (server.when_players_online == "warn" and server.rcon_enabled):
+            # Set to wait (or no RCON to warn them with). Not stamped: keep
+            # checking in case players leave before the window ends.
             skip_key = (server.id, today)
             if skip_key not in self._skip_notified:
                 self._skip_notified.add(skip_key)
@@ -200,3 +209,17 @@ class Scheduler(QObject):
 
         self._last_mod_check_attempt[server.id] = now
         self.mod_refresh_due.emit(server)
+
+    def _check_mod_watch(self, server: ServerConfig, now: datetime) -> None:
+        """Hourly: is there a newer version of one of the server's mods?"""
+        if not server.mod_auto_update or not server.steamcmd_dir:
+            return
+        if not any(m.get("enabled", True) for m in server.mods):
+            return
+        if self.is_locked(server):
+            return
+        last = self._last_mod_watch.get(server.id)
+        if last is not None and (now - last).total_seconds() < self._MOD_WATCH_INTERVAL_SECONDS:
+            return
+        self._last_mod_watch[server.id] = now
+        self.mod_watch_due.emit(server)

@@ -7,13 +7,14 @@ from datetime import datetime, timedelta
 import pytest
 
 import backup_manager as bm
+from tests.worlds import read_world, world_bytes, write_world
 
 
 def _make_fake_server(tmp_path, name="server"):
     install_dir = tmp_path / name
     saved = install_dir / "ConanSandbox" / "Saved"
     saved.mkdir(parents=True)
-    (saved / "game.db").write_text("world data")
+    write_world(saved / "game.db", "world data")
     config = saved / "Config"
     config.mkdir()
     (config / "ServerSettings.ini").write_text("[General]\nMaxPlayers=40\n")
@@ -59,13 +60,11 @@ def test_restore_backup_extracts_into_saved_and_takes_safety_copy(tmp_path):
 
     # Simulate the world changing, then restoring the earlier backup.
     saved = os.path.join(install_dir, "ConanSandbox", "Saved")
-    with open(os.path.join(saved, "game.db"), "w") as f:
-        f.write("corrupted!!")
+    write_world(os.path.join(saved, "game.db"), "corrupted!!")
 
     bm.restore_backup(install_dir, entry)
 
-    with open(os.path.join(saved, "game.db")) as f:
-        assert f.read() == "world data"
+    assert read_world(os.path.join(saved, "game.db")) == "world data"
 
     # A pre-restore safety backup should now also exist.
     backups_after = bm.list_backups(dest)
@@ -143,15 +142,14 @@ def test_restore_handles_full_server_path_shape(tmp_path):
     install_dir = _make_fake_server(tmp_path)
     zip_path = tmp_path / "external.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("ConanSandbox/Saved/game.db", "imported world data")
+        zf.writestr("ConanSandbox/Saved/game.db", world_bytes("imported world data"))
         zf.writestr("ConanSandbox/Saved/Config/ServerSettings.ini", "[General]\nMaxPlayers=10\n")
     entry = bm.BackupEntry(path=str(zip_path), when=datetime.now(), trigger=bm.TRIGGER_IMPORTED, size_bytes=0)
 
     bm.restore_backup(install_dir, entry)
 
     saved = os.path.join(install_dir, "ConanSandbox", "Saved")
-    with open(os.path.join(saved, "game.db")) as f:
-        assert f.read() == "imported world data"
+    assert read_world(os.path.join(saved, "game.db")) == "imported world data"
     with open(os.path.join(saved, "Config", "ServerSettings.ini")) as f:
         assert "MaxPlayers=10" in f.read()
 
@@ -163,14 +161,13 @@ def test_restore_handles_bare_db_with_no_folder_structure(tmp_path):
     install_dir = _make_fake_server(tmp_path)
     zip_path = tmp_path / "bare.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("game.db", "bare db contents")
+        zf.writestr("game.db", world_bytes("bare db contents"))
     entry = bm.BackupEntry(path=str(zip_path), when=datetime.now(), trigger=bm.TRIGGER_IMPORTED, size_bytes=0)
 
     bm.restore_backup(install_dir, entry)
 
     saved = os.path.join(install_dir, "ConanSandbox", "Saved")
-    with open(os.path.join(saved, "game.db")) as f:
-        assert f.read() == "bare db contents"
+    assert read_world(os.path.join(saved, "game.db")) == "bare db contents"
 
 
 def test_default_backup_destination_is_a_sibling_of_install_dir(tmp_path):
@@ -237,6 +234,9 @@ def test_create_backup_deletes_a_corrupt_zip_and_returns_none(tmp_path, monkeypa
         def write(self, *a, **k):
             return self._real.write(*a, **k)
 
+        def writestr(self, *a, **k):
+            return self._real.writestr(*a, **k)
+
         def testzip(self):
             return "Saved/corrupted.db" if self._mode == "r" else None
 
@@ -270,6 +270,9 @@ def test_create_backup_handles_a_zip_that_fails_to_even_open(tmp_path, monkeypat
 
         def write(self, *a, **k):
             return self._real.write(*a, **k)
+
+        def writestr(self, *a, **k):
+            return self._real.writestr(*a, **k)
 
     monkeypatch.setattr(bm.zipfile, "ZipFile", _BadOnReopenZipFile)
 

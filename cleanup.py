@@ -117,6 +117,32 @@ def remove_path(path: str, retries: int = 3) -> Optional[str]:
     return f"Couldn't delete {path}: {last}"
 
 
+def remove_path_except(path: str, keep: str) -> List[str]:
+    """Deletes `path` but leaves `keep` (a folder inside it) and everything in
+    it, e.g. a server's files without the backups stored among them."""
+    if not keep or not _within(keep, path):
+        err = remove_path(path)
+        return [err] if err else []
+    if _norm(keep) == _norm(path):
+        return []
+    errors = []
+    try:
+        children = os.listdir(path)
+    except OSError as e:
+        return [f"Couldn't open {path}: {e}"]
+    for name in children:
+        child = os.path.join(path, name)
+        if _norm(child) == _norm(keep):
+            continue
+        if _within(keep, child):
+            errors.extend(remove_path_except(child, keep))
+        else:
+            err = remove_path(child)
+            if err:
+                errors.append(err)
+    return errors
+
+
 def remove_backups(folder: str, owned: bool) -> List[str]:
     """Owned folder: delete it all. Otherwise delete only our backup zips,
     and the folder only if that leaves it empty."""

@@ -175,3 +175,41 @@ def test_rival_keys_are_stable():
     b = takeover.Rival(kind="task", name="y", detail="", ident={"path": "\\", "name": "CONAN"})
     assert a.key == b.key
     assert "Scheduled task" in a.describe()
+
+
+# ------------------------------------------------------- telling rivals apart --
+
+def _run_entry(value):
+    return {"tasks": [], "services": [], "startup": [], "run": [{"key": "HKCU:\\R", "name": "N", "value": value}]}
+
+
+def test_the_game_itself_and_other_programs_arent_rivals():
+    client = r'"D:\Steam\steamapps\common\Conan Exiles\ConanSandbox\Binaries\Win64\ConanSandbox.exe"'
+    assert takeover.scan([], inventory=_run_entry(client), processes=[]) == []
+    assert takeover.scan([], inventory=_run_entry(r"C:\tools\run.exe --id 14430301"), processes=[]) == []
+    pkg = {"pid": 99999, "name": "conan.exe", "cmdline": ["conan.exe", "install"], "cwd": "", "ppid": 1, "create_time": 1}
+    assert takeover.scan([], inventory={}, processes=[pkg]) == []
+
+
+def test_starter_exe_ties_a_rival_to_its_own_server():
+    rivals = takeover.scan([], inventory=_run_entry(r'"D:\B\ConanSandboxServer.exe" -log'), processes=[])
+    assert len(rivals) == 1 and rivals[0].applies_to("D:\\B") and not rivals[0].applies_to("C:\\A")
+
+
+def test_python_source_paths_are_read():
+    text = r'SERVER = "C:\\S\\ConanSandbox\\Binaries\\Win64\\ConanSandboxServer-Win64-Shipping.exe"'
+    assert takeover._paths_named(text) == ["C:\\S"]
+
+
+def test_batch_variables_and_own_folder_are_filled_in(tmp_path):
+    bat = tmp_path / "start.bat"
+    bat.write_text('@echo off\nset ROOT=D:\\Srv\nset "DIR=%ROOT%\\Conan"\n"%DIR%\\ConanSandboxServer.exe" -log\n')
+    text = takeover.expand_text(f'"{bat}"')
+    assert "D:\\Srv\\Conan\\ConanSandboxServer.exe" in text
+    assert takeover._resolve_batch('"%~dp0ConanSandboxServer.exe"', "D:\\Srv\\go.bat") == '"D:\\Srv\\ConanSandboxServer.exe"'
+
+
+def test_a_task_it_cant_check_isnt_reported_as_off(monkeypatch):
+    monkeypatch.setattr(takeover.powershell, "run_readonly", lambda *a, **k: None)
+    r = takeover.Rival(kind=takeover.KIND_TASK, name="t", detail="", ident={"path": "\\", "name": "t"})
+    assert not takeover.is_off(r)
