@@ -20,6 +20,7 @@ This guide describes how to install ConanOps, set up a Conan Exiles dedicated se
 14. [Removing a server and uninstalling](#14-removing-a-server-and-uninstalling)
 15. [Troubleshooting](#15-troubleshooting)
 16. [Known limitations](#16-known-limitations)
+17. [History, world reports and events](#17-history-world-reports-and-events)
 
 ---
 
@@ -27,7 +28,7 @@ This guide describes how to install ConanOps, set up a Conan Exiles dedicated se
 
 ConanOps is a Windows application for running up to five Conan Exiles dedicated servers on one PC. It downloads the server software, configures the network, edits the server's settings files, makes backups, installs game and mod updates, and restarts servers when they stop unexpectedly. These tasks would otherwise require a combination of command-line tools, batch files and manual editing of configuration files.
 
-The application is designed around two principles. First, routine maintenance should not depend on anyone being present: backups, restarts and updates run on a schedule and are postponed while players are online. Second, decisions that belong to the host, such as the server's name, rules and gameplay rates, remain in the host's hands. ConanOps changes only the settings it is asked to change and leaves every other line of the server's configuration files as it was.
+The application is designed around two principles. First, routine maintenance should not depend on anyone being present: backups, restarts and updates run on a schedule, and players who are online are warned in game chat before a restart. Second, decisions that belong to the host, such as the server's name, rules and gameplay rates, remain in the host's hands. ConanOps changes only the settings it is asked to change and leaves every other line of the server's configuration files as it was.
 
 ConanOps does not replace Conan Exiles, Steam or the router. It is not affiliated with Funcom or Valve.
 
@@ -95,7 +96,7 @@ The same check is made for servers ConanOps already manages. If another program 
 
 ## 6. The main window
 
-The sidebar lists the configured servers, each with a status indicator and player count, and the main pages: **Dashboard**, **Players**, **Mods** and **Server Settings**, followed by **App Settings**. Every page except App Settings refers to the server currently selected in the sidebar.
+The sidebar lists the configured servers, each with a status indicator and player count, and the main pages: **Dashboard**, **Players**, **Mods**, **History & World**, **Events** and **Server Settings**, followed by **App Settings**. Every page except App Settings refers to the server currently selected in the sidebar.
 
 ### 6.1 Simple and Advanced
 
@@ -103,11 +104,13 @@ The switch at the top right of the window chooses how much ConanOps shows. **Sim
 
 ### 6.2 The pages
 
-**Dashboard.** Shows the address friends connect to (with a **Copy** button), processor and memory use, server frame rate, the automatic tasks, the players currently online and recent log output. Whether the server is online is shown once, at the top of the window. While the server is stopped there is a single **Start** button; while it runs, **Restart** and **Stop**. A restart warns players in-game and saves the world before the server stops.
+**Dashboard.** Shows the address friends connect to (with a **Copy** button), processor and memory use, server frame rate, the automatic tasks, the players currently online and recent log output. Whether the server is online is shown once, at the top of the window. While the server is stopped there is a single **Start** button; while it runs, **Restart** and **Stop**. A restart warns players in-game and saves the world before the server stops. While an automatic restart is counting down (Section 11), the Dashboard says so, with **Call It Off** to cancel it.
 
 **Players.** Lists every player who has joined, with total playtime and number of sessions. The history is kept across restarts. Players who are online can be kicked or banned. The access tab holds the whitelist and ban list, which take SteamID64 numbers; whitelist-only mode admits listed players only. Bans apply immediately if remote commands (RCON) are on, otherwise at the next restart.
 
 **Mods.** See Section 8.
+
+**History & World** and **Events.** See Section 17.
 
 **Console** (Advanced). Sends remote commands directly to the running server and shows the replies.
 
@@ -122,8 +125,8 @@ Changes are held as pending until **Save** is selected in the bar that appears a
 - **Server.** The server type (*PvE*, *PvE-Conflict* or *PvP*), the server name, its password and the player limit. The ports are shown only if they clash with another program or server, together with a button that picks free ones. Advanced adds the ports, every other general setting (message of the day, admin password, BattlEye, region and so on), the network address, **Repair Networking**, and the remote-commands (RCON) settings.
 - **Gameplay.** A play style: *Official* (Funcom's standard settings), *Relaxed*, *Boosted* or *Hardcore*, which set the rates for experience, gathering and crafting, the damage players take, hunger and thirst, and whether abandoned bases decay. Advanced shows every gameplay setting that Funcom's own settings screen offers, grouped by category. Numeric sliders mark the last saved value, so the extent of a change remains visible while editing.
 - **Automation.** Four groups of presets:
-  - *Backups*: *Standard* (every 6 hours), *Frequent* (every 2 hours) or *Light* (once a day), with the number of copies kept. The saved backups are listed below (Section 9).
-  - *Daily restart*: in the *Quietest hours* found in the server's player history, in the *Early morning*, or *Never*. The restart happens only when no one is online; if players remain online for the whole window, that day's restart is skipped.
+  - *Backups*: *Standard* (every 6 hours), *Frequent* (every 2 hours) or *Light* (once a day), with how long copies are kept. The saved backups are listed below (Section 9).
+  - *Daily restart*: in the *Quietest hours* found in the server's player history, in the *Early morning*, or *Never*. If players are online, they are warned in game chat first (Section 11).
   - *Game updates*: *Automatic* or *Tell me* (Section 10).
   - *If a mod stops a server starting*: *Wait for a fix*, *Start without it* or *Just tell me* (Section 8). This choice applies to all servers.
 - **Check for Problems.** Checks the common reasons a server will not start or cannot be reached from outside, and explains each problem. Problems are listed first, and most have a button that fixes them, for example **Repair Networking**, **Use Free Ports**, **Repair Game Files**, **Turn On RCON** or **Restore Latest Backup**; the check runs again once the fix is complete. Nothing is changed unless such a button is selected. Three of the checks need further explanation:
@@ -150,9 +153,15 @@ If a mod stops a server from starting while no one is present, ConanOps can resp
 
 ## 9. Backups and restoring
 
-ConanOps backs up each server on a schedule, before every update and before it takes over an existing server. **Back Up Now** makes one immediately. Older backups are removed according to the retention settings, which keep a number of daily and weekly copies.
+ConanOps backs up each server on a schedule, before every update and before it takes over an existing server. **Back Up Now** makes one immediately. Backups are made in the background, so ConanOps stays responsive, and a running server is saved first.
 
-To restore, select **Restore** next to a backup. ConanOps stops the server, makes a safety copy of the current world, replaces the world with the backup and starts the server again.
+Each backup is checked before it is kept. The world is copied by SQLite itself, the database engine the game uses, so a server that is saving at that moment cannot leave a half-written copy; the copy is then checked with SQLite's own integrity check, and the finished zip file is read back. A backup that fails the check is reported in an alert.
+
+Older backups are removed according to the retention settings (Advanced): every backup from the last 24 hours is kept; after that, the newest backup of each day for **Days of daily backups**, then the newest of each week for **Weeks of weekly backups**. Backups made by hand or imported are never removed automatically. Safety backups, made before an update or a restore, are kept for 14 days, and the newest three are always kept.
+
+**Second copy folder** (Advanced, under *More options*) copies every backup to a second folder as well, ideally on another drive, a USB disk or a folder synced to the cloud, so that the backups survive the failure of one drive. The second folder is kept to the same days and weeks, and an alert is sent if copying to it fails.
+
+To restore, select **Restore** next to a backup. ConanOps stops the server, makes a safety copy of the current world, checks the backup's world, replaces the world with it and starts the server again. If the server does not stop, nothing is restored.
 
 **Import External Backup…** adds a backup created elsewhere, for instance on another PC or with another tool. ConanOps first checks that the file contains a Conan world, then adds it to the list, after which it can be restored like any other backup. Only the world and the game's settings files are imported; ConanOps' own settings for the other server, such as its mod list or schedule, are not.
 
@@ -160,7 +169,9 @@ If the world save is missing but backups exist, ConanOps does not start the serv
 
 ## 10. Updates
 
-**Server updates.** Under **Server Settings → Automation**, ConanOps shows the installed build and checks Steam for a newer one. With the *Automatic* preset it installs a new build once no one is online: it backs up the server, downloads the update and restarts the server. Scheduled restarts also check for an update first. With *Tell me*, ConanOps checks every few hours, sends an alert, and offers **Back Up & Update Now**. Funcom's patch notes are shown where available, and updates that appear to be major engine changes are marked, since these are the ones most likely to break mods.
+**Server updates.** Under **Server Settings → Automation**, ConanOps shows the installed build and checks Steam for a newer one. With the *Automatic* preset it installs a new build straight away, warning anyone online first (Section 11): it backs up the server, downloads the update and restarts the server. Scheduled restarts also check for an update first. With *Tell me*, ConanOps checks every few hours, sends an alert, and offers **Back Up & Update Now**. Funcom's patch notes are shown where available, and updates that appear to be major engine changes are marked, since these are the ones most likely to break mods.
+
+**Mod updates.** With **Update Workshop mods automatically** on (Advanced, under **Server Settings → Automation → Daily restart**; on by default), ConanOps asks the Steam Workshop every hour whether any of the server's mods has a newer version. If one has, players are warned in the same way, and the server is stopped, the new mod files are downloaded and the server is started again, so players whose game has already downloaded the new version can keep joining. A stopped server just gets the new files. If a mod update fails, ConanOps waits six hours before trying again rather than restarting every hour.
 
 ConanOps also repairs missing or damaged game files. If the server program is missing, or the server keeps crashing after two automatic restarts, it asks Steam to verify the files, downloads anything missing and starts the server again. The world, settings and mods are not affected.
 
@@ -182,6 +193,8 @@ Windows may ask for permission once when a preset changes its update hours. In A
 - **Keep this PC awake while a server is running.** Sleep is blocked only while a server runs; Windows power settings are not changed.
 - **Only restart for Windows updates during this window.** ConanOps sets Windows' active hours around the chosen window. Inside it, and only when no one is online, ConanOps saves and stops the servers and restarts the PC itself, at most once a day and never within two hours of start-up.
 
+**Warnings before a restart.** Whenever an automatic restart is due while players are online (the daily restart, a game or mod update, or a scheduled event), ConanOps posts a warning in game chat 15, 5 and 1 minutes beforehand and then goes ahead; if everyone leaves sooner, it goes ahead at once. The warning times can be changed under **Server Settings → Automation → Daily restart** (Advanced). Setting **If people are playing** to *Wait until everyone has left* restores the old behaviour, where the restart waits for an empty server. Warnings are sent with remote commands (RCON); with RCON off, ConanOps always waits. A countdown is cancelled if the server is stopped or restarted by hand, and can be called off from the Dashboard.
+
 In addition, ConanOps restarts a server that crashes, checks the router's port forwards every five minutes and restores any that are missing (many routers lose them when they restart), and resumes servers that were running before the PC restarted. A server stopped deliberately with **Stop** stays stopped, including after a restart of the PC.
 
 In Advanced mode, a PIN can be required when ConanOps opens (**App Settings → PIN Lock**), and **App Settings → Remote Access** offers a fixed web address: a free DuckDNS name that keeps pointing at the PC when its public address changes, so players can use a name instead of a changing number. The Dashboard then shows that name as the address to connect to.
@@ -189,6 +202,8 @@ In Advanced mode, a PIN can be required when ConanOps opens (**App Settings → 
 ## 12. Alerts and Discord
 
 Under **App Settings → Alerts**, ConanOps can send notifications to a Discord channel (through a webhook) and to the ntfy phone app. Alerts are sent when a server crashes, is updated, has a mod problem, fails a backup, and in similar situations. **Send Test** confirms that the address is correct. ConanOps can also keep a live status message for each server in the Discord channel.
+
+**Weekly report.** Once a week, at the day and hour chosen in the same section (Monday at 9:00 by default), ConanOps sends each server's summary for the past seven days to the same Discord channel and ntfy topic: uptime, crashes, restarts, updates, how many different players joined and for how long, memory use and backups. If the PC is off at that time, the report is sent when ConanOps next runs that week. **Send This Week's Report Now** sends one immediately.
 
 In Advanced mode, a Discord bot can be added in the same section. Anyone in the channel can type `!status` to see each server's status and who is online. People on an allowed list can type `!restart`, or `!restart` followed by a server's name, to warn players, save and restart. `!help` lists the commands.
 
@@ -198,7 +213,7 @@ The web version lets the host check and control the servers from a phone or anot
 
 *From anywhere* creates a secure link through Cloudflare's free tunnel service. The link changes whenever the tunnel reconnects; the current link is shown in App Settings and is sent to the ntfy alert topic when it changes.
 
-Most of what the PC application offers is available from the web version. For safety, the following can only be done at the PC: adding or deleting servers, deleting ConanOps, changing the web password and turning the outside link on or off. Changes that require a Windows permission prompt are queued and offered the next time someone uses ConanOps at the PC.
+Most of what the PC application offers is available from the web version, including the history charts, world reports, events, the weekly report settings, and calling off a restart countdown. For safety, the following can only be done at the PC: adding or deleting servers, deleting ConanOps, changing the web password and turning the outside link on or off. Changes that require a Windows permission prompt are queued and offered the next time someone uses ConanOps at the PC.
 
 ## 14. Removing a server and uninstalling
 
@@ -239,3 +254,16 @@ Most of what the PC application offers is available from the web version. For sa
 - Servers that keep their world in a separate folder (`-usedir`) cannot be taken over.
 - Automatic router configuration depends on the router supporting UPnP, NAT-PMP or PCP and allowing changes through it. Where it does not, the ports must be forwarded by hand.
 - On some routers, the host cannot see their own server in the in-game browser (see *Troubleshooting*); Direct Connect with the home-network address always works.
+
+## 17. History, world reports and events
+
+**History.** Every five minutes while it runs, ConanOps records whether each server is up, how many players are online and how much processor and memory it uses, and it keeps a timeline of what happened: starts and stops, crashes and freezes, restarts, updates, backups, restores, announcements and events. The **History** tab shows this for the last 24 hours, 7, 30 or 90 days, as charts, with totals for the period: uptime, the most players at once, average players, average processor use, the most memory used, and the number of crashes and freezes. **Problems only** narrows the timeline to crashes, freezes and failures. Readings are kept for 90 days and the timeline for a year, in a small file per server under `ConanOps\history` in the user folder. Time when ConanOps was not running is shown as a gap.
+
+**World report.** The **World report** tab reads the server's world and lists its clans, how many building pieces each owns and when its members were last on; players who have not been on for 30 days or more, with their clan, level and the pieces in their own name; totals; and the size of the world file in each backup, which shows how the world is growing. The report is always made from the newest checked backup, which is unpacked to a temporary folder, read and deleted, so the live world is never opened and a running server is not affected. Funcom does not publish how the world is stored, and it has changed between game versions, so anything ConanOps cannot find in a particular world is left out of the report with a note, rather than shown wrongly. The report only reads: it never deletes anything from the world.
+
+**Events.** The **Events** page schedules two kinds of event for a server:
+
+- A **settings event** changes some settings for a period every week, or every day, and puts them back afterwards: for example double experience from Friday 18:00 to Sunday 23:00, or a different message of the day. Any gameplay setting can be changed, but not the passwords. Because the game reads its settings only at start-up, the server restarts when the event starts and again when it ends, with in-game warnings if players are online; a stopped server just starts with the new settings. If a setting is changed by hand during the event, that change is kept when the event ends. Changing or deleting an event that is on puts the settings back first.
+- A **scheduled message** is posted in game chat at a set time on chosen days, once or repeating (for example every two hours until midnight). This needs remote commands (RCON).
+
+Events use the PC's clock. A ConanOps restart in the middle of an event does not lose track of it: when the event ends, the settings it changed are still put back. Both kinds of event can also be added, changed and deleted from the web version.

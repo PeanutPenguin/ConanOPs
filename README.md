@@ -1,6 +1,6 @@
 # ConanOps
 
-ConanOps is a Windows application for running up to five Conan Exiles dedicated servers on one PC. It installs the server software, configures the network, edits the server settings, makes backups, installs game and mod updates, and restarts servers that stop unexpectedly. Routine maintenance is scheduled for times when no players are online, so a server can run for long periods without attention.
+ConanOps is a Windows application for running up to five Conan Exiles dedicated servers on one PC. It installs the server software, configures the network, edits the server settings, makes backups, installs game and mod updates, and restarts servers that stop unexpectedly. Routine maintenance runs on a schedule, with in-game warnings for anyone playing, so a server can run for long periods without attention. ConanOps 2.0 adds checked backups with a second copy, automatic Workshop mod updates, a weekly report, charts of each server's history, a world report (clans, buildings, inactive players) and scheduled events such as double-XP weekends.
 
 ## For people hosting a server
 
@@ -301,6 +301,11 @@ conanops/
   preflight.py                    pre-flight validation / self-heal
   changelog.py                     Steam news fetch + major-update heuristic
   scheduler.py                      background backup/restart timer
+  history.py                         per-server samples and event timeline (SQLite)
+  mod_versions.py                    downloaded vs Workshop mod versions
+  weekly_report.py                   the weekly summary text
+  world_report.py                    clans/buildings/inactive players, read from a backup
+  scheduled_events.py                settings events and scheduled messages
   rcon.py                             Source RCON protocol client
   mod_manager.py                       mod list + bisect helper
   server_finder.py                     finds Conan servers already on the PC, reads their settings
@@ -323,6 +328,9 @@ conanops/
     setup_wizard.py                                first-run install/network wizard
     dashboard_page.py, players_page.py, backups_page.py, updates_page.py
     mods_page.py, access_page.py, console_page.py
+    history_page.py, world_page.py, events_page.py, line_chart.py
+    window/                                         MainWindow mixins (power, updates, backups,
+                                                    countdown, mod_watch, reports, events, ...)
     settings_identity_page.py, settings_network_page.py,
     settings_rates_page.py, settings_backups_page.py,
     settings_restart_page.py, settings_alerts_page.py

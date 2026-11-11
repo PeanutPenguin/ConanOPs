@@ -310,9 +310,11 @@ currently looking at.
 **The scheduler** (`scheduler.py`, one `QTimer` ticking every 60s)
 For each server: is a backup due (interval elapsed since last one)? Is
 now inside the restart quiet-hours window, and hasn't a restart already
-fired today, and is nobody online? If both, act. If someone's online
-during the window, that day is skipped entirely and retried tomorrow —
-this is a deliberate safety rule from the original spec, not a bug.
+fired today? If both, act. Since 2.0, players who are online are warned
+in game chat first (`ui/window/countdown.py`, see "ConanOps 2.0" below);
+with the server's "when players are online" set to wait, or RCON off,
+the restart waits for an empty server instead, and a day with someone
+online for the whole window is skipped and retried tomorrow.
 The scheduler also decides *when* to check for updates (throttled by
 `auto_update_check_interval_hours`, since checking every 60 seconds
 would mean shelling out to SteamCMD every minute); the actual SteamCMD
@@ -631,3 +633,46 @@ A web action never shows a Windows permission (UAC) prompt: `powershell.no_promp
 ### Code layout (1.0.6)
 
 `ui/main_window.py` builds the window and wires pages together. What it does is split by area into mixins in `ui/window/`: `power.py` (start/stop/restart, health checks, watchdog, resume after reboot), `updates.py` (server updates, mod refreshes), `backups.py` (scheduled backups, restores, disk space), `network.py` (firewall, router forwards, DuckDNS, changes waiting for the PC), `alerts.py` (tray/Discord/ntfy, live status) and `system.py` (app updates, Windows update restarts, admin rights, web link, deleting ConanOps). `ui/mod_recovery.py` and `ui/web_actions.py` are mixins in the same style. `ui/workers.py` keeps background workers alive until they finish.
+
+## ConanOps 2.0
+
+### Backups (`backup_manager.py`, `backup_runner.py`)
+
+- `create_backup` copies each world database into a snapshot folder beside the backups first. A database in WAL mode, or one no server has open, is copied by SQLite's backup API in a single step (one consistent read); the copy's WAL is checkpointed into the file. A live database in the older rollback-journal mode is copied as a file once `_wait_for_save_to_settle` sees the save finish, because a long SQLite read could make the server's next save wait. Every copy is checked with `PRAGMA quick_check` (one retry); a backup whose world fails is kept but marked unverified (`conanops-backup.json` manifest) and alerts. The zip is written as `.partial`, read back with `testzip`, then renamed.
+- Space check: twice the world's size (snapshot plus zip).
+- `run_backup_job` (never raises) runs on `BackupWorker`; the window never blocks on a backup. A failed scheduled backup is retried after 30 minutes, not every scheduler tick.
+- Retention (`prune_backups`): every scheduled backup from the last 24 hours; then the newest per day for `backup_daily_keep` days; then the newest per ISO week for `backup_weekly_keep` weeks. Safety backups (before an update or restore): the newest 3, plus any from the last 14 days. Manual and imported backups are never pruned; the newest backup is always kept.
+- `backup_copy_destination` (optional): after each backup, `sync_copies` copies missing zips oldest first (`.partial`, `testzip`, rename) and prunes the copy folder with the same rules. It never deletes from the main folder.
+- `restore_backup` refuses while the server runs (`ServerRunningError`), requires a safety backup when a world exists, stages and checks the backup's worlds beside `Saved`, removes stale `-wal`/`-shm` files, then swaps them in with `os.replace`.
+
+### Restart warnings (`ui/window/countdown.py`)
+
+`_with_warning(server, what, then)` runs `then` at once when nobody's online (`NOW`); with players on and `when_players_online == "warn"` and RCON on, it starts a countdown (`COUNTING_DOWN`) that broadcasts at each of `warning_minutes` (default 15, 5, 1) and runs `then` at the end, or as soon as everyone has left; otherwise it returns `WAITING` and the caller tries again later. One countdown per server; stopping or restarting by hand cancels it; `call_off_countdown` (Dashboard, web) cancels it and tells players. Used by the daily restart, automatic game updates, Workshop mod updates and scheduled events.
+
+### Workshop mod auto-update (`mod_versions.py`, `ui/window/mod_watch.py`)
+
+The scheduler emits `mod_watch_due` hourly for servers with `mod_auto_update` and enabled mods. `ModStatusWorker` asks the Workshop for each mod's `time_updated`; `mod_versions.newer_on_workshop` compares it with the downloaded version, read from SteamCMD's `steamapps/workshop/appworkshop_440900.acf` (`timeupdated`), or the newest file time in the mod's folder if the manifest doesn't list it. A newer version on a running server: countdown, graceful stop (a server that won't stop is left running on the old version), `_update_mods_then_relaunch` with the post-update watch. A failed download backs off 6 hours (`MOD_UPDATE_BACKOFF_SECONDS`), as does calling off the countdown by hand.
+
+### History (`history.py`, `ui/window/history.py`, `ui/history_page.py`)
+
+One SQLite file per server in `~/ConanOps/history/<id>.sqlite`: `samples(ts, up, players, cpu, mem_mb)` at most every 5 minutes (from the health check: `health_check_runner.process_stats` gives the process's CPU seconds and memory; CPU percent is the difference between readings over all cores) and `events(ts, kind, detail)`. Samples are kept 90 days, events 365 (pruned daily). `summary()` counts each sample for the time to the next (at most two intervals), so time ConanOps wasn't running counts neither way. Every function catches its own errors.
+
+### Weekly report (`weekly_report.py`, `ui/window/reports.py`)
+
+A one-minute timer: once this week's slot (`weekly_report_day`, `weekly_report_hour`) has passed and `last_weekly_report` isn't this ISO week, each installed server's text goes through `_notify` (Discord/ntfy). Stamped even with no alert links set, so it doesn't fire every minute.
+
+### World report (`world_report.py`, `ui/world_page.py`)
+
+From the newest verified backup only: the main world (`game.db`, else the largest `.db`) is unpacked to a temporary folder (after a free-space check), opened `mode=ro`, and deleted. Tables and columns are discovered with `sqlite_master` / `PRAGMA table_info` and matched by candidate names (`characters`: `id`, `char_name`, `guild`, `level`, `lastTimeOnline`; `guilds`: `guildId`, `name`; `buildings`: `object_id`, `owner_id`; `building_instances`: `object_id`). Pieces are building instances per owner (buildings counted instead if there's no instances table). Anything missing is left out with a note. World growth comes from each backup zip's index (`file_size`), so nothing is unpacked for it.
+
+### Scheduled events (`scheduled_events.py`, `ui/window/events.py`, `ui/events_page.py`)
+
+Kept on the server as `scheduled_events` (plain dicts, checked by `clean_event` on load and on save). Settings events: a weekly window (`start_day`/`start` to `end_day`/`end`, wrapping past Sunday) or a daily one (`daily`), with `changes` (gameplay keys, checked against each `FieldSpec`'s limits; passwords excluded) and an optional MOTD. On start, the values replaced are stored in the event's `state` (so a ConanOps restart mid-event can still put them back), the changes go through `_apply_gameplay`, and a running server is restarted through `_with_warning` (`state.needs_restart` retries each minute while busy or waiting). On end, only values still as the event left them are put back (`plan_end`). Messages: `days`, `time`, `repeat_minutes`; posted with RCON within 10 minutes of each time, at most once (`state.last_sent`). Events don't run while a mod test holds the server.
+
+### Web API added in 2.0
+
+`GET /api/servers/{sid}/history?range=<seconds>[&problems=1]`, `GET|POST /api/servers/{sid}/world`, `GET /api/servers/{sid}/events`, `POST /api/servers/{sid}/events/save` (`{"event": {...}}`), `POST /api/servers/{sid}/events/delete` (`{"id": ...}`), `POST /api/servers/{sid}/countdown/cancel`, `POST /api/app/weekly_report` (`{"value": {"enabled", "day", "hour"}}`), `POST /api/app/send_weekly_report`. The overview's server summaries carry `countdown` (text, or empty).
+
+### Other fixes in 2.0
+
+Removing a server's files keeps the backups chosen to be kept even when they're inside the server's folder; a server that won't stop keeps its files. Start is refused while an update, restore or mod download is running. Stop reports failure when the server is still running (it never claims success after a kill that didn't work); restart and update refuse to go on if the server won't stop. A server still loading gets 20 minutes before it's treated as frozen (after it has answered once, the usual limit applies). The log monitor survives errors. SteamCMD calls on the same folder run one at a time. Settings keys that appear more than once in a settings file are all updated. Secrets that can't be decrypted (for example a config copied from another PC) are kept rather than wiped on the next save. The keep-alive watcher also recognises a ConanOps running as administrator.

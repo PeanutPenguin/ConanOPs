@@ -1,18 +1,48 @@
 ConanOps runs Conan Exiles dedicated servers on a Windows PC and handles their routine maintenance. To install it, download **ConanOps-Setup** below and run it; existing copies of ConanOps update themselves.
 
-### Fixed in this version: finding servers already on the PC
+## ConanOps 2.0: set it and forget it
 
-This version fixes how ConanOps finds and takes over a Conan Exiles server that was already installed on the PC.
+### Players are warned before a restart
+The daily restart, game updates, mod updates and scheduled events no longer wait for an empty server (or skip the day). If people are playing, ConanOps posts a warning in game chat 15, 5 and 1 minutes before, then goes ahead, or straight away if everyone leaves. The Dashboard shows the countdown, with **Call It Off**. Prefer the old way? Set **If people are playing** to *Wait until everyone has left* (Server Settings → Automation, Advanced). Warnings need RCON.
 
-- **Admin password reported as missing.** ConanOps only looked for the admin password in one place, so a server with one set elsewhere showed none. It now checks the server's launch options and all of its settings files. A blank entry in one file no longer hides the real password in another. If no admin password turns up, ConanOps says so.
-- **One server found twice.** The same server reached by two different folder paths (a shortcut-style folder link, a short path name or a OneDrive folder) was listed and added twice. ConanOps now recognizes it as one server, and never manages the same server folder twice.
-- **Old copies offered as servers.** A folder left behind when Funcom renamed the server's install folder, or a spare copy with no world, is no longer ticked by default. Each server in the list shows when its world was last saved, and why any server was left unticked.
-- **Settings reset by Apply.** On a server ConanOps took over, pressing Apply on a settings page could overwrite settings ConanOps hadn't read, including the admin password. Apply now changes only what you changed.
-- **Join password, whitelist and bans.** A blank line in one section of the settings file no longer hides the real join password. The server's whitelist and ban list are now kept when ConanOps takes it over.
-- **Launch settings.** Settings written into the server's launch line (ports, player limit, passwords, RCON port) are now read correctly. Unfilled placeholders such as `YOUR_PUBLIC_IP` are no longer used as the server's address.
-- **Launch scripts.** ConanOps reads more kinds of start scripts: PowerShell lines, comments, folder variables in .bat files, and the small `ConanSandboxServer.exe` starter.
-- **Other programs.** The game itself and unrelated programs named "conan" are no longer treated as other server launchers to switch off. A launcher for one server is no longer switched off when another server is taken over.
-- **No surprise update after takeover.** ConanOps now reads which game build a server is on, so it no longer stops a server it just took over to "update" it.
-- **Mod list.** Mod lists saved in another text format are read correctly, and mods switched off in the mod list stay in the list, switched off.
-- **"Not Now"** waits a week before asking about the same server again. Removing a server while keeping its files no longer brings it back as a found server. Clicking **Add server** in the first seconds after opening ConanOps now works.
-- **The takeover message** now says that RCON may be turned on and that the daily restart, automatic updates and scheduled backups will start running. It warns when a running server can't be saved before its first restart.
+### Mods update themselves
+ConanOps checks the Steam Workshop every hour. When one of a server's mods gets a new version, players are warned, and the server restarts with it, so people whose game already has the new version can keep joining. On by default; switch it off under Server Settings → Automation (Advanced).
+
+### Backups you can count on
+- **Never half-written.** The world is copied by SQLite itself, so a save happening at that moment can't tear the copy, and every backup is checked before it's kept. A backup that fails the check sends an alert.
+- **In the background.** Backups no longer freeze the window, and a failed one is retried after 30 minutes instead of every minute.
+- **Keeps what the labels say.** Every backup from the last day, then one a day for the days you choose, then one a week for the weeks you choose. Your own and imported backups are never deleted. Safety backups (before an update or a restore) no longer pile up forever: the newest 3 and the last 14 days are kept.
+- **A second copy.** Pick another drive, a USB disk or a cloud-synced folder, and every backup is copied there too (Backups → More options).
+- **Safer restores.** The backup's world is checked before it replaces yours, and nothing is restored if the server won't stop.
+
+### History & World (new page)
+- **History:** players, CPU and memory over the last day, week, month or three months, with uptime and a timeline of starts, crashes, restarts, updates, backups and events.
+- **World report:** clans and how much each has built, players who haven't been on for 30+ days (and what they own), and how the world file is growing. It's read from a backup, never the live world, so it's safe while people play.
+
+### Events (new page)
+- **Settings events:** change settings on a schedule, like double XP from Friday evening to Sunday night, or a different message of the day. The server restarts (with warnings) when it starts and ends, and your usual settings come back afterwards.
+- **Scheduled messages:** post a message in game chat at set times, once or every few hours.
+
+### Weekly report
+Every Monday at 9:00 (change it in App Settings → Alerts), each server's week goes to your Discord channel and ntfy: uptime, crashes, restarts, updates, players and backups.
+
+### Also in the web version
+History charts, world reports, events, the weekly report settings and calling off a countdown all work from your phone.
+
+### Fixed
+- Removing a server and its files no longer deletes the backups you chose to keep.
+- **Start** could launch a second copy of a server while an update was running; it now waits.
+- **Stop** said the server had stopped when it hadn't. Restarts, updates and restores no longer carry on with a server that won't stop.
+- A server that takes a long time to load (big world, many mods) is no longer restarted as "frozen" before it has finished starting.
+- The log watcher could stop silently after an error, so player counts went stale.
+- Two SteamCMD runs could use the same folder at once and damage downloads.
+- A setting that appeared twice in a settings file only had one copy changed, so the change didn't take effect.
+- Passwords and links that couldn't be decrypted (for example after moving to a new PC) were wiped on the next save; they're now kept.
+- "Reopen ConanOps if it closes" didn't recognise a ConanOps running with admin rights.
+
+### Finding servers already on the PC
+- **Admin password reported as missing:** ConanOps now checks the launch options and every settings file.
+- **One server found twice** through two different folder paths is now recognised as one.
+- Old copies and spare folders are no longer ticked by default; each server shows when its world was last saved.
+- **Apply** on a server ConanOps took over changes only what you changed.
+- Launch settings, start scripts, join passwords, whitelists, bans and mod lists are read more reliably, and a server ConanOps just took over isn't stopped for a needless update.
