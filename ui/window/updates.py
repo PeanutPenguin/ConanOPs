@@ -199,6 +199,7 @@ class UpdatesMixin:
         # All mods, so a disabled one isn't stale when re-enabled.
         mod_ids = [m["id"] for m in server.mods]
         if not mod_ids or not server.steamcmd_dir:
+            self._after_mod_download(server, False)
             self._relaunch_if_was_running(server, was_running, watch=watch)
             return
         existing = self._mod_refresh_workers.get(server.id)
@@ -219,6 +220,7 @@ class UpdatesMixin:
 
     def _on_post_update_mod_refresh_finished(self, server: ServerConfig, result, was_running: bool, watch: bool = False) -> None:
         self._mod_refresh_workers.pop(server.id, None)
+        self._after_mod_download(server, bool(result.success))
         # Rewrite modlist.txt before relaunch: .pak paths may have changed.
         self._handle_mods_changed(server)
         self.mods_changed_elsewhere(server)
@@ -339,6 +341,7 @@ class UpdatesMixin:
         self._mod_refresh_workers.pop(server.id, None)
         # Stamped even on failure: this low-urgency check just retries in ~24h.
         server.last_mod_check_at = datetime.now().isoformat()
+        self._after_mod_download(server, bool(result.success))
         self._handle_mods_changed(server)
         self.mods_changed_elsewhere(server)
         if not result.success:

@@ -41,6 +41,9 @@ from ui.window.backups import BackupsMixin
 from ui.window.finder import FinderMixin
 from ui.window.history import HistoryMixin
 from ui.window.countdown import CountdownMixin
+from ui.window.events import EventsMixin
+from ui.window.mod_watch import ModWatchMixin
+from ui.window.reports import ReportsMixin
 from ui.window.diagnostic_fixes import DiagnosticFixesMixin
 from ui.window.common import APP_INSTALL_DIR, _NotifyWorker, _sessions_path_for
 from ui.window.network import NetworkMixin
@@ -100,7 +103,8 @@ PAGE_HEADERS = {
 
 
 class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, UpdatesMixin, BackupsMixin, NetworkMixin, AlertsMixin, SystemMixin,
-                 ModRecoveryMixin, WebActionsMixin, HistoryMixin, CountdownMixin):
+                 ModRecoveryMixin, WebActionsMixin, HistoryMixin, CountdownMixin, ModWatchMixin, ReportsMixin,
+                 EventsMixin):
     # From the Cloudflare tunnel's thread: (link or "", status text).
     web_tunnel_changed = Signal(str, str)
     admin_mode_problem = Signal(str)
@@ -135,6 +139,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self._watchdog_attempts: Dict[str, int] = {}       # server id -> consecutive crash-restarts this session
         self._watchdog_last_attempt: Dict[str, float] = {} # server id -> time.monotonic() of the last attempt
         self._init_countdowns()
+        self._init_mod_watch()
+        self._init_reports()
         self._answered_since_start: set = set()  # server ids that have answered a query since they started
         self._unresponsive_since: Dict[str, float] = {}    # server id -> time.monotonic() it first stopped answering queries
         self._mod_refresh_workers: Dict[str, ModDownloadWorker] = {}
@@ -395,7 +401,10 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.scheduler.restart_skipped_online.connect(self._handle_restart_skipped_online)
         self.scheduler.update_check_due.connect(self._handle_update_check_due)
         self.scheduler.mod_refresh_due.connect(self._handle_mod_refresh_due)
+        self.scheduler.mod_watch_due.connect(self._handle_mod_watch_due)
+        self.scheduler.events_due.connect(self._handle_events_due)
         self.scheduler.start()
+        self._start_reports()
 
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._start_health_check)
@@ -422,6 +431,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         self.app_settings_page.on_restart_elevated = self._restart_with_admin_rights
         self.app_settings_page.on_alerts_changed = self.alerts_changed
         self.app_settings_page.get_web_link_line = self.web_link_line
+        self.app_settings_page.send_weekly_report_now = self._send_weekly_report_from_page
         self.admin_mode_problem.connect(self.app_settings_page.show_admin_mode_problem)
         self.app_settings_page.web_tunnel = self.web_tunnel
         self.app_settings_page.on_web_remote_changed = self._sync_web_tunnel

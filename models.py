@@ -59,6 +59,7 @@ class ServerConfig:
     backup_weekly_keep: int = 4
     backup_interval_hours: int = 6
     backup_destination: str = ""
+    # A second folder (another drive, a synced cloud folder) each backup is copied to.
     backup_copy_destination: str = ""
     # When players are online and something needs a restart (the daily
     # restart, a game or mod update, a scheduled event): "warn" counts down in
@@ -71,7 +72,7 @@ class ServerConfig:
     mod_auto_update: bool = True
     mod_versions: Dict[str, int] = field(default_factory=dict)  # workshop id -> its time_updated when downloaded
     # Settings changes and messages on a schedule (scheduled_events.py).
-    scheduled_events: List[dict] = field(default_factory=list)  # a second folder (another drive, a synced cloud folder) each backup is copied to
+    scheduled_events: List[dict] = field(default_factory=list)
     backup_before_update: bool = True
 
     # --- Restart schedule ---
