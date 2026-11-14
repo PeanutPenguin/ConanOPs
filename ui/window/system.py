@@ -139,8 +139,19 @@ class SystemMixin:
                 self._expected_stop.discard(srv.id)
             target = servers[0] if servers else (cfg.servers[0] if cfg.servers else None)
             if target is not None:
-                self._notify(target, f"Windows Update restart didn't happen: {e}. The watchdog will bring "
-                                     f"stopped servers back.", title="Windows Update Restart Failed")
+                self._notify(target, f"Windows Update restart didn't happen: {e}. Starting the servers it "
+                                     f"stopped again.", title="Windows Update Restart Failed")
+            # They were stopped on purpose, so the watchdog doesn't see a crash.
+            for srv in servers:
+                if not srv.desired_running or srv.update_hold or srv not in cfg.servers:
+                    continue
+
+                def started(_r, s=srv):
+                    self._known_running[s.id] = True
+                    self._refresh_chrome()
+                self._run_op(lambda s=srv: process_manager.launch(s), on_done=started,
+                             on_error=lambda err, s=srv: self._notify(
+                                 s, f"Couldn't start this server again: {err}", title="Start Failed"))
 
         self._run_op(work, on_error=failed)
 

@@ -187,7 +187,8 @@ class DiagnosticFixesMixin:
         if cleanup.is_adopted(server):
             folder = os.path.join(_no_space_default_base(), server.id, "backups")
         else:
-            folder = backup_manager.default_backup_destination(server.install_dir)
+            folder = backup_manager.default_backup_destination(
+                server.install_dir, taken=self.config.used_backup_dirs(exclude_id=server.id))
         server.backup_destination = folder
         self.config.save()
         self.settings_saved_elsewhere(server, "backups")

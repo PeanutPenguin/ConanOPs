@@ -50,12 +50,23 @@ def saved_dir(install_dir: str) -> str:
 _saved_dir = saved_dir
 
 
-def default_backup_destination(install_dir: str) -> str:
+def default_backup_destination(install_dir: str, taken=()) -> str:
     """Default backup folder: a "backups" sibling of install_dir (not inside it,
-    so server validation never touches backups). "" if install_dir is empty."""
+    so server validation never touches backups). "" if install_dir is empty.
+    taken: other servers' backup folders. Two servers side by side would
+    otherwise share one folder, and so list, thin out and restore each
+    other's backups; the second gets "backups-<its folder's name>"."""
     if not install_dir:
         return ""
-    return os.path.join(os.path.dirname(os.path.abspath(install_dir)), "backups")
+    install = os.path.abspath(install_dir)
+    used = {os.path.normcase(os.path.abspath(t)) for t in taken if t}
+    candidate = os.path.join(os.path.dirname(install), "backups")
+    name = os.path.basename(install.rstrip("\\/")) or "server"
+    n = 1
+    while os.path.normcase(candidate) in used:
+        candidate = os.path.join(os.path.dirname(install), f"backups-{name}" + ("" if n == 1 else f"-{n}"))
+        n += 1
+    return candidate
 
 
 class BackupSpaceError(OSError):
@@ -318,13 +329,8 @@ def create_backup_for_server(server, destination: str, trigger: str, label: str 
         if pid is not None:
             process_manager._wait_for_save_to_settle(server.install_dir, pid, max_wait=90.0)
 
-    if live and server.rcon_enabled:
-        import rcon
-        try:
-            rcon.send_command("127.0.0.1", server.rcon_port, server.rcon_password, "saveworld")
-            settle()
-        except rcon.RconError as e:
-            _log.warning(f"Couldn't ask {server.name} to save before backing up: {e}")
+    if live and process_manager.request_world_save(server):
+        settle()
     info = {"server": getattr(server, "name", ""), "build": getattr(server, "installed_buildid", "")}
     return create_backup(server.install_dir, destination, trigger, label, live=live, settle=settle, info=info)
 

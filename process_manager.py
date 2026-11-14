@@ -265,6 +265,33 @@ def _wait_for_save_to_settle(install_dir: str, pid: int, quiet: float = SAVE_QUI
             return
 
 
+# What a server says back when it doesn't have the command it was sent.
+_SAVE_REFUSED = ("unknown command", "command not found", "couldn't find", "could not find", "not recognized",
+                 "invalid command", "no such command")
+
+
+def request_world_save(server: ServerConfig) -> bool:
+    """Asks a running server to save its world over RCON. False if RCON is
+    off or unreachable, or if the server's reply says it doesn't know the
+    command: a stop or backup that follows then has only the last autosave,
+    and the log says so instead of the save being assumed."""
+    if not server.rcon_enabled:
+        return False
+    import rcon  # local import: process_manager stays usable without RCON present
+    try:
+        reply = rcon.send_command("127.0.0.1", server.rcon_port, server.rcon_password, "saveworld")
+    except rcon.RconError as e:
+        _log.warning(f"Couldn't ask {server.name} to save its world: {e}")
+        return False
+    text = str(reply or "").strip()
+    if any(marker in text.lower() for marker in _SAVE_REFUSED):
+        _log.warning(f"{server.name} didn't accept the save command (it answered: {text[:200]!r}), so the world "
+                     "wasn't saved on request. Anything since its last autosave isn't in this stop or backup.")
+        return False
+    _log.info(f"{server.name} was asked to save its world (it answered: {text[:200]!r}).")
+    return True
+
+
 def graceful_stop(server: ServerConfig, timeout: float = 15.0) -> bool:
     """If RCON is enabled, `saveworld` and wait for the save to finish
     writing before stop(), since terminate() is a hard TerminateProcess
@@ -273,13 +300,8 @@ def graceful_stop(server: ServerConfig, timeout: float = 15.0) -> bool:
     if pid is None:
         return True
 
-    if server.rcon_enabled:
-        import rcon  # local import: process_manager stays usable without RCON present
-        try:
-            rcon.send_command("127.0.0.1", server.rcon_port, server.rcon_password, "saveworld")
-            _wait_for_save_to_settle(server.install_dir, pid)
-        except rcon.RconError:
-            pass  # best-effort -- fall through to the hard stop either way
+    if request_world_save(server):  # best-effort -- the hard stop follows either way
+        _wait_for_save_to_settle(server.install_dir, pid)
 
     return stop(server.install_dir, timeout=timeout)
 

@@ -51,10 +51,11 @@ def _run_worker(server, **kw):
     return out[0]
 
 
-def test_update_stops_first_then_backs_up_then_checks_disk_then_updates(monkeypatch):
+def test_update_checks_disk_then_stops_then_backs_up_then_updates(monkeypatch):
+    # Disk space first: a full drive shouldn't cost the server any downtime.
     calls = _record_steps(monkeypatch)
     result = _run_worker(models.ServerConfig(name="x", install_dir="/install"))
-    assert calls == ["stop", "backup", "disk", "steamcmd"]
+    assert calls == ["disk", "stop", "backup", "steamcmd"]
     assert result.success
 
 

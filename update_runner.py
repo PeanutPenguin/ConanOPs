@@ -35,9 +35,10 @@ class CheckWorker(QThread):
 
 
 class UpdateWorker(QThread):
-    """Update sequence: stop server, back up (after the stop, so the DB is closed),
-    check disk space, then SteamCMD update + validate. A failed backup or disk
-    check aborts before any file changes (reason "backup"/"disk").
+    """Update sequence: check disk space, stop server, back up (after the stop,
+    so the DB is closed), then SteamCMD update + validate. A failed disk check
+    aborts before the server is stopped, a failed backup before any file
+    changes (reason "disk"/"backup").
     Relaunching is up to the caller."""
     progress = Signal(str)
     finished_update = Signal(object)  # steamcmd.UpdateResult
@@ -64,6 +65,17 @@ class UpdateWorker(QThread):
         import backup_manager
         import process_manager
 
+        # Before the server is stopped: a drive that's too full shouldn't cost
+        # any downtime.
+        if self.check_disk:
+            ok, free, needed = steamcmd.check_update_disk_space(self.install_dir)
+            if not ok:
+                return steamcmd.UpdateResult(
+                    False, f"Not enough free disk space to update safely: {steamcmd.format_gb(free)} free, about "
+                           f"{steamcmd.format_gb(needed)} needed. Nothing was changed -- free up space and it will "
+                           f"retry.", reason="disk",
+                )
+
         if self.stop_server is not None and self.stop_server.install_dir and process_manager.is_running(self.stop_server.install_dir):
             self.progress.emit("Stopping the server (saving the world first if RCON is on)…")
             if process_manager.graceful_stop(self.stop_server) is False:
@@ -82,15 +94,6 @@ class UpdateWorker(QThread):
                 return steamcmd.UpdateResult(
                     False, f"The pre-update backup failed ({e}), so the update wasn't started -- nothing was "
                            f"changed. Check the backup folder on Backups settings.", reason="backup",
-                )
-
-        if self.check_disk:
-            ok, free, needed = steamcmd.check_update_disk_space(self.install_dir)
-            if not ok:
-                return steamcmd.UpdateResult(
-                    False, f"Not enough free disk space to update safely: {steamcmd.format_gb(free)} free, about "
-                           f"{steamcmd.format_gb(needed)} needed. Nothing was changed -- free up space and it will "
-                           f"retry.", reason="disk",
                 )
 
         return steamcmd.update_server(self.steamcmd_dir, self.install_dir, progress=self.progress.emit)

@@ -123,6 +123,8 @@ def main() -> int:
     rollback_message = self_update.check_and_recover_pending_update()
     if rollback_message:
         QMessageBox.warning(None, "Update Rolled Back", rollback_message)
+        if self_update.rolled_back_this_run and _restart_after_rollback(lock):
+            return 0
 
     # Sweep *.conanops-old files a past update couldn't remove.
     self_update.cleanup_leftover_update_files(APP_INSTALL_DIR)
@@ -233,6 +235,30 @@ def main() -> int:
         return app.exec()
     finally:
         background_mode.clear_owner()
+
+
+def _restart_after_rollback(lock) -> bool:
+    """The previous version's files are back, but this process is still the
+    version that failed: start ConanOps again so the restored one runs.
+    False (carry on as before) if the new process couldn't be started."""
+    import subprocess
+    import proc_utils
+    log = applog.get_logger("startup")
+    args = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.join(APP_INSTALL_DIR, "main.py")]
+    args += [a for a in sys.argv[1:] if a.startswith("--")]
+    kwargs = {"cwd": APP_INSTALL_DIR, "close_fds": True, "env": proc_utils.child_env()}
+    if os.name == "nt":
+        kwargs["creationflags"] = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                                   | getattr(subprocess, "DETACHED_PROCESS", 0))
+    lock.unlock()  # the new process waits for it
+    try:
+        subprocess.Popen(args, **kwargs)
+    except OSError as e:
+        log.error(f"Rolled back, but couldn't start the restored version: {e}")
+        lock.tryLock(1_000)
+        return False
+    log.info("Rolled back; starting the restored version.")
+    return True
 
 
 def _uninstall_cleanup() -> int:

@@ -522,6 +522,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
         # Needs the tray icon (for _notify) and _known_running to be set.
         self._auto_resume_servers()
+        QTimer.singleShot(8_000, self._warn_about_shared_backup_folders)
 
         self._refresh_sidebar()
         self._load_active_server()
@@ -906,7 +907,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
         if not server.backup_destination and server.install_dir:
             # An empty destination silently disables backups; fill and persist a default.
-            server.backup_destination = backup_manager.default_backup_destination(server.install_dir)
+            server.backup_destination = backup_manager.default_backup_destination(
+                server.install_dir, taken=self.config.used_backup_dirs(exclude_id=server.id))
             self.config.save()
 
         online = self._online_by_server.get(server.id, set())
@@ -1031,11 +1033,41 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         if self.config.active_server_id == s.id:
             self.console_page.set_server(s)  # picks up any RCON port/enabled change
 
+    def _backup_folder_taken(self, server: ServerConfig, folder: str) -> bool:
+        return bool(folder) and os.path.normcase(os.path.abspath(folder)) in self.config.used_backup_dirs(
+            exclude_id=server.id)
+
+    def _keep_backup_folder_to_itself(self, server: ServerConfig) -> None:
+        """A new server's default backup folder must not be one another server uses."""
+        if server.install_dir and self._backup_folder_taken(server, server.backup_destination):
+            server.backup_destination = backup_manager.default_backup_destination(
+                server.install_dir, taken=self.config.used_backup_dirs(exclude_id=server.id))
+
+    def _warn_about_shared_backup_folders(self) -> None:
+        """Servers set up before each got its own folder: say so once per start."""
+        for s in self.config.servers:
+            if self._backup_folder_taken(s, s.backup_destination):
+                _log.warning(f"{s.name} shares its backup folder ({s.backup_destination}) with another server.")
+                self._notify(s, f"This server shares its backup folder ({s.backup_destination}) with another "
+                                "server, so their backups are mixed together: old ones are thinned out as one "
+                                "list, and a restore could put back the other server's world. Give each server "
+                                "its own folder in Server Settings → Backups.", title="Shared Backup Folder")
+
     def _apply_backups_settings(self, values: dict, server: Optional[ServerConfig] = None) -> None:
         s = server or self._active()
+        values = dict(values)
+        for key, what in (("backup_destination", "backup folder"), ("backup_copy_destination", "second backup folder")):
+            folder = values.get(key)
+            if folder and folder != getattr(s, key) and self._backup_folder_taken(s, folder):
+                values.pop(key)
+                QMessageBox.warning(self, "Folder Already Used",
+                                    f"{folder} is another server's backup folder, so the {what} wasn't changed. "
+                                    "Each server needs its own, or their backups get mixed together.")
         for k, v in values.items():
             setattr(s, k, v)
         self.config.save()
+        if self.config.active_server_id == s.id:
+            self.settings_saved_elsewhere(s, "backups")
 
     def _apply_restart(self, values: dict, server: Optional[ServerConfig] = None) -> None:
         from ui.settings_restart_page import parse_minutes
@@ -1101,6 +1133,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         )
         if wizard.exec():
             wizard.apply_to_server()
+            self._keep_backup_folder_to_itself(server)
             self.config.save()
             keep_page = getattr(wizard, "keep_running_page", None)
             if keep_page is not None and keep_page.keep_running:
