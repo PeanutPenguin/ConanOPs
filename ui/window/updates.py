@@ -75,6 +75,69 @@ class UpdatesMixin:
         self._retire_worker(worker)
         worker.start()
 
+    # A player turned away is acted on at most this often per server: one
+    # person retrying, or a group on the old version, is one problem.
+    VERSION_MISMATCH_QUIET_SECONDS = 30 * 60
+
+    def _on_version_mismatch(self, server_id: str, server_version: str, client_version: str) -> None:
+        """The server's log says it turned a player away for being on a
+        different version of the game (they see "Outdated Client"). Don't wait
+        for the next timed check: ask Steam now, update if there's a newer
+        build, and otherwise say which side is behind."""
+        server = next((s for s in self.config.servers if s.id == server_id), None)
+        if server is None:
+            return
+        now = time.monotonic()
+        last = self._last_version_mismatch.get(server_id)
+        if last is not None and now - last < self.VERSION_MISMATCH_QUIET_SECONDS:
+            return
+        if self._is_update_busy(server):
+            return  # a check or update is already running; a later attempt is looked at afresh
+        self._last_version_mismatch[server_id] = now
+        _log.warning(f"{server.name} turned a player away for their game version "
+                     f"(server {server_version}, player {client_version}); checking Steam for a newer build.")
+        worker = CheckWorker(server.steamcmd_dir)
+        worker.finished_check.connect(
+            lambda latest, info, srv=server, ours=server_version, theirs=client_version: (
+                self.updates_page.record_check(srv, latest, info),
+                self._on_version_mismatch_check(srv, latest, ours, theirs)))
+        self._update_check_workers[server.id] = worker
+        self._retire_worker(worker)
+        worker.start()
+
+    def _on_version_mismatch_check(self, server: ServerConfig, latest_buildid, server_version: str,
+                                   client_version: str) -> None:
+        self._update_check_workers.pop(server.id, None)
+        if server not in self.config.servers:
+            return
+        versions = f"server version {server_version}, theirs {client_version}"
+        title = "Player Turned Away: Game Version"
+        if latest_buildid and latest_buildid != server.installed_buildid:
+            if server.auto_update:
+                self._notify(server, f"A player couldn't join because their game is a different version "
+                                     f"({versions}), and Steam has a newer server build.", title=title)
+            else:
+                self._notify(server, f"A player couldn't join because their game is a different version "
+                                     f"({versions}). Steam has a newer server build ({latest_buildid}), and "
+                                     f"automatic updates are off: update from the Updates page so players "
+                                     f"can join.", title=title)
+            self._on_periodic_update_check(server, latest_buildid)  # updates (with warnings) if allowed
+            return
+        if latest_buildid:
+            server.last_update_check_at = datetime.now().isoformat()
+            self.config.save()
+            self._notify(server, f"A player couldn't join because their game is a different version ({versions}). "
+                                 f"This server is on the newest build Steam offers ({server.installed_buildid}), "
+                                 f"so there's nothing to update here. Either their game needs updating "
+                                 f"(restarting Steam usually does it) or is on another branch such as Legacy, "
+                                 f"or the game was just patched and the matching server build isn't out yet. "
+                                 f"ConanOps installs it as soon as it is.", title=title)
+        else:
+            self._notify(server, f"A player couldn't join because their game is a different version ({versions}), "
+                                 f"and ConanOps couldn't reach Steam to check for a newer server build. It "
+                                 f"will try again.", title=title)
+            self._last_version_mismatch.pop(server.id, None)  # the next attempt checks again
+
     def _on_periodic_update_check(self, server: ServerConfig, latest_buildid) -> None:
         self._update_check_workers.pop(server.id, None)
         if not latest_buildid:

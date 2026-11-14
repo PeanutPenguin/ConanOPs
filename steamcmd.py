@@ -419,12 +419,27 @@ def get_installed_buildid(install_dir: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _forget_cached_app_info(steamcmd_dir: str) -> None:
+    """SteamCMD keeps what it last learned about each app in
+    appcache/appinfo.vdf and can answer from that copy, so a new build would
+    go unseen and the server would read "Up to date" while players are turned
+    away. Without the file it has to ask Steam."""
+    cached = os.path.join(steamcmd_dir, "appcache", "appinfo.vdf")
+    try:
+        os.remove(cached)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        _log.warning(f"Couldn't clear SteamCMD's cached app info ({e}); the build check may be out of date.")
+
+
 @one_at_a_time
 def get_latest_buildid(steamcmd_dir: str) -> Optional[str]:
     """Current public-branch build id via anonymous app_info_print, or None."""
     exe = steamcmd_exe_path(steamcmd_dir)
     if not os.path.exists(exe):
         return None
+    _forget_cached_app_info(steamcmd_dir)
     args = [exe, *_FORCE_WINDOWS_PLATFORM_ARGS, "+login", "anonymous", "+app_info_update", "1",
             "+app_info_print", str(APP_ID), "+quit"]
     try:

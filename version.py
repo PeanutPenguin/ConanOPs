@@ -1,5 +1,5 @@
 """ConanOps' own version number. Replaced by each update zip."""
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 
 # GitHub repo ("owner/name") checked for releases (see app_updates.py).
 # Empty disables online updates.
