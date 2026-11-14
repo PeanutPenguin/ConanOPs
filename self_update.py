@@ -319,6 +319,13 @@ def confirm_update_success() -> None:
     _log.info("Update confirmed successful; backup cleared.")
 
 
+# True once check_and_recover_pending_update() has put the previous version's
+# files back in this run. The process doing that is still the failed version
+# (its code was loaded before the files changed), so main.py starts ConanOps
+# again instead of carrying on.
+rolled_back_this_run = False
+
+
 def check_and_recover_pending_update() -> Optional[str]:
     """Call at the very start of the app. Returns a message if it rolled
     back an update, else None.
@@ -357,6 +364,8 @@ def check_and_recover_pending_update() -> Optional[str]:
             f"The last update didn't start up successfully, and restoring the previous version also failed "
             f"({e}). Your backup is at {backup_dir} -- you may need to copy it back into {install_dir} manually."
         )
+    global rolled_back_this_run
+    rolled_back_this_run = True
     _log.info("Rolled back an update that failed to start up successfully.")
     return "The last update didn't start up successfully, so ConanOps rolled back to the previous version."
 

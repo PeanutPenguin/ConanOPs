@@ -44,7 +44,9 @@ class UpdatesMixin:
     def _on_restart_update_check(self, server: ServerConfig, latest_buildid) -> None:
         self._update_check_workers.pop(server.id, None)
         self._settle_unknown_build(server, latest_buildid)
-        if latest_buildid and latest_buildid != server.installed_buildid:
+        # Only with automatic updates on: off means "tell me first", and the
+        # Updates page already shows the new build as waiting.
+        if server.auto_update and latest_buildid and latest_buildid != server.installed_buildid:
             self._notify(server, f"Update {latest_buildid} found during scheduled restart -- updating now.", title="Scheduled Restart")
             self._start_update_apply(server)
         else:
@@ -86,7 +88,10 @@ class UpdatesMixin:
             if self._is_update_busy(srv):
                 return
             self._notify(srv, f"Game update {build} found -- updating now.", title="Auto-Update")
-            self._start_update_apply(srv)
+            # A server held stopped by an earlier failed update (the retry
+            # timer doesn't survive a restart of ConanOps) is meant to be
+            # running: start it once this update is in.
+            self._start_update_apply(srv, relaunch_after=bool(srv.update_hold and srv.desired_running))
         # With players online: warned in game first, or (set to wait) left
         # for the next check or the next scheduled restart.
         self._with_warning(server, "update", update_now)
@@ -324,6 +329,12 @@ class UpdatesMixin:
         its next restart."""
         if server.id in self._mod_refresh_workers:
             return  # already busy (an update-triggered refresh, most likely) -- try again next time this fires
+        if server.mod_auto_update and server.install_dir and process_manager.is_running(server.install_dir):
+            # The hourly mod watch (mod_watch.py) stops the server, downloads
+            # and starts it again. Downloading here first would replace files
+            # the server has open, and leave nothing "newer" for the watch to
+            # find, so the server would keep running the old version.
+            return  # not stamped: done once the server is stopped
         mod_ids = [m["id"] for m in server.mods]  # all mods -- see _update_mods_then_relaunch
         if not mod_ids or not server.steamcmd_dir:
             server.last_mod_check_at = datetime.now().isoformat()
