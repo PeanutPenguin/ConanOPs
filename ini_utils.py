@@ -180,6 +180,27 @@ def apply_known_keys(path: str, updates: Dict[str, Tuple[str, str]]) -> None:
     fileio.write_text_atomic(path, "".join(lines), encoding=encoding)
 
 
+def remove_keys_anywhere(path: str, keys) -> List[str]:
+    """Deletes every line that sets one of `keys`, in any section. Returns
+    the lines removed (stripped); the file is backed up first and left
+    untouched when there's nothing to remove."""
+    if not os.path.exists(path):
+        return []
+    wanted = {k.casefold() for k in keys}
+    lines, encoding = _read_lines(path)
+    kept, removed = [], []
+    for line in lines:
+        m = _KEY_RE.match(line)
+        if m and m.group("key").strip().casefold() in wanted:
+            removed.append(line.strip())
+        else:
+            kept.append(line)
+    if removed:
+        backup_ini(path)
+        fileio.write_text_atomic(path, "".join(kept), encoding=encoding)
+    return removed
+
+
 def bool_to_ini(v: bool) -> str:
     return "True" if v else "False"
 

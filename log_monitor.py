@@ -19,6 +19,12 @@ STATUS_RE = re.compile(
 JOIN_RE = re.compile(r"LogNet: Join succeeded: (?P<name>.+)")
 LEAVE_RE = re.compile(r"LogNet: Player disconnected: (?P<name>.+)")
 SAVE_RE = re.compile(r"LogSave: World save completed")
+# Unreal's line when a joining game and the server are different versions (the
+# player sees "Outdated Client"): "...Client connecting with invalid version.
+# LocalNetworkVersion: 123, RemoteNetworkVersion: 456". Local is the server.
+VERSION_MISMATCH_RE = re.compile(
+    r"invalid version.*?LocalNetworkVersion:\s*(?P<server>\d+).*?RemoteNetworkVersion:\s*(?P<client>\d+)",
+    re.IGNORECASE)
 
 
 _log = applog.get_logger(__name__)
@@ -63,6 +69,7 @@ class LogMonitor(QThread):
     player_joined = Signal(str)
     player_left = Signal(str)
     world_saved = Signal()
+    version_mismatch = Signal(str, str)  # server's network version, the turned-away game's
     log_line = Signal(str)
     initial_online_snapshot = Signal(set)  # {name, ...} -- who's already online when we first attach
 
@@ -183,3 +190,8 @@ class LogMonitor(QThread):
 
             if SAVE_RE.search(line):
                 self.world_saved.emit()
+                continue
+
+            m = VERSION_MISMATCH_RE.search(line)
+            if m:
+                self.version_mismatch.emit(m.group("server"), m.group("client"))

@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Optional
+from typing import List, Optional
 
 import psutil
 
@@ -144,6 +144,28 @@ def server_settings_path(install_dir: str) -> str:
     return os.path.join(os.path.dirname(game_ini_path(install_dir)), "ServerSettings.ini")
 
 
+# Engine.ini lines that pin the version the server announces. Left over from
+# an older install they make it tell every player "Outdated Client" although
+# both sides are up to date.
+BUILD_ID_OVERRIDE_KEYS = ("bUseBuildIdOverride", "BuildIdOverride")
+
+
+def clear_build_id_override(server: ServerConfig) -> List[str]:
+    """Removes pinned-version lines from the server's Engine.ini before it
+    starts. Returns the lines removed ([] almost always)."""
+    import ini_utils  # local: keeps this module's import graph minimal
+    try:
+        removed = ini_utils.remove_keys_anywhere(engine_ini_path(server.install_dir), BUILD_ID_OVERRIDE_KEYS)
+    except OSError as e:
+        _log.warning(f"Couldn't check {server.name}'s Engine.ini for a pinned game version: {e}")
+        return []
+    if removed:
+        _log.warning(f"{server.name}: removed a pinned game version from Engine.ini ({'; '.join(removed)}). "
+                     "It makes the server turn players away as \"Outdated Client\". A copy of the file "
+                     "from before is next to it (.bak).")
+    return removed
+
+
 def sync_server_ini(server: ServerConfig) -> bool:
     """Makes the name, password, ports and player limit in Engine.ini/Game.ini
     match ConanOps' before launch. The server reads its name only from
@@ -214,6 +236,7 @@ def launch(server: ServerConfig) -> Optional[subprocess.Popen]:
         return None
     sync_server_ini(server)
     sync_rcon_ini(server)
+    clear_build_id_override(server)
     args = build_launch_args(server)
     kwargs = dict(cwd=os.path.dirname(exe), env=proc_utils.child_env(), **hidden_gui_window_kwargs())
     if sys.platform == "win32":

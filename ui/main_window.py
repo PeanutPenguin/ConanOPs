@@ -153,6 +153,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         # cleared once the drive recovers so a later drop alerts again.
         self._disk_space_low_alerted: set = set()
         self._update_check_workers: Dict[str, CheckWorker] = {}
+        self._last_version_mismatch: Dict[str, float] = {}  # server id -> time.monotonic() it was last handled
         self._update_apply_workers: Dict[str, UpdateWorker] = {}
         self._files_repaired: set = set()  # server ids whose game files were repaired this crash streak
         self._manual_update_in_progress: set = set()  # server ids with a manual update (Updates page) running
@@ -857,6 +858,8 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
         monitor.player_left.connect(lambda name, sid=server.id: self._on_player_left(sid, name))
         monitor.status_update.connect(lambda data, sid=server.id: self._on_status_update(sid, data))
         monitor.log_line.connect(lambda line, sid=server.id: self._on_log_line(sid, line))
+        monitor.version_mismatch.connect(
+            lambda ours, theirs, sid=server.id: self._on_version_mismatch(sid, ours, theirs))
         monitor.initial_online_snapshot.connect(lambda names, sid=server.id: self._on_initial_online_snapshot(sid, names))
         monitor.start()
 
