@@ -51,7 +51,7 @@ class HealthCheckWorker(QThread):
             if not server.install_dir:
                 continue
             try:
-                running = process_manager.is_running(server.install_dir)
+                running = process_manager.is_running(server.install_dir, max_age=process_manager.POLL_MAX_AGE)
                 info = stats = None
                 if running:
                     info = network_utils.query_a2s_info(

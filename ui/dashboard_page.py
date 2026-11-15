@@ -37,7 +37,7 @@ class _DashboardPollWorker(QThread):
     def run(self) -> None:
         result = {"pid": None, "proc": None, "cpu": None, "mem_mb": None, "uptime_seconds": None, "max_players": None}
         try:
-            pid = process_manager.find_running_pid(self.install_dir)
+            pid = process_manager.find_running_pid(self.install_dir, max_age=process_manager.POLL_MAX_AGE)
             result["pid"] = pid
             if pid is not None:
                 try:

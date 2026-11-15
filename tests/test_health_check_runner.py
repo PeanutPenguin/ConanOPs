@@ -37,7 +37,7 @@ def test_skips_servers_with_no_install_dir():
 
 def test_not_running_server_reports_no_query(monkeypatch, tmp_path):
     server = models.ServerConfig(id="s1", install_dir=str(tmp_path))
-    monkeypatch.setattr(process_manager, "is_running", lambda install_dir: False)
+    monkeypatch.setattr(process_manager, "is_running", lambda install_dir, max_age=0.0: False)
     queried = []
     monkeypatch.setattr(network_utils, "query_a2s_info", lambda *a, **k: queried.append(1))
 
@@ -49,7 +49,7 @@ def test_not_running_server_reports_no_query(monkeypatch, tmp_path):
 
 def test_running_server_gets_queried(monkeypatch, tmp_path):
     server = models.ServerConfig(id="s1", install_dir=str(tmp_path), bind_ip="127.0.0.1", query_port=27015)
-    monkeypatch.setattr(process_manager, "is_running", lambda install_dir: True)
+    monkeypatch.setattr(process_manager, "is_running", lambda install_dir, max_age=0.0: True)
     info = {"name": "Chudville", "players": 3, "max_players": 40}
     monkeypatch.setattr(network_utils, "query_a2s_info", lambda ip, port, timeout=1.5: info)
 
@@ -60,7 +60,7 @@ def test_running_server_gets_queried(monkeypatch, tmp_path):
 
 def test_running_but_unresponsive_reports_none_info(monkeypatch, tmp_path):
     server = models.ServerConfig(id="s1", install_dir=str(tmp_path))
-    monkeypatch.setattr(process_manager, "is_running", lambda install_dir: True)
+    monkeypatch.setattr(process_manager, "is_running", lambda install_dir, max_age=0.0: True)
     monkeypatch.setattr(network_utils, "query_a2s_info", lambda *a, **k: None)
 
     results = _run_worker_synchronously([server])
@@ -74,7 +74,7 @@ def test_one_server_failing_does_not_drop_the_rest(monkeypatch, tmp_path):
 
     calls = {"n": 0}
 
-    def is_running(install_dir):
+    def is_running(install_dir, max_age=0.0):
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError("simulated failure")
