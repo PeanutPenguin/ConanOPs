@@ -8,6 +8,7 @@ import proc_utils
 import os
 import subprocess
 import sys
+import threading
 import time
 from typing import List, Optional
 
@@ -70,14 +71,21 @@ def _cached_pid(target_exe: str) -> Optional[int]:
     return None
 
 
-def find_running_pid(install_dir: str) -> Optional[int]:
-    """Matches name AND exe path, so two servers on one machine aren't confused.
-    Uses its own Process objects rather than psutil.process_iter()'s shared
-    cache (see takeover._processes)."""
-    target_exe = os.path.normcase(os.path.abspath(server_exe_path(install_dir)))
-    pid = _cached_pid(target_exe)
-    if pid is not None:
-        return pid
+# A running server is found again through _pid_cache at almost no cost. A
+# stopped one can only be confirmed by walking every process on the PC, and
+# the things that ask on a timer (health check, dashboard, one per server)
+# used to each do their own walk. One walk now answers for every server, and
+# those timed askers may reuse it for a few seconds.
+POLL_MAX_AGE = 3.0
+_scan_lock = threading.Lock()
+_last_scan = 0.0            # time.monotonic() of the last full walk; 0.0 = none usable
+scan_count = 0              # full walks so far (for tests and diagnostics)
+
+
+def _scan_servers() -> None:
+    """One walk over all processes: every running server exe goes into _pid_cache."""
+    global _last_scan, scan_count
+    found = {}
     for pid in psutil.pids():
         try:
             proc = psutil.Process(pid)
@@ -85,16 +93,42 @@ def find_running_pid(install_dir: str) -> Optional[int]:
                 if proc.name() != PROCESS_NAME:
                     continue
                 exe = proc.exe()
-                if exe and os.path.normcase(os.path.abspath(exe)) == target_exe:
-                    _pid_cache[target_exe] = (pid, proc.create_time())
-                    return pid
+                if exe:
+                    found[os.path.normcase(os.path.abspath(exe))] = (pid, proc.create_time())
         except (psutil.Error, OSError):
             continue
-    return None
+    _pid_cache.update(found)
+    scan_count += 1
+    _last_scan = time.monotonic()
 
 
-def is_running(install_dir: str) -> bool:
-    return find_running_pid(install_dir) is not None
+def forget_scan() -> None:
+    """A server was just started or stopped: the last walk no longer says
+    what's running, so the next question walks again."""
+    global _last_scan
+    _last_scan = 0.0
+
+
+def find_running_pid(install_dir: str, max_age: float = 0.0) -> Optional[int]:
+    """Matches name AND exe path, so two servers on one machine aren't confused.
+    Uses its own Process objects rather than psutil.process_iter()'s shared
+    cache (see takeover._processes).
+
+    max_age: how old (seconds) a "not running" answer may be. 0 (default)
+    always looks afresh, which anything about to start, stop or touch the
+    server's files needs. Timed polling passes POLL_MAX_AGE."""
+    target_exe = os.path.normcase(os.path.abspath(server_exe_path(install_dir)))
+    pid = _cached_pid(target_exe)
+    if pid is not None:
+        return pid
+    with _scan_lock:
+        if not (max_age > 0 and _last_scan and time.monotonic() - _last_scan < max_age):
+            _scan_servers()
+    return _cached_pid(target_exe)
+
+
+def is_running(install_dir: str, max_age: float = 0.0) -> bool:
+    return find_running_pid(install_dir, max_age=max_age) is not None
 
 
 def game_ini_path(install_dir: str) -> str:
@@ -244,10 +278,14 @@ def launch(server: ServerConfig) -> Optional[subprocess.Popen]:
         # can't kill the server. Not every job allows it, so fall back.
         try:
             flags = kwargs.get("creationflags", 0) | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
-            return subprocess.Popen(args, **dict(kwargs, creationflags=flags))
+            proc = subprocess.Popen(args, **dict(kwargs, creationflags=flags))
+            forget_scan()
+            return proc
         except OSError:
             pass
-    return subprocess.Popen(args, **kwargs)
+    proc = subprocess.Popen(args, **kwargs)
+    forget_scan()
+    return proc
 
 
 # After `saveworld`: how long the world DB must stay unwritten to count as

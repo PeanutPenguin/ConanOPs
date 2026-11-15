@@ -142,7 +142,7 @@ def test_poll_worker_does_not_double_call_cpu_percent_on_a_fresh_process(monkeyp
         def create_time(self):
             return 0.0
 
-    monkeypatch.setattr(process_manager, "find_running_pid", lambda install_dir: 1234)
+    monkeypatch.setattr(process_manager, "find_running_pid", lambda install_dir, max_age=0.0: 1234)
     monkeypatch.setattr("ui.dashboard_page.psutil.Process", lambda pid: FakeProc())
     monkeypatch.setattr("ui.dashboard_page.network_utils.query_a2s_info", lambda *a, **k: None)
 

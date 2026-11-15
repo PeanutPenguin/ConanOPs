@@ -224,3 +224,55 @@ def test_config_with_a_broken_server_entry_still_loads(tmp_path):
     raw["servers"].append("not a server")
     json.dump(raw, open(path, "w", encoding="utf-8"))
     assert [s.name for s in models.AppConfig.load(path).servers] == ["Good"]
+
+
+# ------------------------------------------------- one process walk for all --
+
+def test_timed_polling_shares_one_process_walk_across_servers(tmp_path, monkeypatch):
+    import process_manager as pm
+    monkeypatch.setattr(pm, "_pid_cache", {})
+    pm.forget_scan()
+    before = pm.scan_count
+    dirs = [str(tmp_path / n) for n in "abc"]
+    assert [pm.is_running(d, max_age=pm.POLL_MAX_AGE) for d in dirs] == [False, False, False]
+    assert pm.scan_count == before + 1          # one walk answered for all three
+    assert pm.is_running(dirs[0]) is False
+    assert pm.scan_count == before + 2          # the default always looks afresh
+    pm.forget_scan()                            # as after a start or stop
+    pm.is_running(dirs[0], max_age=pm.POLL_MAX_AGE)
+    assert pm.scan_count == before + 3
+
+
+def test_one_walk_finds_every_running_server(tmp_path, monkeypatch):
+    import os
+    import process_manager as pm
+    monkeypatch.setattr(pm, "_pid_cache", {})
+    exes = {11: pm.server_exe_path(str(tmp_path / "a")), 12: pm.server_exe_path(str(tmp_path / "b")), 13: "/x/other"}
+
+    class FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def oneshot(self):
+            import contextlib
+            return contextlib.nullcontext()
+
+        def name(self):
+            return pm.PROCESS_NAME if self.pid in (11, 12) else "other.exe"
+
+        def exe(self):
+            return exes[self.pid]
+
+        def create_time(self):
+            return 5.0
+
+        def is_running(self):
+            return True
+    monkeypatch.setattr(pm.psutil, "pids", lambda: [11, 12, 13])
+    monkeypatch.setattr(pm.psutil, "Process", FakeProc)
+    pm.forget_scan()
+    before = pm.scan_count
+    assert pm.find_running_pid(str(tmp_path / "a")) == 11
+    assert pm.find_running_pid(str(tmp_path / "b")) == 12   # from the same walk
+    assert pm.scan_count == before + 1
+    assert os.path.normcase(os.path.abspath(exes[13])) not in pm._pid_cache
