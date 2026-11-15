@@ -442,8 +442,13 @@ def restore_backup(install_dir: str, backup: BackupEntry) -> None:
                               "so nothing was restored. Try an older backup.")
         # A leftover -wal from the current DB would be replayed onto the
         # restored .db and corrupt it; the backup brings its own if it had one.
-        for stale in glob.glob(os.path.join(saved, "*.db-wal")) + glob.glob(os.path.join(saved, "*.db-shm")):
-            os.remove(stale)
+        # Only for the databases being replaced: another one's -wal can hold
+        # changes that aren't in its .db yet.
+        for _staged, target in placed:
+            if target.endswith(".db"):
+                for stale in (target + "-wal", target + "-shm"):
+                    if os.path.exists(stale):
+                        os.remove(stale)
         for staged, target in placed:
             os.makedirs(os.path.dirname(target), exist_ok=True)
             os.replace(staged, target)

@@ -777,6 +777,17 @@ class AppSettingsPage(QWidget):
             lay, webhooks.test_ntfy, self.alert_ntfy_edit)
         self.alert_ntfy_guide = FoldOutGuide(*alert_guides.NTFY)
         lay.addWidget(self.alert_ntfy_guide)
+
+        # Heartbeat: the only alert that works when this PC is off.
+        self.heartbeat_edit = field("Heartbeat link (tells you when this PC or ConanOps goes offline)",
+                                    "https://hc-ping.com/your-check-id", self.config.heartbeat_url)
+        self.heartbeat_edit.editingFinished.connect(self._on_heartbeat_changed)
+        heartbeat_note = QLabel("ConanOps calls this link every 5 minutes while it's running. Make a check at a "
+                                "free uptime service such as healthchecks.io, paste its link here, and that "
+                                "service alerts you when the calls stop.")
+        heartbeat_note.setObjectName("Dim")
+        heartbeat_note.setWordWrap(True)
+        lay.addWidget(heartbeat_note)
         # Discord commands: a bot that answers !status and !restart (Advanced mode).
         card_lay = lay
         self.discord_bot_box = QWidget()
@@ -808,6 +819,12 @@ class AppSettingsPage(QWidget):
         self.discord_bot_problem_label.setWordWrap(True)
         self.discord_bot_problem_label.hide()
         lay.addWidget(self.discord_bot_problem_label)
+        self.discord_bot_ok_label = QLabel("Connected: the bot is reading this channel. Type !help there to "
+                                           "see what it answers.")
+        self.discord_bot_ok_label.setObjectName("Dim")
+        self.discord_bot_ok_label.setWordWrap(True)
+        self.discord_bot_ok_label.hide()
+        lay.addWidget(self.discord_bot_ok_label)
         self.discord_bot_guide = FoldOutGuide(*alert_guides.DISCORD_BOT)
         lay.addWidget(self.discord_bot_guide)
         lay = card_lay
@@ -967,6 +984,25 @@ class AppSettingsPage(QWidget):
     def show_discord_bot_problem(self, text: str) -> None:
         self.discord_bot_problem_label.setText(text)
         self.discord_bot_problem_label.setVisible(bool(text))
+        if text:
+            self.discord_bot_ok_label.hide()
+
+    def show_discord_bot_connected(self, on: bool) -> None:
+        self.discord_bot_ok_label.setVisible(bool(on))
+        if on:
+            self.discord_bot_problem_label.hide()
+
+    def _on_heartbeat_changed(self) -> None:
+        import heartbeat
+        try:
+            url = heartbeat.clean_url(self.heartbeat_edit.text())
+        except ValueError as e:
+            self.alert_error_label.setText(f"Not saved: {e}")
+            self.alert_error_label.show()
+            return
+        if url != self.config.heartbeat_url:
+            self.config.heartbeat_url = url
+            self.config.save()
 
     def _on_discord_status_toggled(self, on: bool) -> None:
         self._on_alert_links_changed()

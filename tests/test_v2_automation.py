@@ -122,7 +122,7 @@ def test_a_server_that_wont_stop_keeps_running_on_the_old_mods(tmp_path, monkeyp
         win.close()
 
 
-def test_scheduler_asks_hourly_only_with_mods_and_the_switch_on(monkeypatch):
+def test_scheduler_asks_every_few_minutes_for_any_server_with_mods(monkeypatch):
     import sys
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication(sys.argv)
@@ -134,12 +134,16 @@ def test_scheduler_asks_hourly_only_with_mods_and_the_switch_on(monkeypatch):
     sch.mod_watch_due.connect(fired.append)
     t = datetime(2026, 11, 10, 12, 0)
     sch._check_mod_watch(s, t)
-    sch._check_mod_watch(s, t + timedelta(minutes=30))
-    sch._check_mod_watch(s, t + timedelta(minutes=61))
+    sch._check_mod_watch(s, t + timedelta(minutes=2))
+    sch._check_mod_watch(s, t + timedelta(minutes=6))
     assert len(fired) == 2
+    # With automatic mod updates off it still asks: the owner is told, nothing restarts.
     s.mod_auto_update = False
     sch._check_mod_watch(s, t + timedelta(hours=5))
-    assert len(fired) == 2
+    assert len(fired) == 3
+    s.mods = []
+    sch._check_mod_watch(s, t + timedelta(hours=9))
+    assert len(fired) == 3
 
 
 # ---------------------------------------------------------- weekly report --

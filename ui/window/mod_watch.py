@@ -36,6 +36,8 @@ class ModWatchMixin:
         self._mod_update_pending: Dict[str, List[Tuple[str, int]]] = {}
         self._mod_update_restarting: set = set()
         self._mod_update_backoff: Dict[str, float] = {}
+        self._mod_alerted: set = set()  # (server id, what, mod id[, version]) already told about this session
+        self._recent_mod_change: Dict[str, Tuple[float, List[str]]] = {}  # server id -> (when, mods just updated)
 
     def _handle_mod_watch_due(self, server: ServerConfig) -> None:
         if server.id in self._mod_watch_workers or self.server_busy(server):
@@ -46,7 +48,7 @@ class ModWatchMixin:
         from workshop_search_runner import ModStatusWorker
         import steam_workshop_api as swa
         worker = ModStatusWorker(ids, api_key=self.config.steam_api_key,
-                                 cutoff_ts=swa.cutoff_timestamp(self.config.workshop_update_cutoff))
+                                 cutoff_ts=swa.cutoff_timestamp(self.config.mod_cutoff()))
         worker.finished_status.connect(lambda result, srv=server: self._on_mod_watch_result(srv, result))
         self._mod_watch_workers[server.id] = worker
         self._retire_worker(worker)
@@ -54,14 +56,18 @@ class ModWatchMixin:
 
     def _on_mod_watch_result(self, server: ServerConfig, result) -> None:
         self._mod_watch_workers.pop(server.id, None)
-        if server not in self.config.servers or not server.mod_auto_update:
+        if server not in self.config.servers:
             return
         if not getattr(result, "ok", False):
             _log.info(f"Mod update check for {server.name} didn't get an answer: {getattr(result, 'error', '')}")
             return
         ids = [m["id"] for m in server.mods if m.get("enabled", True)]
+        self._alert_removed_mods(server, ids, result.items or {})
         newer = mod_versions.newer_on_workshop(server.steamcmd_dir, ids, result.items or {})
         if not newer:
+            return
+        if not server.mod_auto_update:
+            self._tell_about_newer_mods(server, newer)
             return
         if time.monotonic() < self._mod_update_backoff.get(server.id, 0.0):
             return
@@ -69,6 +75,78 @@ class ModWatchMixin:
         if self.server_busy(server) or server.id in self._countdowns:
             return  # tried again next hour
         self._with_warning(server, "mod update", lambda srv=server: self._mod_update_now(srv))
+
+    def _alert_removed_mods(self, server: ServerConfig, ids: List[str], items: dict) -> None:
+        """A mod the Workshop no longer lists can't be downloaded by players,
+        so they can't join: say so once, not every few minutes."""
+        gone = [wid for wid in ids if wid not in items and (server.id, "gone", wid) not in self._mod_alerted]
+        if not gone:
+            return
+        self._mod_alerted.update((server.id, "gone", wid) for wid in gone)
+        self._notify(server, f"No longer on the Steam Workshop (removed or made private): {mod_names(server, gone)}. "
+                             "Players can't download it any more, so new players can't join while it's enabled. "
+                             "Don't just switch it off: anything it added is deleted from the world when the "
+                             "server saves without it.", title="Mod Removed From Workshop")
+
+    def _tell_about_newer_mods(self, server: ServerConfig, newer: List[Tuple[str, int]]) -> None:
+        """Automatic mod updates are off: no restart, but the owner should know."""
+        fresh = [(wid, ts) for wid, ts in newer if (server.id, "newer", wid, ts) not in self._mod_alerted]
+        if not fresh:
+            return
+        self._mod_alerted.update((server.id, "newer", wid, ts) for wid, ts in fresh)
+        self._notify(server, f"New Workshop version of {mod_names(server, [w for w, _t in fresh])}. Players' games "
+                             "take it straight away, and can't join until the server has it too: restart the "
+                             "server (it downloads mods as it starts), or turn on \"Update Workshop mods "
+                             "automatically\".", title="Mod Update Waiting")
+
+    def _record_mod_proof(self, server: ServerConfig) -> None:
+        """The server has started and answered: note, for each enabled mod,
+        that this version ran on this game build (mod_compat.py)."""
+        import mod_compat
+        build = server.installed_buildid
+        ids = [m["id"] for m in server.mods if m.get("enabled", True)]
+        if not build or not ids or not server.steamcmd_dir:
+            return
+
+        def store(times, srv=server):
+            if srv not in self.config.servers:
+                return
+            listed = {m["id"] for m in srv.mods}
+            proof = {wid: p for wid, p in srv.mod_proof.items() if wid in listed}
+            for wid, t in (times or {}).items():
+                if t:
+                    proof[wid] = mod_compat.proof_for(build, t, True)
+            if proof != srv.mod_proof:
+                srv.mod_proof = proof
+                self.config.save()
+                page = getattr(self, "mods_page", None)
+                if page is not None and self.config.active_server_id == srv.id:
+                    page._refresh()
+        self._run_op(lambda d=server.steamcmd_dir: mod_versions.installed_times(d, ids), on_done=store,
+                     on_error=lambda e: _log.info(f"Couldn't note which mod versions {server.name} started with: {e}"))
+
+    # How long after a mod update a failing server is put down to that update.
+    MOD_CHANGE_BLAME_SECONDS = 3600
+
+    def _blame_recent_mod_change(self, server: ServerConfig, what: str) -> str:
+        """Called when a server keeps failing right after an update. If mods
+        had just been updated, those are the likeliest cause: record that
+        they failed on this build and name them. Returns their names ("" if
+        no mod had just changed)."""
+        import mod_compat
+        when, changed = self._recent_mod_change.pop(server.id, (0.0, []))
+        if not changed or time.monotonic() - when > self.MOD_CHANGE_BLAME_SECONDS:
+            return ""
+        for wid in changed:
+            server.mod_proof[wid] = mod_compat.proof_for(server.installed_buildid, server.mod_versions.get(wid), False)
+        self.config.save()
+        names = mod_names(server, changed)
+        self._notify(server, f"{server.name} {what} repeatedly right after a mod update: {names}. That update is "
+                             "the most likely cause. The mod is marked \"Failed on this build\" on the Mods "
+                             "page. Don't just switch it off: anything it added is deleted from the world when "
+                             "the server saves without it. Check the mod's Workshop page for a fix, or use "
+                             "Mods → Find all bad mods.", title="Mod Update Broke the Server")
+        return names
 
     def _mod_update_now(self, server: ServerConfig) -> None:
         newer = self._mod_update_pending.get(server.id)
@@ -118,6 +196,8 @@ class ModWatchMixin:
         self._mod_update_restarting.discard(server.id)
         if success:
             self._mod_update_backoff.pop(server.id, None)
+            if pending:
+                self._recent_mod_change[server.id] = (time.monotonic(), [w for w, _t in pending])
             self._record_event(server, "mod_update", mod_names(server, [w for w, _t in pending or []]))
         else:
             self._mod_update_backoff[server.id] = time.monotonic() + MOD_UPDATE_BACKOFF_SECONDS

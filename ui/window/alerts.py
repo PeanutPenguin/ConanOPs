@@ -73,8 +73,15 @@ class AlertsMixin:
         bot = discord_bot.DiscordBotWorker(*want)
         bot.command.connect(self._on_discord_command)
         bot.problem.connect(self._on_discord_bot_problem)
+        bot.connected.connect(self._on_discord_bot_connected)
         self._discord_bot = bot
         bot.start()
+
+    def _on_discord_bot_connected(self) -> None:
+        self.discord_bot_problem = ""
+        page = getattr(self, "app_settings_page", None)
+        if page is not None and hasattr(page, "show_discord_bot_connected"):
+            page.show_discord_bot_connected(True)
 
     def _on_discord_bot_problem(self, text: str) -> None:
         self.discord_bot_problem = text
@@ -105,19 +112,38 @@ class AlertsMixin:
             reply = discord_bot.HELP
         elif cmd == "status":
             reply = discord_bot.status_text(self._discord_status_rows(), self.web_link_line())
+        elif cmd == "players":
+            reply = discord_bot.players_text(self._discord_status_rows())
         elif author_id not in discord_bot.admin_ids(self.config.discord_bot_admin_ids):
-            reply = "Only people on ConanOps' allowed list can restart the server."
+            reply = f"Only people on ConanOps' allowed list can use `!{cmd}`."
+        elif cmd == "link":
+            # The link is the way in to everything, so it isn't given to the whole channel.
+            reply = self.web_link_line() or ("There's no link right now. It exists while the web version and "
+                                             "\"from anywhere\" are both on in ConanOps, and changes each "
+                                             "time that connection restarts.")
         else:
             server, why = discord_bot.pick_server(self.config.servers, arg)
             if server is None:
-                reply = why
+                reply = why.replace("!restart", f"!{cmd}")
             else:
-                problem = self.restart_server(server)
-                reply = (f"Can't restart {server.name}: {problem}" if problem
-                         else f"Restarting **{server.name}** -- players get a warning and the world is saved first.")
-                if not problem:
-                    _log.info(f"{server.name}: restart requested from Discord by {author} ({author_id})")
+                reply = self._discord_server_command(cmd, server)
+                _log.info(f"{server.name}: !{cmd} from Discord by {author} ({author_id}): {reply}")
         bot.reply(message_id, reply)
+
+    def _discord_server_command(self, cmd: str, server: ServerConfig) -> str:
+        """Runs !restart / !backup / !update for one server; the reply to post."""
+        if cmd == "restart":
+            problem = self.restart_server(server)
+            return (f"Can't restart {server.name}: {problem}" if problem
+                    else f"Restarting **{server.name}** -- players get a warning and the world is saved first.")
+        if cmd == "backup":
+            problem = self.start_backup(server, "manual")
+            return (f"Can't back up {server.name}: {problem}" if problem
+                    else f"Backing up **{server.name}** now. An alert follows when it's done.")
+        problem = self.update_on_request(server)
+        return (f"Can't update {server.name}: {problem}" if problem
+                else f"Checking Steam for a new build of **{server.name}**. If there is one it's installed "
+                     f"(players are warned first); an alert says how it went.")
 
     def _on_notify_finished(self, ok: bool, server_name: str, title: str, message: str) -> None:
         if not ok:
