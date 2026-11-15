@@ -75,6 +75,41 @@ class UpdatesMixin:
         self._retire_worker(worker)
         worker.start()
 
+    def update_on_request(self, server: ServerConfig) -> str:
+        """Asked for by a person (Discord's !update): checks Steam now and
+        installs a newer build whatever the automatic-update setting says.
+        "" once the check has started, or why it can't."""
+        if not server.install_dir or not server.steamcmd_dir:
+            return "This server isn't set up yet."
+        if self._is_update_busy(server):
+            return "An update or update check is already running."
+        busy = self.server_busy(server)
+        if busy:
+            return f"Wait until this finishes: {busy}."
+        worker = CheckWorker(server.steamcmd_dir)
+
+        def checked(latest, info, srv=server):
+            self._update_check_workers.pop(srv.id, None)
+            self.updates_page.record_check(srv, latest, info)
+            if srv not in self.config.servers:
+                return
+            if not latest:
+                self._notify(srv, "Couldn't reach Steam to check for a new build. Try again in a few minutes.",
+                             title="Update Check")
+                return
+            srv.last_update_check_at = datetime.now().isoformat()
+            self.config.save()
+            if latest == srv.installed_buildid:
+                self._notify(srv, f"Already on the newest build Steam offers ({latest}).", title="Update Check")
+                return
+            self._notify(srv, f"Game update {latest} found -- installing it as asked.", title="Update")
+            self._with_warning(srv, "update", lambda s=srv: self._start_update_apply(s))
+        worker.finished_check.connect(checked)
+        self._update_check_workers[server.id] = worker
+        self._retire_worker(worker)
+        worker.start()
+        return ""
+
     # A player turned away is acted on at most this often per server: one
     # person retrying, or a group on the old version, is one problem.
     VERSION_MISMATCH_QUIET_SECONDS = 30 * 60
@@ -329,6 +364,7 @@ class UpdatesMixin:
             return False  # first one: let the watchdog try once, could be a fluke
         self._post_update_watch.pop(server.id, None)
         self._known_running[server.id] = False
+        blamed = self._blame_recent_mod_change(server, what)
         if self._start_mod_recovery(server, what):
             return True  # the mod check stops the server itself, safely, before testing
         if server.install_dir and process_manager.is_running(server.install_dir):
@@ -337,6 +373,10 @@ class UpdatesMixin:
                          on_done=lambda _r, sid=server.id: self._expected_stop.discard(sid),
                          on_error=lambda _e, sid=server.id: self._expected_stop.discard(sid))
         self._known_running[server.id] = False
+        if blamed:
+            server.update_hold = f"It {what} repeatedly right after a mod update ({blamed})."
+            self.config.save()
+            return True  # _blame_recent_mod_change already said which mods and what to do
         server.update_hold = (f"It {what} repeatedly right after the game update -- most likely a mod that "
                               f"hasn't been updated for the new version.")
         self.config.save()
@@ -358,7 +398,7 @@ class UpdatesMixin:
         from workshop_search_runner import ModStatusWorker
         import steam_workshop_api as swa
         worker = ModStatusWorker(enabled, api_key=self.config.steam_api_key,
-                                 cutoff_ts=swa.cutoff_timestamp(self.config.workshop_update_cutoff))
+                                 cutoff_ts=swa.cutoff_timestamp(self.config.mod_cutoff()))
 
         def report(result, srv=server):
             names = {m["id"]: (m.get("name") or m["id"]) for m in srv.mods}

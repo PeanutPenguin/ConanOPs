@@ -26,13 +26,22 @@ _log = applog.get_logger(__name__)
 
 API = "https://discord.com/api/v10"
 POLL_SECONDS = 4
-HELP = ("**ConanOps commands**\n`!status` -- every server's status and who's online\n"
-        "`!restart` (or `!restart <server name>`) -- warns players, saves and restarts (allowed people only)")
+HELP = ("**ConanOps commands**\n"
+        "`!status` -- every server's status and who's online\n"
+        "`!players` -- everyone online, by server\n"
+        "Allowed people only (add a server name if there's more than one):\n"
+        "`!restart` -- warns players, saves and restarts\n"
+        "`!backup` -- backs the world up now\n"
+        "`!update` -- checks Steam and installs a new game build if there is one\n"
+        "`!link` -- the link to ConanOps' web version")
+# Commands anyone in the channel may use; the rest need the allowed list.
+OPEN_COMMANDS = ("help", "status", "players")
 
 
 def parse_command(content: str) -> Optional[Tuple[str, str]]:
     """'!restart Siptah' -> ("restart", "Siptah"); None for anything else."""
-    m = re.match(r"^\s*!(status|restart|help)\b\s*(.*)$", content or "", re.IGNORECASE | re.DOTALL)
+    m = re.match(r"^\s*!(status|restart|help|link|players|backup|update)\b\s*(.*)$", content or "",
+                 re.IGNORECASE | re.DOTALL)
     return (m.group(1).lower(), m.group(2).strip()) if m else None
 
 
@@ -90,6 +99,7 @@ def _call(token: str, method: str, path: str, body: Optional[dict] = None):
 class DiscordBotWorker(QThread):
     command = Signal(str, str, str, str)  # message id, author id, author name, content
     problem = Signal(str)                 # plain-language reason it stopped or can't read
+    connected = Signal()                  # the first time Discord let it read the channel
 
     def __init__(self, token: str, channel_id: str, parent=None):
         super().__init__(parent)
@@ -97,6 +107,7 @@ class DiscordBotWorker(QThread):
         self.channel_id = channel_id.strip()
         self._replies: "queue.Queue[Tuple[str, str]]" = queue.Queue()
         self._warned_content = False
+        self._connected = False
 
     def reply(self, message_id: str, text: str) -> None:
         """Thread-safe: queues a reply to post on the bot's own thread."""
@@ -134,6 +145,9 @@ class DiscordBotWorker(QThread):
                     newest = _call(self.token, "GET", f"/channels/{self.channel_id}/messages?limit=1") or []
                     last_id = newest[0]["id"] if newest else "0"
                 msgs = _call(self.token, "GET", f"/channels/{self.channel_id}/messages?after={last_id}&limit=50") or []
+                if not self._connected:
+                    self._connected = True
+                    self.connected.emit()
                 for m in sorted(msgs, key=lambda x: int(x["id"])):
                     last_id = m["id"]
                     author = m.get("author") or {}
@@ -166,6 +180,21 @@ class DiscordBotWorker(QThread):
                 self._sleep(15)
                 continue
             self._sleep(POLL_SECONDS)
+
+
+def players_text(rows: List[dict]) -> str:
+    """rows as for status_text: everyone online, by server."""
+    if not rows:
+        return "No servers set up yet."
+    lines = []
+    for r in rows:
+        if not r["running"]:
+            lines.append(f"**{r['name']}** — offline")
+        elif not r.get("names"):
+            lines.append(f"**{r['name']}** — nobody online")
+        else:
+            lines.append(f"**{r['name']}** — {len(r['names'])} online: {', '.join(r['names'])}")
+    return "\n".join(lines)
 
 
 def status_text(rows: List[dict], link: str = "") -> str:

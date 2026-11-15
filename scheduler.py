@@ -22,7 +22,11 @@ def _parse_hhmm(s: str) -> dtime:
 
 
 def is_within_window(now: dtime, start: dtime, end: dtime) -> bool:
-    """Handles windows that cross midnight (e.g. 23:30-00:30)."""
+    """Handles windows that cross midnight (e.g. 23:30-00:30). The same time
+    for both ends means the hour from then on: read literally it's a window
+    nothing fits in, so the restart would silently never happen."""
+    if start == end:
+        end = dtime((start.hour + 1) % 24, start.minute)
     if start <= end:
         return start <= now < end
     return now >= start or now < end
@@ -40,7 +44,7 @@ class Scheduler(QObject):
     # Mods update on their own schedule, separate from server builds.
     _MOD_REFRESH_INTERVAL_HOURS = 24
     # How often the Workshop is asked whether a server's mods changed.
-    _MOD_WATCH_INTERVAL_SECONDS = 3600
+    _MOD_WATCH_INTERVAL_SECONDS = 300
 
     # Backoff between attempts while checks keep failing.
     _MIN_RETRY_SECONDS = 300
@@ -211,8 +215,11 @@ class Scheduler(QObject):
         self.mod_refresh_due.emit(server)
 
     def _check_mod_watch(self, server: ServerConfig, now: datetime) -> None:
-        """Hourly: is there a newer version of one of the server's mods?"""
-        if not server.mod_auto_update or not server.steamcmd_dir:
+        """Every few minutes: is there a newer version of one of the server's
+        mods, or has one left the Workshop? Players' games take a new version
+        at once, so until the server has it too they can't join. Runs with
+        automatic mod updates off as well: then it only tells the owner."""
+        if not server.steamcmd_dir:
             return
         if not any(m.get("enabled", True) for m in server.mods):
             return

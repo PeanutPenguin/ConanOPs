@@ -48,6 +48,9 @@ class RconClient:
         except OSError as e:
             self.close()
             raise RconError(f"Connection lost during authentication: {e}") from e
+        except RconError:
+            self.close()  # wrong password, or the server hung up: don't leave the socket open
+            raise
 
     def close(self) -> None:
         if self._sock:

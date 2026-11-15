@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QCursor, QColor
 
+import mod_compat
 import mod_manager
 import process_manager
 import steam_workshop_api as swa
@@ -128,6 +129,11 @@ class ModsPage(QWidget):
               "Like Quick mod check, but also catches a pair that only breaks things when both are "
               "enabled together. Takes meaningfully longer.",
               self._open_find_all_bisect)
+        entry("Fix load order",
+              "Moves each required mod above the mods that need it. A mod listed before something it "
+              "depends on can fail to load. Uses the Workshop's \"required items\", which Steam only "
+              "gives with an API key (App Settings → Steam Workshop).",
+              self._fix_load_order)
         entry("Bisect by hand…",
               "Find a broken mod yourself: ConanOps halves the list each round and you report whether "
               "the problem is still there.",
@@ -254,6 +260,36 @@ class ModsPage(QWidget):
             applog.get_logger(__name__).info(f"Mod status check failed: {result.error}")
         self._refresh()
 
+    def _verdict(self, mod: dict, info) -> str:
+        """mod_compat's verdict for a row: what the Workshop says, corrected
+        by what this server has actually run on its current game build."""
+        server = self.server
+        proof = (getattr(server, "mod_proof", None) or {}).get(mod["id"]) if server else None
+        return mod_compat.verdict(info, self._was_checked(mod["id"]), proof,
+                                  getattr(server, "installed_buildid", "") if server else "")[0]
+
+    def _order_needs(self, mod: dict, known: dict) -> list:
+        """Ids of required mods listed after this one (they must load first)."""
+        if not self.server or not known:
+            return []
+        return [need for mid, need in mod_compat.order_problems(self.server.mods, known) if mid == mod["id"]]
+
+    def _fix_load_order(self) -> None:
+        if not self.server:
+            return
+        known = self._mod_status.get(self.server.id) or {}
+        fixed = mod_compat.fixed_order(self.server.mods, known)
+        if [m["id"] for m in fixed] == [m["id"] for m in self.server.mods]:
+            self._set_status_note(
+                "✓ Nothing to reorder." if any(getattr(i, "children", None) for i in known.values()) else
+                "Run \"Check for outdated mods\" first. Which mods need which is only known with a Steam "
+                "API key (App Settings → Steam Workshop).", "ok")
+            return
+        self.server.mods[:] = fixed
+        self._persist()
+        self._set_status_note("✓ Load order fixed: each required mod now loads before the mods that need it. "
+                              "It takes effect at the next server restart.", "ok")
+
     def _row_color(self, mod: dict, known, server_ids: set) -> str:
         """Row color: dim when disabled, red for Legacy/missing/needs-a-mod,
         amber when only out of date."""
@@ -265,9 +301,10 @@ class ModsPage(QWidget):
         info = known.get(mod["id"])
         if info is None and not self._was_checked(mod["id"]):
             return ""
-        if info is None or info.status == swa.STATUS_LEGACY or any(c not in server_ids for c in info.children):
+        verdict = self._verdict(mod, info)
+        if info is None or verdict in mod_compat.PROBLEMS or any(c not in server_ids for c in info.children):
             return pal.red
-        if info.status == swa.STATUS_STALE:
+        if (info.status == swa.STATUS_STALE and verdict == mod_compat.UNVERIFIED) or self._order_needs(mod, known):
             return pal.yellow
         return ""
 
@@ -277,7 +314,13 @@ class ModsPage(QWidget):
         if info is None:
             return "  —  ⚠ not found on the Workshop (removed or private?)" if self._was_checked(mod["id"]) else ""
         parts = []
-        if info.status == swa.STATUS_STALE:
+        verdict = self._verdict(mod, info)
+        if verdict == mod_compat.FAILED:
+            parts.append("⚠ the server failed right after this version arrived")
+        elif verdict == mod_compat.WORKING:
+            parts.append(f"older (last {info.time_updated and self._fmt_day(info.time_updated)}), but working on "
+                         "this game build")
+        elif info.status == swa.STATUS_STALE:
             parts.append(f"⚠ not updated for current patch (last {info.time_updated and self._fmt_day(info.time_updated)})")
         elif info.status == swa.STATUS_LEGACY:
             parts.append("⚠ Legacy mod")
@@ -287,6 +330,9 @@ class ModsPage(QWidget):
         if missing:
             names = ", ".join((known[c].title if c in known else c) for c in missing)
             parts.append(f"⚠ needs: {names}")
+        late = self._order_needs(mod, known)
+        if late:
+            parts.append("⚠ must load after: " + ", ".join((known[c].title if c in known else c) for c in late))
         return ("  —  " + "  ·  ".join(parts)) if parts else ""
 
     def _set_status_note(self, text: str, kind: str) -> None:
@@ -306,11 +352,19 @@ class ModsPage(QWidget):
             return ""
         server_ids = {m["id"] for m in self.server.mods}
         enabled = [m for m in self.server.mods if m.get("enabled", True)]
-        stale = [m for m in enabled if m["id"] in known and known[m["id"]].status == swa.STATUS_STALE]
+        verdicts = {m["id"]: self._verdict(m, known.get(m["id"])) for m in enabled}
+        stale = [m for m in enabled if m["id"] in known and known[m["id"]].status == swa.STATUS_STALE
+                 and verdicts[m["id"]] == mod_compat.UNVERIFIED]
+        failed = [m for m in enabled if verdicts[m["id"]] == mod_compat.FAILED]
+        order = mod_compat.order_problems(self.server.mods, known)
         legacy = [m for m in enabled if m["id"] in known and known[m["id"]].status == swa.STATUS_LEGACY]
         gone = [m for m in enabled if m["id"] not in known and self._was_checked(m["id"])]
         needs = [m for m in enabled if m["id"] in known and any(c not in server_ids for c in known[m["id"]].children)]
         bits = []
+        if failed:
+            bits.append(f"{len(failed)} failed on this game build")
+        if order:
+            bits.append(f"{len({m for m, _n in order})} listed before a mod they need (use Fix load order in the menu)")
         if stale:
             bits.append(f"{len(stale)} not updated for the current patch")
         if legacy:
@@ -394,12 +448,19 @@ class ModsPage(QWidget):
         info = known.get(mod["id"])
         if info is None:
             return pills + ([("PillBad", "Not on the Workshop")] if self._was_checked(mod["id"]) else [])
-        if info.status == swa.STATUS_UPDATED:
+        verdict = self._verdict(mod, info)
+        if verdict == mod_compat.FAILED:
+            pills.insert(0, ("PillBad", mod_compat.LABELS[verdict]))
+        elif verdict == mod_compat.WORKING:
+            pills.insert(0, ("PillOn", mod_compat.LABELS[verdict]))
+        elif info.status == swa.STATUS_UPDATED:
             pills.insert(0, ("PillOn", "Updated for current patch"))
         elif info.status == swa.STATUS_STALE:
             pills.insert(0, ("PillWarn", "Not updated since cutoff"))
         elif info.status == swa.STATUS_LEGACY:
             pills.insert(0, ("PillBad", "Legacy"))
+        if self._order_needs(mod, known):
+            pills.append(("PillWarn", "Loads too early"))
         missing = [c for c in info.children if c not in server_ids]
         if missing:
             names = ", ".join((known[c].title if c in known else c) for c in missing)

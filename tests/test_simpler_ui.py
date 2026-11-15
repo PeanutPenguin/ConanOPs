@@ -124,7 +124,8 @@ def test_discard_all(win):
 
 def test_mods_tools_are_in_one_menu(win):
     texts = [a.text() for a in win.mods_page.fix_menu.actions() if a.text()]
-    assert texts == ["Check for outdated mods", "Quick mod check…", "Find all bad mods…", "Bisect by hand…"]
+    assert texts == ["Check for outdated mods", "Quick mod check…", "Find all bad mods…", "Fix load order",
+                     "Bisect by hand…"]
 
 
 def test_app_settings_search(win):

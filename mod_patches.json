@@ -1,0 +1,6 @@
+{
+  "about": "Game patches after which mods had to be rebuilt. ConanOps reads the newest date: a mod not updated since then is treated as not yet verified. Add an entry only for a patch that broke mods, not for hotfixes.",
+  "breaking_patches": [
+    {"date": "2026-09-01", "name": "Iris 2.2.0 (public beta from this date; live 2026-09-15)"}
+  ]
+}

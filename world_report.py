@@ -97,11 +97,14 @@ def _is_world(name: str) -> bool:
 
 
 def _main_world(names: Sequence[Tuple[str, int]]) -> Optional[Tuple[str, int]]:
-    """game.db if there is one, otherwise the biggest world database."""
+    """The live world: game_0.db (where the game has saved since the Enhanced
+    update; a server upgraded from before still has its old game.db beside
+    it), else game.db, else the biggest world database."""
     worlds = [(n, size) for n, size in names if _is_world(n)]
-    for n, size in worlds:
-        if os.path.basename(n.replace("\\", "/")).lower() == "game.db":
-            return n, size
+    for wanted in ("game_0.db", "game.db"):
+        for n, size in worlds:
+            if os.path.basename(n.replace("\\", "/")).lower() == wanted:
+                return n, size
     return max(worlds, key=lambda w: w[1], default=None)
 
 

@@ -71,6 +71,9 @@ class ServerConfig:
     # same warnings), instead of only picking them up at the next restart.
     mod_auto_update: bool = True
     mod_versions: Dict[str, int] = field(default_factory=dict)  # workshop id -> its time_updated when downloaded
+    # workshop id -> {"build", "time", "ok"}: this server ran (or failed) with
+    # that version of the mod on that game build. See mod_compat.py.
+    mod_proof: Dict[str, dict] = field(default_factory=dict)
     # Settings changes and messages on a schedule (scheduled_events.py).
     scheduled_events: List[dict] = field(default_factory=list)
     backup_before_update: bool = True
@@ -203,6 +206,9 @@ class ServerConfig:
         except (TypeError, ValueError):
             minutes = []
         self.warning_minutes = minutes or [15, 5, 1]
+        if not isinstance(self.mod_proof, dict):
+            self.mod_proof = {}
+        self.mod_proof = {str(k): v for k, v in self.mod_proof.items() if isinstance(v, dict)}
         if not isinstance(self.mod_versions, dict):
             self.mod_versions = {}
         self.mod_versions = {str(k): int(v) for k, v in self.mod_versions.items()
@@ -292,7 +298,12 @@ class AppConfig:
     duckdns_token: str = ""
     # App-wide alert links (secrets). load() migrates the old per-server ones.
     alert_discord_url: str = ""
+    # Newest "mods had to be rebuilt" game patch published for ConanOps
+    # (mod_compat.PATCHES_URL), fetched daily; "" until the first fetch.
+    workshop_patch_date: str = ""
     alert_ntfy_url: str = ""
+    # Called every few minutes while ConanOps runs (heartbeat.py); the link holds a key.
+    heartbeat_url: str = ""
     discord_status_enabled: bool = False
     # Discord bot for !status / !restart (the token is a secret).
     discord_bot_token: str = ""
@@ -402,7 +413,11 @@ class AppConfig:
             cfg = cls()
             cfg.save(path)
             return cfg
-        servers = [ServerConfig.from_dict(s) for s in raw.get("servers", [])]
+        # One entry that isn't a server (a hand-edit gone wrong) must not stop
+        # ConanOps from starting with the rest.
+        listed = raw.get("servers", [])
+        servers = [ServerConfig.from_dict(s) for s in (listed if isinstance(listed, list) else [])
+                   if isinstance(s, dict)]
         cfg = cls(
             servers=servers,
             active_server_id=raw.get("active_server_id"),
@@ -431,9 +446,10 @@ class AppConfig:
             last_app_update_check=float(raw.get("last_app_update_check", 0.0) or 0.0),
             duckdns_domain=raw.get("duckdns_domain", ""),
             workshop_update_cutoff=raw.get("workshop_update_cutoff", "2026-09-01"),
+            workshop_patch_date=str(raw.get("workshop_patch_date", "") or ""),
         )
         cfg._undecryptable = {}
-        for attr in ("steam_api_key", "duckdns_token", "discord_bot_token"):
+        for attr in ("steam_api_key", "duckdns_token", "discord_bot_token", "heartbeat_url"):
             cfg._load_secret(attr, raw.get(attr, ""))
         cfg.weekly_report_enabled = bool(raw.get("weekly_report_enabled", True))
         for attr, low, high, default in (("weekly_report_day", 0, 6, 0), ("weekly_report_hour", 0, 23, 9)):
@@ -519,9 +535,11 @@ class AppConfig:
             "steam_api_key": self._protect("steam_api_key"),
             "duckdns_domain": self.duckdns_domain,
             "workshop_update_cutoff": self.workshop_update_cutoff,
+            "workshop_patch_date": self.workshop_patch_date,
             "duckdns_token": self._protect("duckdns_token"),
             "alert_discord_url": self._protect("alert_discord_url"),
             "alert_ntfy_url": self._protect("alert_ntfy_url"),
+            "heartbeat_url": self._protect("heartbeat_url"),
             "discord_status_enabled": self.discord_status_enabled,
             "discord_bot_token": self._protect("discord_bot_token"),
             "discord_bot_channel_id": self.discord_bot_channel_id,
@@ -608,6 +626,13 @@ class AppConfig:
             if s.install_dir:
                 dirs.add(os.path.normcase(os.path.abspath(s.install_dir)))
         return dirs
+
+    def mod_cutoff(self) -> str:
+        """The date a mod must have been updated since to count as updated for
+        the current patch: the later of the one set in App Settings and the
+        newest published breaking patch."""
+        import mod_compat  # local: keeps this module's imports minimal
+        return mod_compat.effective_cutoff(self.workshop_update_cutoff, self.workshop_patch_date)
 
     def used_backup_dirs(self, exclude_id: Optional[str] = None) -> set:
         """Normalized backup folders claimed by other servers. Sharing one

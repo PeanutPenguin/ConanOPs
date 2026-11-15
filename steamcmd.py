@@ -163,7 +163,7 @@ def download_workshop_items(steamcmd_dir: str, workshop_ids: list, max_attempts:
     combined_output = []
     for attempt in range(1, max_attempts + 1):
         try:
-            proc = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800, **hidden_console_kwargs())
+            proc = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=max(1800, 600 * len(workshop_ids)), **hidden_console_kwargs())
         except subprocess.TimeoutExpired:
             combined_output.append(f"Attempt {attempt}: SteamCMD timed out downloading workshop items.")
             continue

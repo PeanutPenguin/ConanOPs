@@ -255,6 +255,8 @@ class PowerMixin:
             if not running_now:
                 self._answered_since_start.discard(server.id)
             elif info is not None:
+                if server.id not in self._answered_since_start:
+                    self._record_mod_proof(server)
                 self._answered_since_start.add(server.id)
 
             if was_running and not running_now and server.id not in self._expected_stop and server.id not in self._automation_locked:
@@ -425,6 +427,7 @@ class PowerMixin:
                 QTimer.singleShot(self._RESUME_NETWORK_WAIT_MS, self._auto_resume_servers)
                 return
             _log.warning("Network still not ready after waiting; auto-resuming anyway.")
+        brought_back = []
         for server in self.config.servers:
             if not server.desired_running or not server.install_dir:
                 continue
@@ -450,8 +453,14 @@ class PowerMixin:
             try:
                 process_manager.launch(server)
                 self._known_running[server.id] = True
+                brought_back.append(server)
             except FileNotFoundError as e:
                 self._notify(server, f"Auto-resume couldn't start this server: {e}", title="Auto-Resume Failed")
+        if brought_back:
+            # After a PC restart or a crash of ConanOps: say that it's back, so
+            # silence afterwards means something and not just "nothing happened".
+            names = ", ".join(s.name for s in brought_back)
+            self._notify(brought_back[0], f"ConanOps is running again and started: {names}.", title="Back Online")
 
     # ------------------------------------------------ missing-file repair --
     def _repair_game_files(self, server: ServerConfig, why: str, then_start: bool, stop_first: bool = False) -> bool:

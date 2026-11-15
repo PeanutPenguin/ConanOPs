@@ -22,6 +22,7 @@ import process_manager
 import backup_manager
 import dynamic_dns_runner
 import discord_status_runner
+import heartbeat
 import backup_runner
 import health_check_runner
 import network_setup_runner
@@ -213,7 +214,7 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
         self.mods_page = ModsPage()
         self.mods_page.get_api_key = lambda: self.config.steam_api_key
-        self.mods_page.get_update_cutoff = lambda: self.config.workshop_update_cutoff
+        self.mods_page.get_update_cutoff = self.config.mod_cutoff
         self.mods_page.auto_check_mod_status = True
         self.mods_page.is_server_online = lambda: bool(self._online_by_server.get(self.config.active_server_id))
         self.mods_page.lock_server_for_automation = lambda sid: self._automation_locked.add(sid)
@@ -507,6 +508,14 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
         # Opt-in live Discord status message per server, edited in place every
         # 5 minutes to stay within rate limits.
+        self._patch_list_timer = QTimer(self)
+        self._patch_list_timer.timeout.connect(self._fetch_mod_patch_date)
+        self._patch_list_timer.start(24 * 3600 * 1000)
+        QTimer.singleShot(30_000, self._fetch_mod_patch_date)
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.timeout.connect(self._send_heartbeat)
+        self._heartbeat_timer.start(heartbeat.INTERVAL_SECONDS * 1000)
+        QTimer.singleShot(20_000, self._send_heartbeat)
         self._discord_status_timer = QTimer(self)
         self._discord_status_timer.timeout.connect(self._check_discord_status_all)
         self._discord_status_timer.start(5 * 60 * 1000)
@@ -960,6 +969,23 @@ class MainWindow(QMainWindow, FinderMixin, DiagnosticFixesMixin, PowerMixin, Upd
 
 
     # ------------------------------------------------------- settings io --
+    def _fetch_mod_patch_date(self) -> None:
+        import mod_compat
+        if not any(s.mods for s in self.config.servers):
+            return
+
+        def store(date: str) -> None:
+            if date and date != self.config.workshop_patch_date:
+                self.config.workshop_patch_date = date
+                self.config.save()
+                _log.info(f"Mods now count as updated for the current patch from {self.config.mod_cutoff()}.")
+        self._run_op(mod_compat.fetch_latest_patch_date, on_done=store, on_error=lambda _e: None)
+
+    def _send_heartbeat(self) -> None:
+        url = self.config.heartbeat_url
+        if url:
+            self._run_op(lambda u=url: heartbeat.ping(u), on_error=lambda _e: None)
+
     def _retire_worker(self, worker) -> None:
         keep_until_finished(self._retiring_workers, worker)
 
